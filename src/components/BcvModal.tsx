@@ -33,12 +33,12 @@ export default function BcvModal() {
             </label>
             <input
               type="number"
-              step="0.01"
+              step="1"
               required
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="Ej. 36.41"
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-600 outline-none"
+              className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition font-medium"
             />
           </div>
           <button

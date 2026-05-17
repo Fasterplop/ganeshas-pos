@@ -1,10 +1,9 @@
-'use client'; // Es un componente de cliente porque tiene enlaces activos
+'use client';
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Image from 'next/image';
 
-// Definimos los tipos de roles basados en tu base de datos
 type Role = 'owner' | 'cashier';
 
 interface SidebarProps {
@@ -15,7 +14,6 @@ interface SidebarProps {
 export default function Sidebar({ userRole, userName }: SidebarProps) {
   const pathname = usePathname();
 
-  // Aquí configuramos TODAS las rutas y quién puede verlas según tu DDT
   const menuItems = [
     { name: 'Dashboard', path: '/', roles: ['owner'] },
     { name: 'Punto de Venta', path: '/pos', roles: ['owner', 'cashier'] },
@@ -25,11 +23,10 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
   ];
 
-  // Filtramos: Solo guardamos los items donde el rol del usuario esté permitido
   const filteredMenu = menuItems.filter(item => item.roles.includes(userRole));
 
   return (
-    <aside className="print:hidden w-64 bg-[#0f5c5c] text-white min-h-screen flex flex-col shadow-xl">
+    <aside className="hidden md:flex flex-col w-64 bg-[#0f5c5c] text-white min-h-screen shadow-xl print:hidden shrink-0">
       {/* Logo y Título */}
       <div className="p-6 flex flex-col items-center border-b border-teal-700">
         <div className="bg-white p-2 rounded-full mb-3">
@@ -60,9 +57,8 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
       </nav>
 
       {/* Info del Usuario al final */}
-      <div className="p-4 bg-teal-900 border-t border-teal-800">
+      <div className="p-4 bg-teal-900 border-t border-teal-800 text-center">
         <p className="text-sm font-medium">{userName}</p>
-        {/* <p className="text-xs text-teal-300 capitalize">Rol: {userRole}</p> */}
       </div>
     </aside>
   );
