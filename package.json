@@ -17,6 +17,7 @@
     "react-barcode": "^1.6.1",
     "react-dom": "19.2.4",
     "react-hook-form": "^7.75.0",
+    "recharts": "^3.8.1",
     "zod": "^4.4.3",
     "zustand": "^5.0.13"
   },
