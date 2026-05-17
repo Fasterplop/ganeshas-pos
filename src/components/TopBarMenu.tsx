@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { createClient } from '@/lib/supabase/client';
 
 type Role = 'owner' | 'cashier';
 
@@ -13,11 +14,19 @@ interface TopBarMenuProps {
 
 export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/login');
+    router.refresh();
+  };
 
   const menuItems = [
     { name: 'Dashboard', path: '/', roles: ['owner'] },
     { name: 'POS', path: '/pos', roles: ['owner', 'cashier'] }, // Texto más corto para móvil
-    { name: 'Inventario', path: '/inventory', roles: ['owner'] },
+    { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
@@ -35,8 +44,17 @@ export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
           </div>
           <h2 className="text-base font-bold tracking-wider">GANESHA</h2>
         </div>
-        <div className="text-xs font-medium text-teal-200 truncate max-w-[120px]">
-          {userName}
+        <div className="flex items-center gap-3 text-xs font-medium text-teal-200">
+          <div className="truncate max-w-[120px]">
+            {userName}
+          </div>
+          <button
+            onClick={handleLogout}
+            className="text-red-300 hover:text-red-100 transition-colors cursor-pointer"
+            title="Cerrar Sesión"
+          >
+            Cerrar Sesión 
+          </button>
         </div>
       </div>
 

@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { createClient } from '@/lib/supabase/client';
 
 type Role = 'owner' | 'cashier';
 
@@ -13,11 +14,19 @@ interface SidebarProps {
 
 export default function Sidebar({ userRole, userName }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/login');
+    router.refresh();
+  };
 
   const menuItems = [
     { name: 'Dashboard', path: '/', roles: ['owner'] },
     { name: 'Punto de Venta', path: '/pos', roles: ['owner', 'cashier'] },
-    { name: 'Inventario', path: '/inventory', roles: ['owner'] },
+    { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
@@ -56,9 +65,15 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
         })}
       </nav>
 
-      {/* Info del Usuario al final */}
-      <div className="p-4 bg-teal-900 border-t border-teal-800 text-center">
+      {/* Info del Usuario al final con Botón de Log Out */}
+      <div className="p-4 bg-teal-900 border-t border-teal-800 text-center flex flex-col gap-1">
         <p className="text-sm font-medium">{userName}</p>
+        <button
+          onClick={handleLogout}
+          className="text-xs text-red-300 hover:text-red-100 transition-colors mt-1 font-medium cursor-pointer"
+        >
+          Cerrar Sesión 
+        </button>
       </div>
     </aside>
   );
