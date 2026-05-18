@@ -10,10 +10,12 @@ El proyecto está construido sobre un stack robusto para garantizar rendimiento,
 
 * **Framework Core:** Next.js (App Router) v15+
 * **Base de Datos & Backend:** Supabase (PostgreSQL + Authentication)
+* **Autenticación en Servidor:** `@supabase/ssr`
 * **Gestión de Estado Global:** Zustand
+* **Visualización de Datos:** Recharts (Gráficos analíticos)
 * **Estilos y UI:** Tailwind CSS v4
 * **Formularios y Validación:** React Hook Form + Zod
-* **Hardware / Impresión:** `react-barcode` (optimizado para etiquetas térmicas 50x25mm)
+* **Hardware / Impresión:** `react-barcode` (optimizado para etiquetas térmicas 62x29mm)
 
 ---
 
@@ -30,8 +32,11 @@ La ruta principal (`/`) carece de interfaz gráfica. Funciona como un **Server C
 * **Rol `owner`:** Redirección a `/dashboard` (Analíticas).
 * **Rol `cashier`:** Redirección a `/pos` (Caja registradora).
 
-### Layout Único Unificado
-Se implementó un Layout maestro basado en un **Sidebar Lateral**. El acceso a las rutas y la visibilidad de los elementos del menú están estrictamente condicionados por el rol del usuario en la tabla `profiles`.
+### Layout Responsivo Multidispositivo
+Se implementó un Layout maestro adaptable (`flex-col md:flex-row`). Para garantizar una experiencia fluida en cualquier dispositivo en el mostrador, la navegación se divide condicionalmente:
+* **Vista Móvil:** Renderiza un `TopBarMenu` superior.
+* **Vista de Escritorio:** Renderiza un `Sidebar` lateral tradicional.
+El acceso a las rutas y la visibilidad de los elementos del menú están estrictamente condicionados por el rol del usuario (`owner` o `cashier`) en la tabla `profiles`.El acceso a las rutas y la visibilidad de los elementos del menú están estrictamente condicionados por el rol del usuario en la tabla `profiles`.
 
 ---
 
@@ -50,32 +55,56 @@ La base de datos relacional en PostgreSQL está protegida por **Row-Level Securi
 
 ## 🚀 Módulos Core y Reglas de Negocio Implementadas
 
-### 1. Gestión de Tasa BCV (Bloqueo Global)
-La Tasa de Cambio (BCV) es el motor multimoneda. Si la tasa no está configurada al iniciar la sesión (es 0 en Zustand), un **Modal Persistente** bloquea el sistema. Al establecerse, alimenta en tiempo real todos los cálculos y se adjunta de forma inmutable a cada nueva venta en la tabla `sales`.
+### 1. Dashboard Analítico e Historial de Transacciones
+Un panel de control exclusivo para administradores (`owner`) que ofrece una visión profunda del negocio:
+* **Gráficos Analíticos (Recharts):** Visualización interactiva del rendimiento de ventas filtrable por **rango de fechas**.
+* **Historial de Transacciones:** Registro detallado de todas las operaciones de caja en tiempo real.
+* **Precisión Multimoneda:** El cálculo de ventas en Bolívares (VES) no usa una tasa global actual, sino que multiplica el total de cada venta por su **propia tasa BCV histórica** al momento de la transacción.
+* **Exportación de Datos:** Capacidad de exportar los reportes y transacciones a formato **.CSV** para auditorías o uso en software contable externo.
 
 ### 2. Flujo POS Simplificado e Inteligente
+* **Gestión de Tasa BCV:** Bloqueo global del sistema mediante Zustand si la tasa del día no ha sido configurada.
 * **Cero Impuestos y Sin Vuelto:** Optimizado para control interno. No hay cálculo de IVA ni gestión de cambio/vuelto. El subtotal es el total a pagar.
-* **Smart Checkout (Cliente Opcional):** Se eliminaron los modales en la vista de caja. El cajero ingresa la cédula/teléfono directamente. Al "Finalizar Venta", el sistema busca en la BD:
+* **Smart Checkout (Cliente Opcional):** Se eliminaron los modales en la vista de caja. 
+El cajero ingresa la cédula/nombre/teléfono directamente. Al "Finalizar Venta", el sistema busca en la BD:
   * Si el cliente existe, actualiza sus datos (si cambiaron) y le asigna la venta.
   * Si es nuevo, lo crea automáticamente y le asigna la venta en la misma transacción.
   * Si se deja vacío, se procesa como "Consumidor Final" (`customer_id: null`).
+* **Sistema de Reward Points:** El sistema calcula y guarda de forma automatizada los puntos de fidelidad del cliente, aplicando la regla de negocio inmutable de **1 punto por cada $20 gastados**.
 * **Búsqueda Dinámica:** Dropdown de búsqueda de productos en tiempo real por nombre o escaneo de código de barras.
 
-### 3. Inventario y Etiquetas Térmicas (Hardware)
+### 3. Gestión de Clientes (CRM)
+Módulo dedicado (`/customers`) para administrar la base de datos de compradores:
+* Control detallado de datos personales. 
+* El sistema utiliza el Documento de Identidad (Cédula V-/J-) como Primary Key.
+* **Smart Checkout:** Desde el POS, ingresar una cédula asigna la venta a un cliente existente, o lo crea y registra automáticamente si es la primera vez que compra.
+
+### 4. Inventario y Etiquetas Térmicas (Hardware)
 * **Auto-Generación de SKUs:** Al registrar un producto, el sistema genera automáticamente un SKU único (Ej. `JUG-482915`) evitando errores humanos.
 * **Impresión Directa:** Uso de utilidades CSS (`print:block`, `print:hidden`) y `react-barcode` para imprimir etiquetas de productos y "Descuentos Rápidos" directamente desde el navegador a impresoras de rollo térmico sin márgenes.
+* **Registro Optimizador:** Al crear un nuevo producto, el sistema permite ingresar o escanear un código de barras existente de fábrica, o generar un SKU interno único de forma automática.
+* Control estricto de categorías, precios y niveles de stock.
 
-### 4. Dashboard Analítico Multimoneda
+
+### 5. Dashboard Analítico Multimoneda
 Cumpliendo la Sección D del DDT, el cálculo de las "Ventas de Hoy" en Bolívares (VES) **no utiliza una tasa global**. El sistema consulta la base de datos y multiplica el `total_amount` de cada venta por su propio `bcv_rate` histórico, garantizando precisión contable absoluta. Incluye consultas relacionales para extraer los *Top Products* y *Top Customers*.
 
-### 5. Gestión de Usuarios (Cajeros)
+### 6. Gestión de Usuarios (Cajeros)
 Módulo exclusivo para el `owner`. Utiliza **Next.js Server Actions** combinadas con la `SUPABASE_SERVICE_ROLE_KEY` (Admin API).
 * **Beneficio:** Permite crear credenciales en `auth.users` e insertar su perfil en `profiles` con el rol `cashier` desde el frontend, **sin cerrar la sesión actual** del administrador.
+
+### 7. Impresión Térmica Multi-productos (`/labels`)
+Sistema de impresión masiva integrado directamente en el navegador:
+* Generación de códigos de barras mediante `react-barcode`.
+* Interfaz para seleccionar **múltiples productos y cantidades** e imprimirlos en lote.
+* CSS optimizado (`print:block`, `print:hidden`, `print:p-0`) para impresoras de rollo térmico sin márgenes, garantizando que las etiquetas salgan perfectas sin configuraciones extra en el OS.
 
 ---
 
 ## ⏭️ Fase 2 (Próximos Pasos)
-* **Reward Points:** La interfaz visual de Puntos de Recompensa en el perfil del cliente (Sección C del DDT) ya se encuentra maquetada a nivel de UI, lista para que su lógica de acumulación sea activada en la siguiente fase de desarrollo.
+* **Customer App (Ecosistema Multiplataforma):** Expansión del sistema mediante el desarrollo de una aplicación dedicada para clientes, disponible tanto en versión **Web App** como en formato nativo para **App Store (iOS)** y **Google Play (Android)**.
+
+* **Redención de Puntos:** Con la lógica de acumulación ya centralizada y activa en la base de datos ($20 = 1 punto), se conectará la nueva Customer App con el POS. Esto permitirá a los clientes consultar su balance en tiempo real y canjear sus `rewards_points` como método de pago o descuento directo sobre sus próximas compras.
 
 ---
 *GaneshaStores POS - Desarrollado para optimización de flujo en mostrador y alta fidelidad contable.*

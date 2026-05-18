@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ganeshas POS", // Te sugiero cambiar esto también
-  description: "Punto de venta interno",
+  title: "Ganesha Store", 
+  description: "Sistema interno de control de inventario, registros y reportes",
   robots: {
     index: false,
     follow: false,
