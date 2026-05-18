@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 
-// 1. AÑADIDO: 'punto_de_venta' a los tipos permitidos
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta';
+
+// Nuevos tipos para el descuento
+type DiscountType = 'none' | 'percent' | 'fixed';
 
 type NotificationType = {
   message: string;
@@ -21,8 +23,14 @@ export default function POSPage() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo');
+  // Inicializado en null para forzar la selección
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
+  
+  // Estados para el descuento
+  const [discountType, setDiscountType] = useState<DiscountType>('none');
+  const [discountValue, setDiscountValue] = useState<string>('');
+
   const [isLoading, setIsLoading] = useState(false);
 
   const [productSearch, setProductSearch] = useState('');
@@ -30,9 +38,24 @@ export default function POSPage() {
 
   const [notification, setNotification] = useState<NotificationType>(null);
 
-  const totalUSD = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-  const totalVES = totalUSD * bcvRate;
+  // Cálculos de totales y descuentos
+  const subtotalUSD = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
   const totalItems = cart.reduce((acc, item) => acc + item.quantity, 0);
+
+  let discountAmount = 0;
+  // AHORA: Aplicamos descuento si el método es EFECTIVO o ZELLE
+  if ((paymentMethod === 'efectivo' || paymentMethod === 'zelle') && discountValue !== '' && !isNaN(Number(discountValue))) {
+    const val = Number(discountValue);
+    if (discountType === 'percent') {
+      discountAmount = subtotalUSD * (val / 100);
+    } else if (discountType === 'fixed') {
+      discountAmount = val;
+    }
+  }
+
+  // Evitamos que el total sea negativo
+  const totalUSD = Math.max(0, subtotalUSD - discountAmount);
+  const totalVES = totalUSD * bcvRate;
 
   const showNotification = (message: string, type: 'success' | 'error') => {
     setNotification({ message, type });
@@ -72,10 +95,14 @@ export default function POSPage() {
     }
   };
 
-  // --- LÓGICA PRINCIPAL: Finalizar Venta ---
   const handleCheckout = async () => {
     if (cart.length === 0) {
       return showNotification('El carrito está vacío', 'error');
+    }
+    
+    // Validación de método de pago
+    if (!paymentMethod) {
+      return showNotification('Debes seleccionar un método de pago', 'error');
     }
     
     setIsLoading(true);
@@ -91,7 +118,6 @@ export default function POSPage() {
       
       const fullDocumentId = cleanDocNumber !== '' ? `${docType}${cleanDocNumber}` : null;
 
-      // GESTIÓN DEL CLIENTE
       if (fullDocumentId || cleanPhone !== '' || cleanName !== '') {
         if (!fullDocumentId) {
            throw new Error('Debes ingresar el número de cédula para poder asociar al cliente.');
@@ -126,7 +152,7 @@ export default function POSPage() {
             full_name: cleanName !== '' ? cleanName : `Cliente ${finalCustomerId}`,
             phone: cleanPhone !== '' ? cleanPhone : null,
             total_spent: 0,
-            reward_points: 0 // Inicializamos los puntos
+            reward_points: 0
           });
 
           if (insertError) {
@@ -138,7 +164,7 @@ export default function POSPage() {
         }
       }
 
-      // 2. CREAR VENTA
+      // El total amount guardado será el que ya tiene el descuento aplicado (totalUSD)
       const { data: saleData, error: saleError } = await supabase
         .from('sales')
         .insert({
@@ -154,22 +180,18 @@ export default function POSPage() {
 
       if (saleError) throw saleError;
 
-      // 3. INSERTAR PRODUCTOS EN LA VENTA Y RESTAR STOCK DEL INVENTARIO
       const itemsToInsert = cart.map(item => ({
         sale_id: saleData.id,
         product_id: item.id,
         quantity: item.quantity,
         unit_price: item.price,
-        subtotal: item.price * item.quantity
+        subtotal: item.price * item.quantity // Subtotal sin descuento a nivel de item
       }));
 
       const { error: itemsError } = await supabase.from('sale_items').insert(itemsToInsert);
       if (itemsError) throw itemsError;
 
-      // RESTAR STOCK DE LA TABLA PRODUCTS
       for (const item of cart) {
-        // Obtenemos el stock actual. 
-        // NOTA: Si tu columna de stock se llama diferente en Supabase (ej. 'stock_quantity'), cámbiala aquí.
         const { data: productData } = await supabase
           .from('products')
           .select('stock') 
@@ -184,9 +206,7 @@ export default function POSPage() {
         }
       }
 
-      // 4. ACTUALIZAR TOTAL_SPENT Y PUNTOS DEL CLIENTE
       if (finalCustomerId) {
-         // Calculamos los puntos: 1 punto por cada $20 gastados enteros
          const pointsEarned = Math.floor(totalUSD / 20);
 
          const { data: custData } = await supabase
@@ -202,19 +222,20 @@ export default function POSPage() {
            .from('customers')
            .update({ 
              total_spent: previousSpent + totalUSD,
-             reward_points: previousPoints + pointsEarned // Sumamos los nuevos puntos
+             reward_points: previousPoints + pointsEarned
            })
            .eq('document_id', finalCustomerId);
       }
 
-      // 5. LIMPIAR ESTADOS
       showNotification('¡Venta registrada con éxito!', 'success');
       clearCart();
       setDocNumber('');
       setCustomerName('');
       setCustomerPhone('');
       setPaymentRef('');
-      setPaymentMethod('efectivo');
+      setPaymentMethod(null);
+      setDiscountType('none');
+      setDiscountValue('');
 
     } catch (error: any) {
       showNotification(error.message, 'error');
@@ -372,9 +393,14 @@ export default function POSPage() {
 
           <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
             <p className="text-slate-600 font-medium">{totalItems} Artículos</p>
-            <div className="text-right">
-              <p className="text-sm text-slate-500">Total Venta:</p>
-              <p className="text-xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
+            <div className="text-right flex flex-col items-end">
+              {discountAmount > 0 && (
+                <p className="text-sm text-red-500 line-through mb-1">${subtotalUSD.toFixed(2)}</p>
+              )}
+              <div className="flex gap-2 items-baseline">
+                <p className="text-sm text-slate-500">Total:</p>
+                <p className="text-xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
+              </div>
             </div>
           </div>
         </div>
@@ -384,13 +410,17 @@ export default function POSPage() {
           <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-6 text-white flex flex-col justify-center items-end shrink-0">
             <p className="text-teal-100 text-sm mb-1">Total a Pagar</p>
             <p className="text-5xl font-bold mb-2">${totalUSD.toFixed(2)}</p>
+            {discountAmount > 0 && (
+              <p className="text-teal-200 text-sm mb-1 bg-[#0a4545] px-2 py-1 rounded">
+                Ahorro: ${discountAmount.toFixed(2)}
+              </p>
+            )}
             <p className="text-teal-200 text-sm">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
-            <h3 className="font-semibold text-slate-800 mb-4">Método de Pago</h3>
+            <h3 className="font-semibold text-slate-800 mb-4">Método de Pago <span className="text-red-500">*</span></h3>
             
-            {/* 2. AÑADIDO: grid-cols-2 para crear una cuadrícula 2x2 y agregado el 4to botón */}
             <div className="grid grid-cols-2 gap-3 mb-6">
               <button 
                 onClick={() => setPaymentMethod('efectivo')}
@@ -425,6 +455,39 @@ export default function POSPage() {
               </button>
             </div>
 
+            {/* SECCIÓN DE DESCUENTO AHORA: Visible si es efectivo O zelle */}
+            {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
+              <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
+                <h4 className="text-sm font-semibold text-slate-700 mb-3">Aplicar Descuento</h4>
+                <div className="flex gap-2">
+                  <select 
+                    value={discountType} 
+                    onChange={(e) => {
+                      setDiscountType(e.target.value as DiscountType);
+                      if (e.target.value === 'none') setDiscountValue('');
+                    }}
+                    className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                  >
+                    <option value="none">Sin descuento</option>
+                    <option value="percent">Porcentaje (%)</option>
+                    <option value="fixed">Monto ($)</option>
+                  </select>
+                  
+                  {discountType !== 'none' && (
+                    <input 
+                      type="number" 
+                      min="0"
+                      step="0.01"
+                      value={discountValue}
+                      onChange={(e) => setDiscountValue(e.target.value)}
+                      placeholder={discountType === 'percent' ? "Ej. 10" : "Ej. 5.00"}
+                      className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="mb-auto">
               <label className="block text-sm text-slate-500 mb-2">
                 Referencia de Transacción (Opcional)
@@ -440,7 +503,7 @@ export default function POSPage() {
 
             <button 
               onClick={handleCheckout}
-              disabled={isLoading || cart.length === 0}
+              disabled={isLoading || cart.length === 0 || !paymentMethod}
               className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition flex items-center justify-center gap-2 mt-6 text-lg shadow-md shrink-0"
             >
               {isLoading ? 'Procesando...' : '🧾 Finalizar Venta'}

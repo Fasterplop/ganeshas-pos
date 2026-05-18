@@ -334,7 +334,7 @@ export default function DashboardPage() {
           {/* Top Productos (Solo 3) */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-800">Top Productos</h3>
+              <h3 className="text-lg font-bold text-slate-800">Mejores Productos</h3>
               {topProducts.length > 3 && (
                 <button onClick={() => setIsProductsModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
                   Ver más
@@ -503,7 +503,7 @@ export default function DashboardPage() {
       {/* --- MODALES "VER MÁS" --- */}
       
       {/* Modal Mejores Productos */}
-      <Modal isOpen={isProductsModalOpen} onClose={() => setIsProductsModalOpen(false)} title="Top 50 Productos">
+      <Modal isOpen={isProductsModalOpen} onClose={() => setIsProductsModalOpen(false)} title="Mejores 50 Productos">
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
           {topProducts.map((product, idx) => (
              <div key={product.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
@@ -522,7 +522,7 @@ export default function DashboardPage() {
       </Modal>
 
       {/* Modal Mejores Clientes */}
-      <Modal isOpen={isCustomersModalOpen} onClose={() => setIsCustomersModalOpen(false)} title="Top 50 Clientes">
+      <Modal isOpen={isCustomersModalOpen} onClose={() => setIsCustomersModalOpen(false)} title="Mejores 50 Clientes">
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
           {topCustomers.map((customer, idx) => (
             <div key={idx} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
