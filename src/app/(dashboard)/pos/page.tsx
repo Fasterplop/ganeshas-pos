@@ -125,7 +125,8 @@ export default function POSPage() {
             document_id: finalCustomerId,
             full_name: cleanName !== '' ? cleanName : `Cliente ${finalCustomerId}`,
             phone: cleanPhone !== '' ? cleanPhone : null,
-            total_spent: 0
+            total_spent: 0,
+            reward_points: 0 // Inicializamos los puntos
           });
 
           if (insertError) {
@@ -153,7 +154,7 @@ export default function POSPage() {
 
       if (saleError) throw saleError;
 
-      // 3. INSERTAR PRODUCTOS
+      // 3. INSERTAR PRODUCTOS EN LA VENTA Y RESTAR STOCK DEL INVENTARIO
       const itemsToInsert = cart.map(item => ({
         sale_id: saleData.id,
         product_id: item.id,
@@ -165,20 +166,44 @@ export default function POSPage() {
       const { error: itemsError } = await supabase.from('sale_items').insert(itemsToInsert);
       if (itemsError) throw itemsError;
 
-      // 4. ACTUALIZAR TOTAL_SPENT DEL CLIENTE
+      // RESTAR STOCK DE LA TABLA PRODUCTS
+      for (const item of cart) {
+        // Obtenemos el stock actual. 
+        // NOTA: Si tu columna de stock se llama diferente en Supabase (ej. 'stock_quantity'), cámbiala aquí.
+        const { data: productData } = await supabase
+          .from('products')
+          .select('stock') 
+          .eq('id', item.id)
+          .single();
+
+        if (productData) {
+          await supabase
+            .from('products')
+            .update({ stock: productData.stock - item.quantity })
+            .eq('id', item.id);
+        }
+      }
+
+      // 4. ACTUALIZAR TOTAL_SPENT Y PUNTOS DEL CLIENTE
       if (finalCustomerId) {
+         // Calculamos los puntos: 1 punto por cada $20 gastados enteros
+         const pointsEarned = Math.floor(totalUSD / 20);
+
          const { data: custData } = await supabase
            .from('customers')
-           .select('total_spent')
+           .select('total_spent, reward_points')
            .eq('document_id', finalCustomerId)
            .single();
            
          const previousSpent = custData?.total_spent || 0;
-         const newTotalSpent = previousSpent + totalUSD;
+         const previousPoints = custData?.reward_points || 0;
 
          await supabase
            .from('customers')
-           .update({ total_spent: newTotalSpent })
+           .update({ 
+             total_spent: previousSpent + totalUSD,
+             reward_points: previousPoints + pointsEarned // Sumamos los nuevos puntos
+           })
            .eq('document_id', finalCustomerId);
       }
 

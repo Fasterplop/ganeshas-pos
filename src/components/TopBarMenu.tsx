@@ -24,8 +24,8 @@ export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
   };
 
   const menuItems = [
-    { name: 'Dashboard', path: '/', roles: ['owner'] },
-    { name: 'POS', path: '/pos', roles: ['owner', 'cashier'] }, // Texto más corto para móvil
+    { name: 'Reportes', path: '/', roles: ['owner'] },
+    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] }, 
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
@@ -39,10 +39,10 @@ export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
       {/* Fila superior: Logo y Usuario */}
       <div className="flex items-center justify-between p-3 border-b border-teal-700">
         <div className="flex items-center gap-2">
-          <div className="bg-white p-1 rounded-full">
+          {/* <div className="bg-white p-1 rounded-full">
             <Image src="/logo.webp" alt="Logo" width={24} height={24} className="object-contain" />
-          </div>
-          <h2 className="text-base font-bold tracking-wider">GANESHA</h2>
+          </div> */}
+          <h2 className="text-base font-bold tracking-wider">GANESHA STORE</h2>
         </div>
         <div className="flex items-center gap-3 text-xs font-medium text-teal-200">
           <div className="truncate max-w-[120px]">

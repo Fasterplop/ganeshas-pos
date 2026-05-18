@@ -24,8 +24,8 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
   };
 
   const menuItems = [
-    { name: 'Dashboard', path: '/', roles: ['owner'] },
-    { name: 'Punto de Venta', path: '/pos', roles: ['owner', 'cashier'] },
+    { name: 'Reportes', path: '/', roles: ['owner'] },
+    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
@@ -38,11 +38,11 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
     <aside className="hidden md:flex flex-col w-64 bg-[#0f5c5c] text-white min-h-screen shadow-xl print:hidden shrink-0">
       {/* Logo y Título */}
       <div className="p-6 flex flex-col items-center border-b border-teal-700">
-        <div className="bg-white p-2 rounded-full mb-3">
+        {/* <div className="bg-white p-2 rounded-full mb-3">
            <Image src="/logo.webp" alt="Logo" width={40} height={40} className="object-contain" />
-        </div>
-        <h2 className="text-xl font-bold tracking-wider">GANESHA</h2>
-        <p className="text-xs text-teal-200">POS System</p>
+        </div> */}
+        <h2 className="text-xl font-bold tracking-wider">GANESHA STORE</h2>
+
       </div>
 
       {/* Menú Dinámico */}

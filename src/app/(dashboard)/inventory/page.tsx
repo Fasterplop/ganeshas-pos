@@ -44,7 +44,7 @@ export default function InventoryPage() {
   const [formError, setFormError] = useState<string | null>(null);
   
   const [promoName, setPromoName] = useState('Liquidación');
-  const [discountPercent, setDiscountPercent] = useState(20);
+  const [discountPercent, setDiscountPercent] = useState(0);
 
   const supabase = createClient();
 

@@ -192,6 +192,38 @@ export default function DashboardPage() {
     fetchHistory();
   }, [historyDateRange, supabase]);
 
+  const handleExportCSV = () => {
+  if (salesHistory.length === 0) return;
+
+  const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
+  
+  const rows = salesHistory.map(sale => {
+    const fecha = new Date(sale.created_at).toLocaleString('es-ES', { 
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+    }).replace(/,/g, ''); 
+    
+    const cliente = sale.customers?.full_name || 'Anónimo';
+    const cajero = sale.profiles?.full_name || 'Desconocido';
+    const productos = sale.sale_items?.map((item: any) => `${item.quantity}x ${item.products?.name}`).join(' | ') || '';
+    const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
+    const referencia = sale.payment_ref || 'N/A';
+    const totalUsd = Number(sale.total_amount).toFixed(2);
+    const totalBs = (Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2);
+
+    return `"${fecha}","${cliente}","${cajero}","${productos}","${metodoPago}","${referencia}","${totalUsd}","${totalBs}"`;
+  });
+
+  const csvContent = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', `historial_ventas_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
   if (loading) {
     return <div className="flex h-full items-center justify-center text-slate-500">Cargando analíticas...</div>;
   }
@@ -205,7 +237,7 @@ export default function DashboardPage() {
       {/* --- CABECERA --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Dashboard</h1>
+          <h1 className="text-3xl font-bold text-slate-800"></h1>
           <p className="text-slate-500">Resumen de rendimiento y analíticas</p>
         </div>
         <div className="bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center capitalize">
@@ -265,13 +297,13 @@ export default function DashboardPage() {
               </div>
             </div>
             
-            <div className="flex-1 w-full min-h-[250px] pr-2">
-              {chartData.length === 0 ? (
-                <div className="h-full flex items-center justify-center border-2 border-dashed border-slate-100 rounded-lg text-slate-400">
-                  No hay ventas registradas en este rango.
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
+            <div className="flex-1 w-full min-h-[250px] pr-2" style={{ minWidth: 0, minHeight: 0 }}>
+  {chartData.length === 0 ? (
+    <div className="h-full flex items-center justify-center border-2 border-dashed border-slate-100 rounded-lg text-slate-400">
+      No hay ventas registradas en este rango.
+    </div>
+  ) : (
+                <ResponsiveContainer width="100%" height={350}>
                   <AreaChart data={chartData} margin={{ top: 10, right: 50, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorVentas" x1="0" y1="0" x2="0" y2="1">
@@ -369,6 +401,16 @@ export default function DashboardPage() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
           <h3 className="text-lg font-bold text-slate-800">Historial de Transacciones</h3>
           
+          <div className="flex items-center gap-3">
+    {/* PEGA ESTE BOTÓN AQUÍ */}
+    <button 
+      onClick={handleExportCSV}
+      disabled={salesHistory.length === 0}
+      className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed"
+    >
+      📥 Exportar a .csv
+    </button>
+
           <div className="flex items-center gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200">
             <input 
               type="date" 
@@ -383,6 +425,7 @@ export default function DashboardPage() {
               onChange={(e) => setHistoryDateRange(prev => ({ ...prev, end: e.target.value }))}
               className="bg-transparent border-none outline-none text-slate-700 cursor-pointer"
             />
+          </div>
           </div>
         </div>
         

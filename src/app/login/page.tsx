@@ -85,9 +85,8 @@ export default function LoginPage() {
     src="/logo.webp"
     alt="Logo GaneshaStores"
     width={70}
-    height={70
-    }
-    className="object-contain"
+    height={70}
+    className="object-contain w-auto h-auto"
     priority
   />
 </div>
@@ -111,7 +110,7 @@ export default function LoginPage() {
               <input
                 type="email"
                 {...register('email')}
-                className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-md bg-slate-50 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition"
+                className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-md bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition"
                 placeholder="Ingresa tu correo"
               />
             </div>
@@ -131,7 +130,7 @@ export default function LoginPage() {
               <input
                 type="password"
                 {...register('password')}
-                className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-md bg-slate-50 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition"
+                className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-md bg-white text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition"
                 placeholder="••••••••"
               />
             </div>

@@ -7,7 +7,7 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 
-// 1. Esquema de validación con Zod (Cambiamos 'email' por 'phone')
+// 1. Esquema de validación con Zod
 const customerSchema = z.object({
   document_id: z.string().min(5, { message: 'La cédula debe tener al menos 5 caracteres' }),
   full_name: z.string().min(3, { message: 'El nombre completo debe tener al menos 3 caracteres' }),
@@ -19,10 +19,11 @@ type CustomerFormValues = z.infer<typeof customerSchema>;
 interface Customer {
   document_id: string;
   full_name: string;
-  phone: string | null; // Cambiado de email a phone
+  phone: string | null;
   total_spent: number;
   reward_points: number;
   created_at: string;
+  sales?: { created_at: string }[]; // Relación mapeada para la última compra
 }
 
 export default function CustomersPage() {
@@ -34,6 +35,10 @@ export default function CustomersPage() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+
+  // Estados para el historial detallado del cliente seleccionado (Modal)
+  const [customerSales, setCustomerSales] = useState<any[]>([]);
+  const [loadingSales, setLoadingSales] = useState(false);
 
   const supabase = createClient();
 
@@ -47,15 +52,29 @@ export default function CustomersPage() {
     resolver: zodResolver(customerSchema),
   });
 
-  // Cargar lista de clientes desde Supabase
+  // Cargar lista de clientes e incluir sus ventas de forma relacional
   async function fetchCustomers() {
     setLoading(true);
     const { data } = await supabase
       .from('customers')
-      .select('*')
+      .select(`
+        *,
+        sales (
+          created_at
+        )
+      `)
       .order('created_at', { ascending: false });
     
-    if (data) setCustomers(data);
+    if (data) {
+      // Ordenamos las fechas internas por código para asegurar que la primera posición sea la más reciente
+      const orderedData = data.map((customer: any) => {
+        if (customer.sales && customer.sales.length > 0) {
+          customer.sales.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        }
+        return customer;
+      });
+      setCustomers(orderedData);
+    }
     setLoading(false);
   }
 
@@ -63,18 +82,45 @@ export default function CustomersPage() {
     fetchCustomers();
   }, []);
 
-  const handleRowClick = (customer: Customer) => {
+  // Al hacer clic en un cliente, abrimos el modal y buscamos su historial detallado completo
+  const handleRowClick = async (customer: Customer) => {
     setSelectedCustomer(customer);
     setIsViewModalOpen(true);
+    setLoadingSales(true);
+
+    const { data, error } = await supabase
+      .from('sales')
+      .select(`
+        id,
+        created_at,
+        total_amount,
+        sale_items (
+          quantity,
+          products (
+            name
+          )
+        )
+      `)
+      .eq('customer_id', customer.document_id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching sales:', error);
+      setCustomerSales([]);
+    } else if (data) {
+      setCustomerSales(data);
+    }
+    
+    setLoadingSales(false);
   };
 
-  // Guardar el cliente con el número de teléfono en la base de datos
+  // Guardar el cliente
   const onAddCustomerSubmit = async (data: CustomerFormValues) => {
     const { error } = await supabase.from('customers').insert([
       {
         document_id: data.document_id,
         full_name: data.full_name,
-        phone: data.phone, // Enviamos el teléfono a la nueva columna
+        phone: data.phone,
       },
     ]);
 
@@ -83,15 +129,21 @@ export default function CustomersPage() {
     } else {
       setIsAddModalOpen(false);
       reset();
-      fetchCustomers(); // Recargamos la tabla automáticamente
+      fetchCustomers();
     }
   };
 
-  // Buscador en tiempo real
+  // Buscador en tiempo real por nombre, cédula o teléfono
   const filteredCustomers = customers.filter(customer =>
     customer.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    customer.document_id.toLowerCase().includes(searchTerm.toLowerCase())
+    customer.document_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase()))
   );
+
+  // Cálculos dinámicos en base al historial real de compras para los KPIs del Modal
+  const totalCompras = customerSales.length;
+  const totalGastadoReal = customerSales.reduce((acc, sale) => acc + Number(sale.total_amount), 0);
+  const promedioCompra = totalCompras > 0 ? (totalGastadoReal / totalCompras) : 0;
 
   return (
     <div className="h-full flex flex-col font-sans">
@@ -106,8 +158,8 @@ export default function CustomersPage() {
             type="text" 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="🔍 Buscar por cédula o nombre..." 
-            className="w-full md:w-64 px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none transition"
+            placeholder="🔍 Buscar por cédula, nombre o teléfono..." 
+            className="w-full md:w-[450px] px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none transition"
           />
           <button 
             onClick={() => setIsAddModalOpen(true)}
@@ -146,7 +198,14 @@ export default function CustomersPage() {
                     <td className="p-4 text-slate-600 font-mono text-sm">{customer.document_id}</td>
                     <td className="p-4 font-semibold text-slate-800">{customer.full_name}</td>
                     <td className="p-4 text-slate-500 text-sm">{customer.phone || 'No registrado'}</td>
-                    <td className="p-4 text-slate-500 text-sm">15 Sep, 2023</td>
+                    <td className="p-4 text-slate-500 text-sm">
+                      {/* Renderizado en tiempo real de la fecha de última compra */}
+                      {customer.sales && customer.sales.length > 0
+                        ? new Date(customer.sales[0].created_at).toLocaleDateString('es-VE', { 
+                            day: '2-digit', month: 'short', year: 'numeric' 
+                          })
+                        : 'Sin compras'}
+                    </td>
                     <td className="p-4 text-right font-bold text-teal-700">{customer.reward_points}</td>
                   </tr>
                 ))
@@ -232,67 +291,86 @@ export default function CustomersPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
               <div className="border border-slate-200 p-4 rounded-lg bg-slate-50">
                 <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">TOTAL GASTADO</p>
-                <p className="text-2xl font-bold text-slate-800">${selectedCustomer.total_spent.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-slate-800">
+                  ${totalGastadoReal > 0 ? totalGastadoReal.toFixed(2) : (selectedCustomer.total_spent || 0).toFixed(2)}
+                </p>
               </div>
 
-              {/* ===== REGLA ESTRICTA (FASE 2): PUNTOS COMENTADOS ====== */}
-              {/* <div className="border border-slate-200 p-4 rounded-lg bg-slate-50">
-                <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">PUNTOS DE RECOMPENSA</p>
+              <div className="border border-slate-200 p-4 rounded-lg bg-slate-50">
+                <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">PUNTOS</p>
                 <div className="flex items-center gap-2">
-                  <p className="text-2xl font-bold text-teal-600">{selectedCustomer.reward_points}</p>
+                  <p className="text-2xl font-bold text-teal-600">{selectedCustomer.reward_points || 0}</p>
                   <span className="text-teal-600">✪</span>
                 </div>
               </div> 
-              */}
-              {/* ======================================================= */}
 
               <div className="border border-slate-200 p-4 rounded-lg bg-slate-50">
                 <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">TOTAL COMPRAS</p>
-                <p className="text-2xl font-bold text-slate-800">14</p>
+                <p className="text-2xl font-bold text-slate-800">{loadingSales ? '-' : totalCompras}</p> 
               </div>
               <div className="border border-slate-200 p-4 rounded-lg bg-slate-50">
-                <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">PROMEDIO DE COMPRA</p>
-                <p className="text-2xl font-bold text-slate-800">$88.96</p>
+                <p className="text-xs font-bold text-slate-500 tracking-wider mb-1">PROMEDIO COMPRA</p>
+                <p className="text-2xl font-bold text-slate-800">${loadingSales ? '-' : promedioCompra.toFixed(2)}</p>
               </div>
             </div>
 
             <div>
               <div className="flex justify-between items-center mb-4 mt-2">
                 <h4 className="text-lg font-bold text-slate-800">Historial de Compras</h4>
-                <button className="text-sm text-teal-700 font-medium hover:underline">Ver todos los estados</button>
               </div>
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <div className="border border-slate-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
                 <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-500 font-bold tracking-wider text-xs">
+                  <thead className="bg-slate-50 text-slate-500 font-bold tracking-wider text-xs sticky top-0">
                     <tr>
                       <th className="p-3">FECHA</th>
-                      <th className="p-3">ID ORDEN</th>
                       <th className="p-3">ARTÍCULOS</th>
                       <th className="p-3 text-right">TOTAL</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-600 bg-white">
-                    <tr>
-                      <td className="p-3">15 Sep, 2023</td>
-                      <td className="p-3 text-teal-600 font-medium">#ORD-9021</td>
-                      <td className="p-3">2x Set de Figuras de Acción, 1x Camiseta Básica (M)...</td>
-                      <td className="p-3 text-right font-medium text-slate-800">$145.00</td>
-                    </tr>
+                    {loadingSales ? (
+                      <tr>
+                        <td colSpan={3} className="p-6 text-center text-slate-500 bg-slate-50/50">
+                          Cargando historial de compras...
+                        </td>
+                      </tr>
+                    ) : customerSales.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="p-6 text-center text-slate-500 bg-slate-50/50">
+                          No hay compras registradas para este cliente.
+                        </td>
+                      </tr>
+                    ) : (
+                      customerSales.map((sale) => {
+                        const itemsString = sale.sale_items?.map((item: any) => 
+                          `${item.quantity}x ${item.products?.name || 'Producto Desconocido'}`
+                        ).join(', ');
+
+                        return (
+                          <tr key={sale.id} className="hover:bg-slate-50 transition">
+                            <td className="p-3 whitespace-nowrap">
+                              {new Date(sale.created_at).toLocaleDateString('es-VE', { 
+                                day: '2-digit', month: 'short', year: 'numeric' 
+                              })}
+                            </td>
+                            <td className="p-3">
+                              <div className="truncate max-w-[200px] md:max-w-xs" title={itemsString}>
+                                {itemsString}
+                              </div>
+                            </td>
+                            <td className="p-3 text-right font-medium text-slate-800">
+                              ${Number(sale.total_amount).toFixed(2)}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-              <button className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition">
-                Editar Perfil
-              </button>
-              <button className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center gap-2">
-                🛒 Iniciar Venta para Cliente
-              </button>
             </div>
           </div>
         )}
