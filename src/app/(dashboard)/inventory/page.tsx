@@ -61,7 +61,7 @@ export default function InventoryPage() {
       if (profile) setUserRole(profile.role);
     }
 
-    const { data } = await supabase.from('products').select('*').order('name');
+    const { data } = await supabase.from('products').select('*').eq('is_active', true).order('name');
     if (data) setProducts(data);
     setLoading(false);
   }
@@ -109,18 +109,26 @@ export default function InventoryPage() {
     fetchData();
   };
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); 
-    if (window.confirm('¿Estás seguro de que deseas eliminar este producto permanentemente?')) {
-      const { error } = await supabase.from('products').delete().eq('id', id);
-      if (error) {
-        alert('Error al eliminar: ' + error.message);
-      } else {
-        if (selectedProduct?.id === id) setSelectedProduct(null);
-        fetchData();
-      }
+ const handleDelete = async (e: React.MouseEvent, id: string) => {
+  e.stopPropagation(); 
+  
+  if (window.confirm('¿Estás seguro de que deseas eliminar este producto del inventario?')) {
+    // En lugar de .delete(), usamos .update() para cambiar is_active a false
+    const { error } = await supabase
+      .from('products')
+      .update({ is_active: false })
+      .eq('id', id);
+
+    if (error) {
+      alert('Error al eliminar (ocultar) el producto: ' + error.message);
+      return;
     }
-  };
+
+    // Si se ocultó correctamente, limpiamos la selección y recargamos
+    if (selectedProduct?.id === id) setSelectedProduct(null);
+    fetchData();
+  }
+};
 
   const handleEdit = (e: React.MouseEvent, product: Product) => {
     e.stopPropagation(); 

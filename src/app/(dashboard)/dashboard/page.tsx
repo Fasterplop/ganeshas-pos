@@ -8,6 +8,7 @@ import Modal from '@/components/Modal';
 export default function DashboardPage() {
   const supabase = createClient();
   const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState<string>('');
 
   // Estados para métricas principales
   const [todayUSD, setTodayUSD] = useState(0);
@@ -48,9 +49,39 @@ export default function DashboardPage() {
     end: defaultEnd.toISOString().split('T')[0],
   });
 
+  // =========================================================================
+  // HELPER: Fuerza a Javascript a leer la fecha de Supabase como UTC puro
+  // para que la conversión a Caracas sea exacta (resta 4 horas correctamente).
+  // =========================================================================
+  const parseSupabaseDate = (dateStr: string) => {
+    if (!dateStr) return new Date();
+    let formatted = dateStr;
+    // Reemplaza espacio por 'T' si el formato viene directo de SQL
+    if (formatted.includes(' ') && !formatted.includes('T')) {
+      formatted = formatted.replace(' ', 'T');
+    }
+    // Si no termina en 'Z' (Zulu/UTC) y no tiene un offset (como +00:00), le forzamos la 'Z'
+    if (!formatted.endsWith('Z') && !formatted.includes('+') && !formatted.match(/-\d{2}:\d{2}$/)) {
+      formatted = formatted + 'Z';
+    }
+    return new Date(formatted);
+  };
+
   useEffect(() => {
     async function fetchDashboardData() {
       setLoading(true);
+      
+      // Obtener usuario y su rol
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+        if (profile) setRole(profile.role);
+      }
+
       const now = new Date();
 
       // --- Lógica de Fechas Generales ---
@@ -75,7 +106,8 @@ export default function DashboardPage() {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
 
         recentSales.forEach(sale => {
-          const saleDate = new Date(sale.created_at);
+          // Usamos el Helper aquí para las métricas
+          const saleDate = parseSupabaseDate(sale.created_at);
           const amount = Number(sale.total_amount);
 
           if (saleDate >= startOfToday) {
@@ -113,7 +145,7 @@ export default function DashboardPage() {
       if (saleItems) {
         const productCounts: Record<string, { id: string, name: string, price: number, qty: number }> = {};
         saleItems.forEach((item: any) => {
-          const pId = item.product_id || 'unknown'; // Usamos el ID para diferenciar
+          const pId = item.product_id || 'unknown'; 
           const productName = item.products?.name || 'Desconocido';
           if (!productCounts[pId]) {
             productCounts[pId] = { id: pId, name: productName, price: item.products?.price || 0, qty: 0 };
@@ -122,7 +154,7 @@ export default function DashboardPage() {
         });
         const sortedProducts = Object.values(productCounts)
           .sort((a, b) => b.qty - a.qty)
-          .slice(0, 50); // Tomamos el top 50
+          .slice(0, 50); 
         setTopProducts(sortedProducts);
       }
 
@@ -143,7 +175,12 @@ export default function DashboardPage() {
       if (chartSales) {
         const grouped: Record<string, number> = {};
         chartSales.forEach(sale => {
-          const dateStr = sale.created_at.split('T')[0];
+          // Usamos el helper también para el gráfico
+          const dateStr = parseSupabaseDate(sale.created_at)
+            .toLocaleDateString('es-VE', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' })
+            .split('/')
+            .reverse()
+            .join('-');
           grouped[dateStr] = (grouped[dateStr] || 0) + Number(sale.total_amount);
         });
 
@@ -182,7 +219,7 @@ export default function DashboardPage() {
         .gte('created_at', `${historyDateRange.start}T00:00:00.000Z`)
         .lte('created_at', `${historyDateRange.end}T23:59:59.999Z`)
         .order('created_at', { ascending: false })
-        .limit(50); // Mostramos un máximo de 50 resultados dentro del rango
+        .limit(50); 
 
       if (data) {
         setSalesHistory(data);
@@ -193,36 +230,38 @@ export default function DashboardPage() {
   }, [historyDateRange, supabase]);
 
   const handleExportCSV = () => {
-  if (salesHistory.length === 0) return;
+    if (salesHistory.length === 0) return;
 
-  const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
-  
-  const rows = salesHistory.map(sale => {
-    const fecha = new Date(sale.created_at).toLocaleString('es-ES', { 
-      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
-    }).replace(/,/g, ''); 
+    const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
     
-    const cliente = sale.customers?.full_name || 'Anónimo';
-    const cajero = sale.profiles?.full_name || 'Desconocido';
-    const productos = sale.sale_items?.map((item: any) => `${item.quantity}x ${item.products?.name}`).join(' | ') || '';
-    const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
-    const referencia = sale.payment_ref || 'N/A';
-    const totalUsd = Number(sale.total_amount).toFixed(2);
-    const totalBs = (Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2);
+    const rows = salesHistory.map(sale => {
+      // Usamos el helper para el CSV y habilitamos hour12 para AM/PM
+      const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
+        timeZone: 'America/Caracas',
+        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
+      }).replace(/,/g, ''); 
+      
+      const cliente = sale.customers?.full_name || 'Anónimo';
+      const cajero = sale.profiles?.full_name || 'Desconocido';
+      const productos = sale.sale_items?.map((item: any) => `${item.quantity}x ${item.products?.name}`).join(' | ') || '';
+      const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
+      const referencia = sale.payment_ref || 'N/A';
+      const totalUsd = Number(sale.total_amount).toFixed(2);
+      const totalBs = (Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2);
 
-    return `"${fecha}","${cliente}","${cajero}","${productos}","${metodoPago}","${referencia}","${totalUsd}","${totalBs}"`;
-  });
+      return `"${fecha}","${cliente}","${cajero}","${productos}","${metodoPago}","${referencia}","${totalUsd}","${totalBs}"`;
+    });
 
-  const csvContent = [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.setAttribute('download', `historial_ventas_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `historial_ventas_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   if (loading) {
     return <div className="flex h-full items-center justify-center text-slate-500">Cargando analíticas...</div>;
@@ -238,194 +277,220 @@ export default function DashboardPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
         <div>
           <h1 className="text-3xl font-bold text-slate-800"></h1>
-          <p className="text-slate-500">Resumen de rendimiento y analíticas</p>
+          <p className="text-slate-500">
+            {role === 'cashier' ? 'Resumen de ventas de hoy' : 'Resumen de rendimiento y analíticas'}
+          </p>
         </div>
         <div className="bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center capitalize">
           📅 {formattedDate}
         </div>
       </div>
 
-      {/* --- SECCIÓN SUPERIOR: MÉTRICAS Y GRÁFICO --- */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full shrink-0">
-        
-        {/* COLUMNA IZQUIERDA */}
-        <div className="lg:col-span-2 space-y-6 flex flex-col w-full h-full">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
-              <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
-              <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
-              <p className="text-sm font-bold text-teal-700 mt-1 truncate">
-                Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
-              </p>
-            </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
-              <p className="text-slate-500 font-medium mb-1">Esta Semana</p>
-              <h2 className="text-3xl font-bold text-slate-800">${thisWeekUSD.toFixed(2)}</h2>
-              <p className={`text-sm font-medium mt-1 truncate ${weekGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                {weekGrowth >= 0 ? '↗' : '↘'} {Math.abs(weekGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs sem pasada</span>
-              </p>
-            </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
-              <p className="text-slate-500 font-medium mb-1">Este Mes</p>
-              <h2 className="text-3xl font-bold text-slate-800">${thisMonthUSD.toFixed(2)}</h2>
-              <p className={`text-sm font-medium mt-1 truncate ${monthGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                {monthGrowth >= 0 ? '↗' : '↘'} {Math.abs(monthGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs mes pasado</span>
-              </p>
-            </div>
+      {/* =========================================================
+          VISTA DEL CAJERO (CASHIER)
+          ========================================================= */}
+      {role === 'cashier' && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full shrink-0">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+            <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
+            <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
+            <p className="text-sm font-bold text-teal-700 mt-1 truncate">
+              Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
+            </p>
           </div>
+        </div>
+      )}
 
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[350px]">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-              <div>
-                <h3 className="text-lg font-bold text-slate-800">Ventas por Rango de Fecha</h3>
-                <p className="text-2xl font-bold text-teal-700 mt-1">${chartTotalSales.toFixed(2)}</p>
-              </div>
-              <div className="flex items-center gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200">
-                <input 
-                  type="date" 
-                  value={dateRange.start} 
-                  onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                  className="bg-transparent border-none outline-none text-slate-700 cursor-pointer"
-                />
-                <span className="text-slate-400 font-medium px-1">-</span>
-                <input 
-                  type="date" 
-                  value={dateRange.end} 
-                  onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                  className="bg-transparent border-none outline-none text-slate-700 cursor-pointer"
-                />
-              </div>
-            </div>
+
+      {/* =========================================================
+          VISTA DEL DUEÑO (OWNER / ADMIN)
+          ========================================================= */}
+      {role !== 'cashier' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full shrink-0">
+          
+          {/* COLUMNA IZQUIERDA */}
+          <div className="lg:col-span-2 space-y-6 flex flex-col w-full h-full">
             
-            <div className="flex-1 w-full min-h-[250px] pr-2" style={{ minWidth: 0, minHeight: 0 }}>
-  {chartData.length === 0 ? (
-    <div className="h-full flex items-center justify-center border-2 border-dashed border-slate-100 rounded-lg text-slate-400">
-      No hay ventas registradas en este rango.
-    </div>
-  ) : (
-                <ResponsiveContainer width="100%" height={350}>
-                  <AreaChart data={chartData} margin={{ top: 10, right: 50, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorVentas" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#0f766e" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#0f766e" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                    <XAxis dataKey="fecha" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(val) => `$${val}`} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                      formatter={(value: any) => [`$${Number(value).toFixed(2)}`, 'Ventas Totales']}
-                      labelFormatter={(label: any) => `Fecha: ${label}`}
-                      labelStyle={{ color: '#64748b', marginBottom: '4px' }}
-                    />
-                    <Area type="monotone" dataKey="Ventas" stroke="#0f766e" strokeWidth={3} fillOpacity={1} fill="url(#colorVentas)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
+            {/* Métricas (Visibles en móvil como 1 columna, y en md como 3 columnas) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+                <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
+                <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
+                <p className="text-sm font-bold text-teal-700 mt-1 truncate">
+                  Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
+                </p>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+                <p className="text-slate-500 font-medium mb-1">Esta Semana</p>
+                <h2 className="text-3xl font-bold text-slate-800">${thisWeekUSD.toFixed(2)}</h2>
+                <p className={`text-sm font-medium mt-1 truncate ${weekGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {weekGrowth >= 0 ? '↗' : '↘'} {Math.abs(weekGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs sem pasada</span>
+                </p>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+                <p className="text-slate-500 font-medium mb-1">Este Mes</p>
+                <h2 className="text-3xl font-bold text-slate-800">${thisMonthUSD.toFixed(2)}</h2>
+                <p className={`text-sm font-medium mt-1 truncate ${monthGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {monthGrowth >= 0 ? '↗' : '↘'} {Math.abs(monthGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs mes pasado</span>
+                </p>
+              </div>
             </div>
+
+            {/* GRÁFICO (Oculto en móvil con hidden, visible desde tablet con md:flex) */}
+            <div className="hidden md:flex bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex-col flex-1 min-h-[350px]">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 w-full">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Ventas por Rango de Fecha</h3>
+                  <p className="text-2xl font-bold text-teal-700 mt-1">${chartTotalSales.toFixed(2)}</p>
+                </div>
+                <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">
+                  <input 
+                    type="date" 
+                    value={dateRange.start} 
+                    onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                    className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+                  />
+                  <span className="text-slate-400 font-medium">-</span>
+                  <input 
+                    type="date" 
+                    value={dateRange.end} 
+                    onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                    className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+                  />
+                </div>
+              </div>
+              
+              <div className="flex-1 w-full min-h-[250px] pr-2" style={{ minWidth: 0, minHeight: 0 }}>
+                {chartData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center border-2 border-dashed border-slate-100 rounded-lg text-slate-400">
+                    No hay ventas registradas en este rango.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={350}>
+                    <AreaChart data={chartData} margin={{ top: 10, right: 50, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorVentas" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#0f766e" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#0f766e" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                      <XAxis dataKey="fecha" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(val) => `$${val}`} />
+                      <Tooltip 
+                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                        formatter={(value: any) => [`$${Number(value).toFixed(2)}`, 'Ventas Totales']}
+                        labelFormatter={(label: any) => `Fecha: ${label}`}
+                        labelStyle={{ color: '#64748b', marginBottom: '4px' }}
+                      />
+                      <Area type="monotone" dataKey="Ventas" stroke="#0f766e" strokeWidth={3} fillOpacity={1} fill="url(#colorVentas)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* COLUMNA DERECHA */}
+          <div className="space-y-6 flex flex-col w-full h-full">
+            
+            {/* Top Productos (Solo 3) */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-slate-800">Mejores Productos</h3>
+                {topProducts.length > 3 && (
+                  <button onClick={() => setIsProductsModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
+                    Ver más
+                  </button>
+                )}
+              </div>
+              <div className="space-y-3 flex-1 flex flex-col justify-start">
+                {topProducts.length === 0 ? (
+                  <p className="text-slate-500 text-sm m-auto">No hay ventas registradas.</p>
+                ) : (
+                  topProducts.slice(0, 3).map((product) => (
+                    <div key={product.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                      <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
+                        <p className="text-xs text-slate-500">{product.qty} unidades</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Mejores Clientes (Solo 3) */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-slate-800">Mejores Clientes</h3>
+                {topCustomers.length > 3 && (
+                  <button onClick={() => setIsCustomersModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
+                    Ver más
+                  </button>
+                )}
+              </div>
+              <div className="space-y-3 flex-1 flex flex-col justify-start">
+                {topCustomers.length === 0 ? (
+                  <p className="text-slate-500 text-sm m-auto">No hay clientes registrados.</p>
+                ) : (
+                  topCustomers.slice(0, 3).map((customer, index) => (
+                    <div key={index} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                      <div className="w-10 h-10 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-bold shrink-0">
+                        {customer.full_name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-800 text-sm truncate">{customer.full_name}</p>
+                        <p className="text-xs text-slate-500">Cliente Frecuente</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="font-bold text-teal-700 text-sm">${customer.total_spent.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
           </div>
         </div>
+      )}
 
-        {/* COLUMNA DERECHA */}
-        <div className="space-y-6 flex flex-col w-full h-full">
-          
-          {/* Top Productos (Solo 3) */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-800">Mejores Productos</h3>
-              {topProducts.length > 3 && (
-                <button onClick={() => setIsProductsModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
-                  Ver más
-                </button>
-              )}
-            </div>
-            <div className="space-y-3 flex-1 flex flex-col justify-start">
-              {topProducts.length === 0 ? (
-                <p className="text-slate-500 text-sm m-auto">No hay ventas registradas.</p>
-              ) : (
-                topProducts.slice(0, 3).map((product) => (
-                  <div key={product.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                    <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
-                      <p className="text-xs text-slate-500">{product.qty} unidades</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
 
-          {/* Mejores Clientes (Solo 3) */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-800">Mejores Clientes</h3>
-              {topCustomers.length > 3 && (
-                <button onClick={() => setIsCustomersModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
-                  Ver más
-                </button>
-              )}
-            </div>
-            <div className="space-y-3 flex-1 flex flex-col justify-start">
-              {topCustomers.length === 0 ? (
-                <p className="text-slate-500 text-sm m-auto">No hay clientes registrados.</p>
-              ) : (
-                topCustomers.slice(0, 3).map((customer, index) => (
-                  <div key={index} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                    <div className="w-10 h-10 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-bold shrink-0">
-                      {customer.full_name.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-slate-800 text-sm truncate">{customer.full_name}</p>
-                      <p className="text-xs text-slate-500">Cliente Frecuente</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="font-bold text-teal-700 text-sm">${customer.total_spent.toFixed(2)}</p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      {/* --- SECCIÓN INFERIOR: HISTORIAL DE TRANSACCIONES --- */}
+      {/* --- SECCIÓN INFERIOR: HISTORIAL DE TRANSACCIONES (VISIBLE PARA TODOS) --- */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col w-full min-h-[400px]">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-          <h3 className="text-lg font-bold text-slate-800">Historial de Transacciones</h3>
+        {/* Controles del historial responsivos */}
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 w-full">
+          <h3 className="text-lg font-bold text-slate-800 shrink-0">Historial de Transacciones</h3>
           
-          <div className="flex items-center gap-3">
-    {/* PEGA ESTE BOTÓN AQUÍ */}
-    <button 
-      onClick={handleExportCSV}
-      disabled={salesHistory.length === 0}
-      className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed"
-    >
-      📥 Exportar a .csv
-    </button>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+            <button 
+              onClick={handleExportCSV}
+              disabled={salesHistory.length === 0}
+              className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed w-full sm:w-auto shrink-0"
+            >
+              📥 Exportar a .csv
+            </button>
 
-          <div className="flex items-center gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200">
-            <input 
-              type="date" 
-              value={historyDateRange.start} 
-              onChange={(e) => setHistoryDateRange(prev => ({ ...prev, start: e.target.value }))}
-              className="bg-transparent border-none outline-none text-slate-700 cursor-pointer"
-            />
-            <span className="text-slate-400 font-medium px-1">-</span>
-            <input 
-              type="date" 
-              value={historyDateRange.end} 
-              onChange={(e) => setHistoryDateRange(prev => ({ ...prev, end: e.target.value }))}
-              className="bg-transparent border-none outline-none text-slate-700 cursor-pointer"
-            />
-          </div>
+            <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">
+              <input 
+                type="date" 
+                value={historyDateRange.start} 
+                onChange={(e) => setHistoryDateRange(prev => ({ ...prev, start: e.target.value }))}
+                className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+              />
+              <span className="text-slate-400 font-medium">-</span>
+              <input 
+                type="date" 
+                value={historyDateRange.end} 
+                onChange={(e) => setHistoryDateRange(prev => ({ ...prev, end: e.target.value }))}
+                className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+              />
+            </div>
           </div>
         </div>
         
@@ -456,8 +521,10 @@ export default function DashboardPage() {
                   {salesHistory.map((sale) => (
                     <tr key={sale.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3 text-slate-600 whitespace-nowrap">
-                        {new Date(sale.created_at).toLocaleString('es-ES', { 
-                          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+                        {/* Usamos el helper en la tabla y habilitamos hour12 para el formato AM/PM */}
+                        {parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
+                          timeZone: 'America/Caracas',
+                          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
                         })}
                       </td>
                       <td className="p-3 text-slate-800 font-medium max-w-[150px] truncate">
@@ -478,7 +545,6 @@ export default function DashboardPage() {
                       </td>
                       <td className="p-3">
                         <div className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                          {/* CORRECCIÓN: replace(/_/g, ' ') reemplaza TODOS los guiones bajos */}
                           {sale.payment_method?.replace(/_/g, ' ')}
                         </div>
                         {sale.payment_ref && (
@@ -501,47 +567,47 @@ export default function DashboardPage() {
       </div>
 
       {/* --- MODALES "VER MÁS" --- */}
-      
-      {/* Modal Mejores Productos */}
-      <Modal isOpen={isProductsModalOpen} onClose={() => setIsProductsModalOpen(false)} title="Mejores 50 Productos">
-        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-          {topProducts.map((product, idx) => (
-             <div key={product.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
-               <div className="w-8 h-8 flex items-center justify-center font-bold text-slate-400 text-sm">#{idx + 1}</div>
-               <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
-               <div className="flex-1 min-w-0">
-                 <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
-                 <p className="text-xs text-slate-500">{product.qty} unidades vendidas</p>
-               </div>
-               <div className="text-right shrink-0">
-                 <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>
-               </div>
-             </div>
-          ))}
-        </div>
-      </Modal>
-
-      {/* Modal Mejores Clientes */}
-      <Modal isOpen={isCustomersModalOpen} onClose={() => setIsCustomersModalOpen(false)} title="Mejores 50 Clientes">
-        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-          {topCustomers.map((customer, idx) => (
-            <div key={idx} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
-              <div className="w-8 h-8 flex items-center justify-center font-bold text-slate-400 text-sm">#{idx + 1}</div>
-              <div className="w-10 h-10 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-bold shrink-0">
-                {customer.full_name.charAt(0).toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-slate-800 text-sm truncate">{customer.full_name}</p>
-                <p className="text-xs text-slate-500">Cliente Frecuente</p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="font-bold text-teal-700 text-sm">${customer.total_spent.toFixed(2)}</p>
-              </div>
+      {role !== 'cashier' && (
+        <>
+          <Modal isOpen={isProductsModalOpen} onClose={() => setIsProductsModalOpen(false)} title="Mejores 50 Productos">
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+              {topProducts.map((product, idx) => (
+                 <div key={product.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                   <div className="w-8 h-8 flex items-center justify-center font-bold text-slate-400 text-sm">#{idx + 1}</div>
+                   <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
+                   <div className="flex-1 min-w-0">
+                     <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
+                     <p className="text-xs text-slate-500">{product.qty} unidades vendidas</p>
+                   </div>
+                   <div className="text-right shrink-0">
+                     <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>
+                   </div>
+                 </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </Modal>
+          </Modal>
 
+          <Modal isOpen={isCustomersModalOpen} onClose={() => setIsCustomersModalOpen(false)} title="Mejores 50 Clientes">
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+              {topCustomers.map((customer, idx) => (
+                <div key={idx} className="flex items-center gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="w-8 h-8 flex items-center justify-center font-bold text-slate-400 text-sm">#{idx + 1}</div>
+                  <div className="w-10 h-10 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-bold shrink-0">
+                    {customer.full_name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-slate-800 text-sm truncate">{customer.full_name}</p>
+                    <p className="text-xs text-slate-500">Cliente Frecuente</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="font-bold text-teal-700 text-sm">${customer.total_spent.toFixed(2)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Modal>
+        </>
+      )}
     </div>
   );
 }
