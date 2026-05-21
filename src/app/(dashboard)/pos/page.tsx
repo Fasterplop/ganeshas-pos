@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 
-type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta';
+type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
 
 // Nuevos tipos para el descuento
 type DiscountType = 'none' | 'percent' | 'fixed';
@@ -452,6 +452,14 @@ export default function POSPage() {
               >
                 <span className="text-xl">📱</span>
                 <span className="text-xs font-medium">Pago Móvil</span>
+              </button>
+
+              <button 
+                onClick={() => setPaymentMethod('cashea')}
+                className={`py-3 rounded-lg border flex flex-col col-span-2 items-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+              >
+                <span className="text-xl">🛍️</span>
+                <span className="text-xs font-medium">Cashea</span>
               </button>
             </div>
 
