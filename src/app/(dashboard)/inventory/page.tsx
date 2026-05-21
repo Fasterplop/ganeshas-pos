@@ -399,14 +399,37 @@ export default function InventoryPage() {
       </div>
 
       {/* ================= VISTA DE IMPRESIÓN (Optimizada para Brother DK-1209: 62mm x 29mm) ================= */}
+      {/* ================= VISTA DE IMPRESIÓN (Optimizada para Brother DK-1209: 62mm x 29mm) ================= */}
       {selectedProduct && (
-        <div className="hidden print:flex flex-col items-center justify-center bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: 0 }}>
-          <p className="text-[13px] font-black text-black truncate w-full text-center leading-none mt-1">{promoName.toUpperCase()}</p>
-          <div className="flex items-baseline gap-2 mt-1 mb-1">
-            <p className="text-[11px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
-            <p className="text-[20px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
+        <div className="hidden print:flex flex-row items-center justify-between bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1mm' }}>
+          
+          {/* Texto Vertical: Nombre de la tienda */}
+          <div className="flex items-center justify-center h-full pl-1">
+            <p className="text-[9px] font-black text-black tracking-widest uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+              Ganesha Store
+            </p>
           </div>
-          <Barcode value={selectedProduct.sku_barcode} width={1.2} height={22} fontSize={9} margin={0} displayValue={true} />
+
+          {/* Contenido Principal */}
+          <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
+            <p className="text-[15px] font-black text-black truncate w-full text-center leading-none">
+              {promoName.toUpperCase()}
+            </p>
+
+            <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
+              <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
+              <p className="text-[26px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
+            </div>
+
+            <Barcode 
+              value={selectedProduct.sku_barcode} 
+              width={1.3} 
+              height={24} 
+              fontSize={10} 
+              margin={0} 
+              displayValue={true} 
+            />
+          </div>
         </div>
       )}
     </>

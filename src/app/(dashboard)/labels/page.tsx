@@ -231,7 +231,7 @@ export default function LabelsPage() {
         </div>
       </div>
 
-      {/* ================= VISTA DE IMPRESIÓN ================= */}
+     {/* ================= VISTA DE IMPRESIÓN ================= */}
       <div className="hidden print:block">
         {selectedProducts.flatMap(product => {
           const copiesNum = getSafeCopies(product.copies);
@@ -241,29 +241,39 @@ export default function LabelsPage() {
           return Array.from({ length: copiesNum }).map((_, i) => (
             <div 
               key={`${product.id}-${i}`} 
-              className="flex flex-col items-center justify-center bg-white print:break-after-page" 
-              style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: 0 }}
+              className="flex flex-row items-center justify-between bg-white print:break-after-page" 
+              style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1mm' }}
             >
-              {/* Texto superior: Nombre del producto */}
-              <p className="text-[11px] font-black text-black truncate w-full text-center leading-none mt-1 px-2">
-                {product.name.toUpperCase()}
-              </p>
-              
-              <div className="flex items-baseline gap-2 mt-1 mb-1">
-                {discountPercent > 0 && (
-                  <p className="text-[10px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
-                )}
-                <p className="text-[18px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
+              {/* Texto Vertical: Nombre de la tienda */}
+              <div className="flex items-center justify-center h-full pl-1">
+                <p className="text-[9px] font-black text-black tracking-widest uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+                  Ganesha Store
+                </p>
               </div>
 
-              <Barcode 
-                value={product.sku_barcode} 
-                width={1.2} 
-                height={22} 
-                fontSize={9} 
-                margin={0} 
-                displayValue={true} 
-              />
+             {/* Contenido Principal */}
+              <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
+                {/* Texto superior: Nombre del producto - Tamaño aumentado */}
+                <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
+                  {product.name.toUpperCase()}
+                </p>
+                
+                <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
+                  {discountPercent > 0 && (
+                    <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
+                  )}
+                  <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
+                </div>
+
+                <Barcode 
+                  value={product.sku_barcode} 
+                  width={1.3} 
+                  height={24} 
+                  fontSize={10} 
+                  margin={0} 
+                  displayValue={true} 
+                />
+              </div>
             </div>
           ));
         })}
