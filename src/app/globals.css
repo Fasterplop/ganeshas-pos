@@ -35,3 +35,19 @@ body {
     scrollbar-width: none;
   }
 }
+
+@media print {
+  @page {
+    /* Fuerza al navegador a usar el tamaño exacto del rollo Brother DK-1209 */
+    size: 62mm 29mm; 
+    /* Elimina los márgenes automáticos del navegador */
+    margin: 0; 
+  }
+  
+  body {
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact; /* Fuerza a imprimir fondos e imágenes fielmente */
+    print-color-adjust: exact;
+  }
+}
