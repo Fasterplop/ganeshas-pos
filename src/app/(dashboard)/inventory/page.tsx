@@ -405,7 +405,7 @@ export default function InventoryPage() {
           
           {/* Texto Vertical: Nombre de la tienda */}
           <div className="flex items-center justify-center h-full pl-1">
-            <p className="text-[9px] font-black text-black tracking-widest uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+            <p className="text-[8px] font-black text-black tracking-wider uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
               Ganesha Store
             </p>
           </div>
