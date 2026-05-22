@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 
@@ -17,6 +17,9 @@ type NotificationType = {
 export default function POSPage() {
   const supabase = createClient();
   const { cart, addToCart, removeFromCart, clearCart, bcvRate } = usePOSStore();
+  
+  // Referencia para el input del escáner
+  const searchInputRef = useRef<HTMLInputElement>(null);
   
   const [docType, setDocType] = useState('V-');
   const [docNumber, setDocNumber] = useState('');
@@ -81,10 +84,42 @@ export default function POSPage() {
     }
   };
 
+  // Función para detectar el "Enter" automático del escáner
+  const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const barcode = productSearch.trim();
+      
+      if (!barcode) return;
+
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('sku_barcode', barcode)
+        .maybeSingle();
+
+      if (data) {
+        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1 });
+        setProductSearch('');
+        setSearchResults([]);
+      } else {
+        showNotification(`Producto no encontrado: ${barcode}`, 'error');
+        setProductSearch('');
+      }
+
+      // Devolvemos el foco al input
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 10);
+    }
+  };
+
   const handleAddFromSearch = (product: any) => {
     addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1 });
     setProductSearch('');
     setSearchResults([]); 
+    // Devolver el foco también al seleccionar con el mouse
+    searchInputRef.current?.focus();
   };
 
   const handleDecreaseQuantity = (item: any) => {
@@ -236,6 +271,11 @@ export default function POSPage() {
       setPaymentMethod(null);
       setDiscountType('none');
       setDiscountValue('');
+      
+      // Devolver el foco al buscador para el siguiente cliente
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
 
     } catch (error: any) {
       showNotification(error.message, 'error');
@@ -315,10 +355,13 @@ export default function POSPage() {
 
             <div className="relative">
               <input 
+                ref={searchInputRef}
                 type="text" 
                 value={productSearch}
                 onChange={handleSearchChange}
-                placeholder="🛒 Busca por nombre o código de barras..." 
+                onKeyDown={handleKeyDown}
+                autoFocus
+                placeholder="🛒 Busca por nombre o escanea código de barras..." 
                 className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
               />
               {searchResults.length > 0 && (
