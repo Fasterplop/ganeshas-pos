@@ -38,17 +38,24 @@ Se implementó un Layout maestro adaptable (`flex-col md:flex-row`). Para garant
 * **Vista de Escritorio:** Renderiza un `Sidebar` lateral tradicional.
 El acceso a las rutas y la visibilidad de los elementos del menú están estrictamente condicionados por el rol del usuario (`owner` o `cashier`) en la tabla `profiles`.El acceso a las rutas y la visibilidad de los elementos del menú están estrictamente condicionados por el rol del usuario en la tabla `profiles`.
 
+### Control de Flujo Multi-Tienda (`StoreGuard`)
+El sistema envuelve las rutas con protección de entorno:
+* **Flujo Cashier:** El sistema lee su `assigned_store_id`, establece la tienda en el estado global y lo deja operar únicamente en su sucursal.
+* **Flujo Owner:** Una pantalla de bloqueo obliga al administrador a seleccionar el entorno inicial ("Tienda de Ropa" o "Tienda de Juguetes"). Luego, puede saltar entre sucursales usando un Dropdown dinámico en el Layout.
+
 ---
 
-## 🗄 Modelo de Datos y Seguridad (Supabase)
+## 🗄 Modelo de Datos y Seguridad (Supabase RLS)
 
-La base de datos relacional en PostgreSQL está protegida por **Row-Level Security (RLS)**. Ninguna operación de lectura, inserción o actualización es permitida sin las políticas adecuadas para usuarios autenticados.
+La base de datos relacional en PostgreSQL está protegida por **Row-Level Security (RLS)**. Ninguna operación es permitida si el `store_id` del usuario no coincide con el de la sucursal activa.
 
-### Esquema Relacional
-* **`profiles`**: Extiende `auth.users`. Almacena el `full_name` y el `role` (`owner`, `cashier`).
-* **`customers`**: CRM del negocio. Primary Key: `document_id` (Cédula V-/J-). Se reemplazó el uso de email por `phone`.
-* **`products`**: Inventario. Almacena `sku_barcode`, `name`, `category`, `price` y `stock`.
-* **`sales`**: Cabecera de facturación vinculada al cajero (`cashier_id`) y al cliente (`customer_id`). Guarda el `total_amount`, método de pago y la **tasa BCV exacta** de la transacción.
+### Esquema Relacional Actualizado
+* **`stores` (NUEVO):** Define las sucursales disponibles (`id`, `name`, `address`, `is_active`).
+* **`profiles`**: Extiende `auth.users`. Almacena el `full_name`, el `role` y la atadura a la sucursal obligatoria (`assigned_store_id`).
+* **`customers` (Aislado):** CRM del negocio. Su Primary Key es ahora compuesta: `(document_id, store_id)`. Un cliente tiene historiales y puntos completamente independientes en cada sucursal. Se reemplazó el uso de email por `phone`.
+* **`products` (Catálogo Global):** Almacena `sku_barcode`, `name`, `category` y `price` compartidos para toda la empresa.
+* **`store_stock` (Inventario Local):** Nueva tabla que maneja el stock físico por tienda `(product_id, store_id)`. **Incluye un Trigger automático** que inicializa el stock en 0 en todas las sucursales cuando nace un nuevo producto.
+* **`sales`**: Cabecera de facturación. Vinculada obligatoriamente al cajero (`cashier_id`), cliente (`customer_id`) y sucursal (`store_id`). Guarda el `total_amount`, método de pago y la tasa BCV exacta.
 * **`sale_items`**: Detalle de productos adquiridos (`sale_id`, `product_id`, `quantity`, `unit_price`, `subtotal`).
 
 ---
