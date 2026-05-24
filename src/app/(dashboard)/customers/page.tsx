@@ -6,8 +6,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
+import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el Store
 
-// 1. Esquema de validación con Zod
+// Esquema de validación con Zod
 const customerSchema = z.object({
   document_id: z.string().min(5, { message: 'La cédula debe tener al menos 5 caracteres' }),
   full_name: z.string().min(3, { message: 'El nombre completo debe tener al menos 3 caracteres' }),
@@ -18,15 +19,19 @@ type CustomerFormValues = z.infer<typeof customerSchema>;
 
 interface Customer {
   document_id: string;
+  store_id: string; // <-- Nueva columna requerida
   full_name: string;
   phone: string | null;
   total_spent: number;
   reward_points: number;
   created_at: string;
-  sales?: { created_at: string }[]; // Relación mapeada para la última compra
+  sales?: { created_at: string }[];
 }
 
 export default function CustomersPage() {
+  const { currentStore } = usePOSStore(); // <-- 2. Obtenemos la tienda activa
+  const supabase = createClient();
+
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -36,24 +41,18 @@ export default function CustomersPage() {
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
-  // Estados para el historial detallado del cliente seleccionado (Modal)
+  // Estados para el historial detallado del cliente
   const [customerSales, setCustomerSales] = useState<any[]>([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
-  const supabase = createClient();
-
-  // Configuración del formulario con React Hook Form
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors },
-  } = useForm<CustomerFormValues>({
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
   });
 
-  // Cargar lista de clientes e incluir sus ventas de forma relacional
+  // Cargar lista de clientes Aislada por Tienda
   async function fetchCustomers() {
+    if (!currentStore) return; // Protección: Si no hay tienda, no consultamos
+    
     setLoading(true);
     const { data } = await supabase
       .from('customers')
@@ -63,10 +62,10 @@ export default function CustomersPage() {
           created_at
         )
       `)
+      .eq('store_id', currentStore.id) // <-- FILTRADO ESTRICTO TDD
       .order('created_at', { ascending: false });
     
     if (data) {
-      // Ordenamos las fechas internas por código para asegurar que la primera posición sea la más reciente
       const orderedData = data.map((customer: any) => {
         if (customer.sales && customer.sales.length > 0) {
           customer.sales.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -74,16 +73,31 @@ export default function CustomersPage() {
         return customer;
       });
       setCustomers(orderedData);
+    } else {
+      setCustomers([]);
     }
     setLoading(false);
   }
 
+  // Refrescar datos y cerrar modales si el Owner cambia de tienda en el TopBar
   useEffect(() => {
-    fetchCustomers();
-  }, []);
+    setIsAddModalOpen(false);
+    setIsViewModalOpen(false);
+    setSelectedCustomer(null);
+    setSearchTerm('');
+    
+    if (currentStore) {
+      fetchCustomers();
+    } else {
+      setCustomers([]);
+      setLoading(false);
+    }
+  }, [currentStore?.id]);
 
-  // Al hacer clic en un cliente, abrimos el modal y buscamos su historial detallado completo
+  // Historial detallado también filtrado por tienda
   const handleRowClick = async (customer: Customer) => {
+    if (!currentStore) return;
+
     setSelectedCustomer(customer);
     setIsViewModalOpen(true);
     setLoadingSales(true);
@@ -102,6 +116,7 @@ export default function CustomersPage() {
         )
       `)
       .eq('customer_id', customer.document_id)
+      .eq('store_id', currentStore.id) // <-- DOBLE VALIDACIÓN (Cliente y Tienda)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -114,18 +129,29 @@ export default function CustomersPage() {
     setLoadingSales(false);
   };
 
-  // Guardar el cliente
+  // Guardar el cliente atado a la llave compuesta
   const onAddCustomerSubmit = async (data: CustomerFormValues) => {
+    if (!currentStore) {
+      alert("Error: No hay una tienda activa seleccionada.");
+      return;
+    }
+
     const { error } = await supabase.from('customers').insert([
       {
         document_id: data.document_id,
+        store_id: currentStore.id, // <-- INSERCIÓN DE LLAVE COMPUESTA
         full_name: data.full_name,
         phone: data.phone,
       },
     ]);
 
     if (error) {
-      alert('Error al registrar el cliente: ' + error.message);
+      // Manejo amigable si el cliente ya existe EN ESTA TIENDA
+      if (error.code === '23505') {
+        alert('Este documento ya está registrado en esta sucursal.');
+      } else {
+        alert('Error al registrar el cliente: ' + error.message);
+      }
     } else {
       setIsAddModalOpen(false);
       reset();
@@ -133,17 +159,20 @@ export default function CustomersPage() {
     }
   };
 
-  // Buscador en tiempo real por nombre, cédula o teléfono
   const filteredCustomers = customers.filter(customer =>
     customer.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     customer.document_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  // Cálculos dinámicos en base al historial real de compras para los KPIs del Modal
   const totalCompras = customerSales.length;
   const totalGastadoReal = customerSales.reduce((acc, sale) => acc + Number(sale.total_amount), 0);
   const promedioCompra = totalCompras > 0 ? (totalGastadoReal / totalCompras) : 0;
+
+  // Pantalla de espera si el StoreGuard aún no ha inyectado la tienda
+  if (!currentStore) {
+    return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
+  }
 
   return (
     <div className="h-full flex flex-col font-sans">
@@ -151,7 +180,7 @@ export default function CustomersPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Gestión de Clientes</h1>
-          <p className="text-slate-500 text-sm">Administra la información de tus clientes y revisa sus historiales de compra.</p>
+          <p className="text-slate-500 text-sm">Administrando base de datos de: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
         <div className="flex gap-4 w-full md:w-auto">
           <input 
@@ -163,7 +192,7 @@ export default function CustomersPage() {
           />
           <button 
             onClick={() => setIsAddModalOpen(true)}
-            className="bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition whitespace-nowrap"
+            className="bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm"
           >
             + Añadir Cliente
           </button>
@@ -185,13 +214,13 @@ export default function CustomersPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">Cargando clientes...</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-slate-500">Cargando clientes de {currentStore.name}...</td></tr>
               ) : filteredCustomers.length === 0 ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">No se encontraron clientes.</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-slate-500">No se encontraron clientes en esta sucursal.</td></tr>
               ) : (
                 filteredCustomers.map((customer) => (
                   <tr 
-                    key={customer.document_id} 
+                    key={`${customer.document_id}-${customer.store_id}`} 
                     onClick={() => handleRowClick(customer)}
                     className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition"
                   >
@@ -199,7 +228,6 @@ export default function CustomersPage() {
                     <td className="p-4 font-semibold text-slate-800">{customer.full_name}</td>
                     <td className="p-4 text-slate-500 text-sm">{customer.phone || 'No registrado'}</td>
                     <td className="p-4 text-slate-500 text-sm">
-                      {/* Renderizado en tiempo real de la fecha de última compra */}
                       {customer.sales && customer.sales.length > 0
                         ? new Date(customer.sales[0].created_at).toLocaleDateString('es-VE', { 
                             day: '2-digit', month: 'short', year: 'numeric' 
@@ -222,6 +250,10 @@ export default function CustomersPage() {
         title="Registrar Nuevo Cliente"
       >
         <form onSubmit={handleSubmit(onAddCustomerSubmit)} className="space-y-4">
+          <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
+            Registrando en: {currentStore.name}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Cédula o Identificación (V-/J-)</label>
             <input 
@@ -255,7 +287,7 @@ export default function CustomersPage() {
             {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone.message}</p>}
           </div>
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-4">
             <button 
               type="button"
               onClick={() => { setIsAddModalOpen(false); reset(); }}
@@ -288,6 +320,9 @@ export default function CustomersPage() {
               <div>
                 <h3 className="text-xl font-bold text-slate-800">{selectedCustomer.full_name}</h3>
                 <p className="text-sm text-slate-500">{selectedCustomer.document_id} • Tel: {selectedCustomer.phone || 'No registrado'}</p>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-teal-600 bg-teal-50 px-2 py-0.5 rounded mt-1 inline-block border border-teal-200">
+                  {currentStore.name}
+                </span>
               </div>
             </div>
 

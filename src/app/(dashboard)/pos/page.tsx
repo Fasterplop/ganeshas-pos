@@ -1,12 +1,10 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
-
-// Nuevos tipos para el descuento
 type DiscountType = 'none' | 'percent' | 'fixed';
 
 type NotificationType = {
@@ -16,9 +14,9 @@ type NotificationType = {
 
 export default function POSPage() {
   const supabase = createClient();
-  const { cart, addToCart, removeFromCart, clearCart, bcvRate } = usePOSStore();
+  // 1. Extraemos currentStore del estado global
+  const { cart, addToCart, removeFromCart, clearCart, bcvRate, currentStore } = usePOSStore();
   
-  // Referencia para el input del escáner
   const searchInputRef = useRef<HTMLInputElement>(null);
   
   const [docType, setDocType] = useState('V-');
@@ -26,11 +24,9 @@ export default function POSPage() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   
-  // Inicializado en null para forzar la selección
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
   
-  // Estados para el descuento
   const [discountType, setDiscountType] = useState<DiscountType>('none');
   const [discountValue, setDiscountValue] = useState<string>('');
 
@@ -41,12 +37,28 @@ export default function POSPage() {
 
   const [notification, setNotification] = useState<NotificationType>(null);
 
+  // ==========================================
+  // MITIGACIÓN CASO #2 TDD: Cambio de Tienda
+  // ==========================================
+  useEffect(() => {
+    // Si el currentStore cambia, reseteamos absolutamente toda la interfaz del POS
+    clearCart();
+    setDocNumber('');
+    setCustomerName('');
+    setCustomerPhone('');
+    setPaymentMethod(null);
+    setPaymentRef('');
+    setDiscountType('none');
+    setDiscountValue('');
+    setProductSearch('');
+    setSearchResults([]);
+  }, [currentStore?.id, clearCart]);
+
   // Cálculos de totales y descuentos
   const subtotalUSD = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
   const totalItems = cart.reduce((acc, item) => acc + item.quantity, 0);
 
   let discountAmount = 0;
-  // AHORA: Aplicamos descuento si el método es EFECTIVO o ZELLE
   if ((paymentMethod === 'efectivo' || paymentMethod === 'zelle') && discountValue !== '' && !isNaN(Number(discountValue))) {
     const val = Number(discountValue);
     if (discountType === 'percent') {
@@ -56,7 +68,6 @@ export default function POSPage() {
     }
   }
 
-  // Evitamos que el total sea negativo
   const totalUSD = Math.max(0, subtotalUSD - discountAmount);
   const totalVES = totalUSD * bcvRate;
 
@@ -75,6 +86,7 @@ export default function POSPage() {
       const { data } = await supabase
         .from('products')
         .select('*')
+        .eq('is_active', true)
         .or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`)
         .limit(50);
       
@@ -84,7 +96,6 @@ export default function POSPage() {
     }
   };
 
-  // Función para detectar el "Enter" automático del escáner
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -96,6 +107,7 @@ export default function POSPage() {
         .from('products')
         .select('*')
         .eq('sku_barcode', barcode)
+        .eq('is_active', true)
         .maybeSingle();
 
       if (data) {
@@ -107,7 +119,6 @@ export default function POSPage() {
         setProductSearch('');
       }
 
-      // Devolvemos el foco al input
       setTimeout(() => {
         searchInputRef.current?.focus();
       }, 10);
@@ -118,7 +129,6 @@ export default function POSPage() {
     addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1 });
     setProductSearch('');
     setSearchResults([]); 
-    // Devolver el foco también al seleccionar con el mouse
     searchInputRef.current?.focus();
   };
 
@@ -131,14 +141,9 @@ export default function POSPage() {
   };
 
   const handleCheckout = async () => {
-    if (cart.length === 0) {
-      return showNotification('El carrito está vacío', 'error');
-    }
-    
-    // Validación de método de pago
-    if (!paymentMethod) {
-      return showNotification('Debes seleccionar un método de pago', 'error');
-    }
+    if (cart.length === 0) return showNotification('El carrito está vacío', 'error');
+    if (!paymentMethod) return showNotification('Debes seleccionar un método de pago', 'error');
+    if (!currentStore) return showNotification('Error crítico: No hay tienda activa.', 'error');
     
     setIsLoading(true);
 
@@ -153,6 +158,9 @@ export default function POSPage() {
       
       const fullDocumentId = cleanDocNumber !== '' ? `${docType}${cleanDocNumber}` : null;
 
+      // ==========================================
+      // AISLAMIENTO DE CLIENTES (Customer Scope)
+      // ==========================================
       if (fullDocumentId || cleanPhone !== '' || cleanName !== '') {
         if (!fullDocumentId) {
            throw new Error('Debes ingresar el número de cédula para poder asociar al cliente.');
@@ -162,9 +170,10 @@ export default function POSPage() {
           .from('customers')
           .select('*')
           .eq('document_id', fullDocumentId)
+          .eq('store_id', currentStore.id) // <-- FILTRO ESTRICTO
           .maybeSingle();
 
-        if (searchError) throw new Error('Error al buscar el cliente.');
+        if (searchError) throw new Error('Error al buscar el cliente en esta sucursal.');
 
         if (existingCustomer) {
           finalCustomerId = existingCustomer.document_id;
@@ -173,7 +182,12 @@ export default function POSPage() {
           if (cleanPhone !== '' && existingCustomer.phone !== cleanPhone) updates.phone = cleanPhone;
 
           if (Object.keys(updates).length > 0) {
-            const { error: updateError } = await supabase.from('customers').update(updates).eq('document_id', finalCustomerId);
+            const { error: updateError } = await supabase
+              .from('customers')
+              .update(updates)
+              .eq('document_id', finalCustomerId)
+              .eq('store_id', currentStore.id); // <-- FILTRO ESTRICTO
+              
             if (updateError) {
                 if (updateError.code === '23505') throw new Error('Este número de teléfono ya está asociado a otro cliente.');
                 throw updateError;
@@ -184,6 +198,7 @@ export default function POSPage() {
           finalCustomerId = fullDocumentId;
           const { error: insertError } = await supabase.from('customers').insert({
             document_id: finalCustomerId,
+            store_id: currentStore.id, // <-- LLAVE COMPUESTA INYECTADA
             full_name: cleanName !== '' ? cleanName : `Cliente ${finalCustomerId}`,
             phone: cleanPhone !== '' ? cleanPhone : null,
             total_spent: 0,
@@ -191,18 +206,19 @@ export default function POSPage() {
           });
 
           if (insertError) {
-             if (insertError.code === '23505') {
-                 throw new Error('Ya existe un cliente con esta cédula o teléfono. Revisa los datos.');
-             }
+             if (insertError.code === '23505') throw new Error('Ya existe un cliente con esta cédula en esta tienda.');
              throw new Error('Error al crear el cliente: ' + insertError.message);
           }
         }
       }
 
-      // El total amount guardado será el que ya tiene el descuento aplicado (totalUSD)
+      // ==========================================
+      // REGISTRO DE VENTA POR SUCURSAL
+      // ==========================================
       const { data: saleData, error: saleError } = await supabase
         .from('sales')
         .insert({
+          store_id: currentStore.id, // <-- ATADURA A LA TIENDA
           cashier_id: user.id,
           customer_id: finalCustomerId, 
           total_amount: totalUSD,
@@ -220,27 +236,46 @@ export default function POSPage() {
         product_id: item.id,
         quantity: item.quantity,
         unit_price: item.price,
-        subtotal: item.price * item.quantity // Subtotal sin descuento a nivel de item
+        subtotal: item.price * item.quantity 
       }));
 
       const { error: itemsError } = await supabase.from('sale_items').insert(itemsToInsert);
       if (itemsError) throw itemsError;
 
+      // ==========================================
+      // DESCUENTO DE INVENTARIO AISLADO (store_stock)
+      // ==========================================
       for (const item of cart) {
-        const { data: productData } = await supabase
-          .from('products')
+        const { data: stockData } = await supabase
+          .from('store_stock')
           .select('stock') 
-          .eq('id', item.id)
-          .single();
+          .eq('product_id', item.id)
+          .eq('store_id', currentStore.id)
+          .maybeSingle(); // <-- CLAVE: No explota si el producto no tiene registro de stock
 
-        if (productData) {
+        if (stockData) {
+          // Descontamos asegurando que no baje de 0 (por la restricción de Postgres)
+          const newStock = Math.max(0, stockData.stock - item.quantity);
+          
           await supabase
-            .from('products')
-            .update({ stock: productData.stock - item.quantity })
-            .eq('id', item.id);
+            .from('store_stock')
+            .update({ stock: newStock })
+            .eq('product_id', item.id)
+            .eq('store_id', currentStore.id);
+        } else {
+          // Si el producto es antiguo y no tenía stock registrado en esta tienda, 
+          // creamos la fila en 0 para que no falle el sistema y quede registrado.
+          await supabase
+            .from('store_stock')
+            .insert({
+              product_id: item.id,
+              store_id: currentStore.id,
+              stock: 0 
+            });
         }
       }
 
+      // Actualizar Puntos del Cliente (aislado por tienda)
       if (finalCustomerId) {
          const pointsEarned = Math.floor(totalUSD / 20);
 
@@ -248,6 +283,7 @@ export default function POSPage() {
            .from('customers')
            .select('total_spent, reward_points')
            .eq('document_id', finalCustomerId)
+           .eq('store_id', currentStore.id)
            .single();
            
          const previousSpent = custData?.total_spent || 0;
@@ -259,7 +295,8 @@ export default function POSPage() {
              total_spent: previousSpent + totalUSD,
              reward_points: previousPoints + pointsEarned
            })
-           .eq('document_id', finalCustomerId);
+           .eq('document_id', finalCustomerId)
+           .eq('store_id', currentStore.id);
       }
 
       showNotification('¡Venta registrada con éxito!', 'success');
@@ -272,7 +309,6 @@ export default function POSPage() {
       setDiscountType('none');
       setDiscountValue('');
       
-      // Devolver el foco al buscador para el siguiente cliente
       setTimeout(() => {
         searchInputRef.current?.focus();
       }, 100);
@@ -284,9 +320,19 @@ export default function POSPage() {
     }
   };
 
+  // Bloqueo de UI si el StoreGuard no ha definido la tienda aún
+  if (!currentStore) {
+    return (
+      <div className="h-full flex items-center justify-center font-sans text-slate-500">
+        Iniciando entorno del cajero...
+      </div>
+    );
+  }
+
   return (
     <div className="relative font-sans h-auto lg:h-[calc(100vh-6rem)]">
       
+      {/* Notificaciones */}
       {notification && (
         <div className="fixed top-6 right-6 z-50 animate-fade-in-down">
           <div className={`flex items-center gap-3 px-6 py-4 rounded-xl shadow-lg border ${
@@ -302,8 +348,17 @@ export default function POSPage() {
         </div>
       )}
 
-      <div className="flex flex-col lg:flex-row gap-6 pb-10 lg:pb-0 h-full">
+      {/* Indicador de Tienda Activa en el POS */}
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Terminal de Venta</h1>
+          <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
+        </div>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-6 pb-10 lg:pb-0 h-[calc(100%-4rem)]">
         
+        {/* Columna Izquierda: Búsqueda y Carrito */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden min-h-[600px] lg:min-h-0">
           <div className="p-4 border-b border-slate-200 space-y-4 bg-slate-50 shrink-0">
             <div>
@@ -448,6 +503,7 @@ export default function POSPage() {
           </div>
         </div>
 
+        {/* Columna Derecha: Pagos y Cobro */}
         <div className="w-full lg:w-96 flex flex-col gap-6 shrink-0">
           
           <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-6 text-white flex flex-col justify-center items-end shrink-0">
@@ -506,7 +562,6 @@ export default function POSPage() {
               </button>
             </div>
 
-            {/* SECCIÓN DE DESCUENTO AHORA: Visible si es efectivo O zelle */}
             {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
               <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
                 <h4 className="text-sm font-semibold text-slate-700 mb-3">Aplicar Descuento</h4>

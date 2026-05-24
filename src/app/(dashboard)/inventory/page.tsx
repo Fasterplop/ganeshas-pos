@@ -7,6 +7,7 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
+import { usePOSStore } from '@/store/usePOSStore';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -30,6 +31,9 @@ interface Product {
 }
 
 export default function InventoryPage() {
+  const { currentStore } = usePOSStore();
+  const supabase = createClient();
+
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
@@ -40,13 +44,10 @@ export default function InventoryPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   
-  // NUEVO: Estado para manejar el error del formulario visualmente
   const [formError, setFormError] = useState<string | null>(null);
   
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
-
-  const supabase = createClient();
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
@@ -54,24 +55,83 @@ export default function InventoryPage() {
   });
 
   async function fetchData() {
+    if (!currentStore) return;
     setLoading(true);
+
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
       if (profile) setUserRole(profile.role);
     }
 
-    const { data } = await supabase.from('products').select('*').eq('is_active', true).order('name');
-    if (data) setProducts(data);
+    const { data: globalProducts } = await supabase
+      .from('products')
+      .select('id, sku_barcode, name, category, price')
+      .eq('is_active', true)
+      .order('name');
+
+    const { data: storeStock } = await supabase
+      .from('store_stock')
+      .select('product_id, stock')
+      .eq('store_id', currentStore.id);
+
+    if (globalProducts) {
+      const stockMap: Record<string, number> = {};
+      if (storeStock) {
+        storeStock.forEach(s => {
+          stockMap[s.product_id] = s.stock;
+        });
+      }
+
+      const mergedProducts: Product[] = globalProducts.map(p => ({
+        ...p,
+        stock: stockMap[p.id] || 0
+      }));
+
+      setProducts(mergedProducts);
+    }
+    
     setLoading(false);
   }
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    setIsModalOpen(false);
+    setSelectedProduct(null);
+    if (currentStore) {
+      fetchData();
+    } else {
+      setProducts([]);
+    }
+  }, [currentStore?.id]);
+
+  // Manejador dinámico para abrir el formulario asignando los valores por defecto requeridos
+  const handleOpenAddModal = () => {
+    setEditingProduct(null);
+    setFormError(null);
+
+    // Asignación inteligente de categoría por defecto según el nombre de la tienda activa
+    let defaultCategory: 'ropa' | 'juguetes' | 'otros' = 'otros';
+    const storeName = currentStore?.name.toLowerCase() || '';
+    
+    if (storeName.includes('ropa')) {
+      defaultCategory = 'ropa';
+    } else if (storeName.includes('juguete')) {
+      defaultCategory = 'juguetes';
+    }
+
+    reset({
+      sku_barcode: '',
+      name: '',
+      category: defaultCategory,
+      price: 0,
+      stock: 0,
+    });
+    setIsModalOpen(true);
+  };
 
   const onSubmitProduct = async (data: ProductFormValues) => {
-    setFormError(null); // Limpiamos cualquier error previo al intentar guardar
+    if (!currentStore) return;
+    setFormError(null);
 
     let finalSku = data.sku_barcode?.trim();
     if (!finalSku) {
@@ -81,27 +141,68 @@ export default function InventoryPage() {
     }
 
     if (editingProduct) {
-      const { error } = await supabase.from('products').update({ ...data, sku_barcode: finalSku }).eq('id', editingProduct.id);
+      const { error: productError } = await supabase
+        .from('products')
+        .update({
+          sku_barcode: finalSku,
+          name: data.name,
+          category: data.category,
+          price: data.price
+        })
+        .eq('id', editingProduct.id);
       
-      if (error) {
-        // 23505 es el código de Supabase/PostgreSQL para "Violación de restricción única"
-        if (error.code === '23505') {
-          setFormError('⚠️ Ya existe un producto registrado con este código de barras.');
-        } else {
-          setFormError('Error al actualizar: ' + error.message);
-        }
-        return; // Detenemos la ejecución para que el modal no se cierre
+      if (productError) {
+        if (productError.code === '23505') setFormError('⚠️ Ya existe un producto con este código.');
+        else setFormError('Error al actualizar info global: ' + productError.message);
+        return;
       }
+
+      // ESTA ES LA SOLUCIÓN: Usar upsert obligará a crear la fila si es un producto viejo
+      const { error: stockError } = await supabase
+        .from('store_stock')
+        .upsert({
+          product_id: editingProduct.id,
+          store_id: currentStore.id,
+          stock: data.stock
+        }, { onConflict: 'product_id, store_id' });
+
+      if (stockError) {
+        setFormError('Error al actualizar el stock local: ' + stockError.message);
+        return;
+      }
+
     } else {
-      const { error } = await supabase.from('products').insert([{ ...data, sku_barcode: finalSku }]);
+      // MODO CREACIÓN: Insertar Producto Globalmente
+      const { data: newProduct, error: productError } = await supabase
+        .from('products')
+        .insert([{
+          sku_barcode: finalSku,
+          name: data.name,
+          category: data.category,
+          price: data.price,
+          is_active: true
+        }])
+        .select('id')
+        .single();
       
-      if (error) {
-        if (error.code === '23505') {
-          setFormError('⚠️ Ya existe un producto registrado con este código de barras.');
-        } else {
-          setFormError('Error al registrar: ' + error.message);
+      if (productError || !newProduct) {
+        if (productError?.code === '23505') setFormError('⚠️ Ya existe un producto con este código.');
+        else setFormError('Error al crear producto: ' + productError?.message);
+        return;
+      }
+
+      // IMPORTANTE: El trigger de la base de datos ya creó las filas de stock en 0 para todas las tiendas.
+      // Si el usuario especificó un stock inicial mayor a 0 para esta tienda, simplemente ejecutamos un update.
+      if (data.stock > 0) {
+        const { error: stockUpdateError } = await supabase
+          .from('store_stock')
+          .update({ stock: data.stock })
+          .eq('product_id', newProduct.id)
+          .eq('store_id', currentStore.id);
+
+        if (stockUpdateError) {
+          console.error("Error al actualizar el stock inicial en la sucursal activa:", stockUpdateError);
         }
-        return; // Detenemos la ejecución para que el modal no se cierre
       }
     }
 
@@ -109,31 +210,27 @@ export default function InventoryPage() {
     fetchData();
   };
 
- const handleDelete = async (e: React.MouseEvent, id: string) => {
-  e.stopPropagation(); 
-  
-  if (window.confirm('¿Estás seguro de que deseas eliminar este producto del inventario?')) {
-    // En lugar de .delete(), usamos .update() para cambiar is_active a false
-    const { error } = await supabase
-      .from('products')
-      .update({ is_active: false })
-      .eq('id', id);
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); 
+    if (window.confirm('¿Estás seguro de que deseas eliminar este producto de TODAS las sucursales?')) {
+      const { error } = await supabase
+        .from('products')
+        .update({ is_active: false })
+        .eq('id', id);
 
-    if (error) {
-      alert('Error al eliminar (ocultar) el producto: ' + error.message);
-      return;
+      if (error) {
+        alert('Error al eliminar el producto: ' + error.message);
+        return;
+      }
+      if (selectedProduct?.id === id) setSelectedProduct(null);
+      fetchData();
     }
-
-    // Si se ocultó correctamente, limpiamos la selección y recargamos
-    if (selectedProduct?.id === id) setSelectedProduct(null);
-    fetchData();
-  }
-};
+  };
 
   const handleEdit = (e: React.MouseEvent, product: Product) => {
     e.stopPropagation(); 
     setEditingProduct(product);
-    setFormError(null); // Limpiamos errores al abrir edición
+    setFormError(null);
     reset({
       sku_barcode: product.sku_barcode,
       name: product.name,
@@ -147,13 +244,13 @@ export default function InventoryPage() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProduct(null);
-    setFormError(null); // Limpiamos errores al cerrar
-    reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0 });
+    setFormError(null);
+    reset({ sku_barcode: '', name: '', category: 'otros', price: 0, stock: 0 });
   };
 
   const handleExportCSV = () => {
-    if (products.length === 0) return;
-    const headers = ['SKU', 'Nombre', 'Categoria', 'Precio', 'Stock'];
+    if (products.length === 0 || !currentStore) return;
+    const headers = ['SKU', 'Nombre', 'Categoria', 'Precio', `Stock (${currentStore.name})`];
     const csvContent = [
       headers.join(','),
       ...products.map(p => `"${p.sku_barcode}","${p.name}","${p.category}",${p.price},${p.stock}`)
@@ -162,7 +259,7 @@ export default function InventoryPage() {
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'inventario_ganeshas.csv';
+    link.download = `inventario_${currentStore.name.replace(/\s+/g, '_').toLowerCase()}.csv`;
     link.click();
   };
 
@@ -179,15 +276,24 @@ export default function InventoryPage() {
   const originalPrice = selectedProduct?.price || 0;
   const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
 
+  if (!currentStore) {
+    return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
+  }
+
   return (
     <>
       <div className="print:hidden flex flex-col md:flex-row gap-6 h-full font-sans">
         
-        {/* Sección Izquierda: Tabla de Productos */}
+        {/* Tabla de Productos */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
             
-            <div className="relative w-full md:w-96">
+            <div className="flex flex-col w-full md:w-auto">
+              <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
+              <p className="text-slate-500 text-sm">Mostrando stock para: <strong className="text-teal-700">{currentStore.name}</strong></p>
+            </div>
+
+            <div className="relative w-full md:w-80">
               <input 
                 type="text" 
                 value={searchTerm}
@@ -198,11 +304,13 @@ export default function InventoryPage() {
             </div>
 
             <div className="flex gap-2 w-full md:w-auto">
-              <button onClick={handleExportCSV} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer">
-                Exportar
+              <button onClick={handleExportCSV} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer font-medium">
+                Exportar CSV
               </button>
-              {userRole === 'owner' && (
-                <button onClick={() => setIsModalOpen(true)} className="flex-1 md:flex-none px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm cursor-pointer">
+              
+              {/* MODIFICADO: Botón habilitado tanto para Owner como para Cashier */}
+              {(userRole === 'owner' || userRole === 'cashier') && (
+                <button onClick={handleOpenAddModal} className="flex-1 md:flex-none px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm cursor-pointer font-medium">
                   + Añadir Producto
                 </button>
               )}
@@ -215,17 +323,17 @@ export default function InventoryPage() {
                 <tr className="bg-slate-700 text-white text-sm">
                   <th className="p-3 rounded-tl-lg">Código</th>
                   <th className="p-3">Nombre</th>
-                  <th className="p-3">Categoria</th>
+                  <th className="p-3">Categoría</th>
                   <th className="p-3 text-right">Precio</th>
-                  <th className="p-3 text-right">Stock</th>
+                  <th className="p-3 text-right">Stock Local</th>
                   {userRole === 'owner' && <th className="p-3 text-center rounded-tr-lg">Acciones</th>}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">Cargando inventario...</td></tr>
+                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">Sincronizando inventario con {currentStore.name}...</td></tr>
                 ) : filteredProducts.length === 0 ? (
-                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">No se encontraron productos.</td></tr>
+                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">No hay productos disponibles.</td></tr>
                 ) : (
                   filteredProducts.map((product) => (
                     <tr 
@@ -239,7 +347,9 @@ export default function InventoryPage() {
                         <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
                       </td>
                       <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
-                      <td className="p-3 text-right font-bold text-emerald-600">{product.stock}</td>
+                      <td className="p-3 text-right font-bold text-emerald-600">
+                        {product.stock > 0 ? product.stock : <span className="text-red-500">0</span>}
+                      </td>
                       
                       {userRole === 'owner' && (
                         <td className="p-3 text-center">
@@ -253,7 +363,7 @@ export default function InventoryPage() {
                           <button 
                             onClick={(e) => handleDelete(e, product.id)}
                             className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
-                            title="Eliminar"
+                            title="Desactivar Globalmente"
                           >
                             🗑️
                           </button>
@@ -267,7 +377,7 @@ export default function InventoryPage() {
           </div>
         </div>
 
-        {/* Sección Derecha: Panel Descuento Rápido */}
+        {/* Panel Descuento Rápido */}
         <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <div className="flex items-center gap-2 mb-6">
             <span className="bg-blue-100 p-2 rounded-full">🏷️</span>
@@ -283,6 +393,7 @@ export default function InventoryPage() {
               <div className="mb-4">
                 <p className="text-sm font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
                 <p className="text-xs text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
+                <p className="text-[10px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
               </div>
               <div>
                 <label className="text-xs font-semibold text-slate-500">Nombre de Promoción</label>
@@ -328,7 +439,7 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      {/* ================= MODAL: AÑADIR / EDITAR PRODUCTO ================= */}
+      {/* MODAL: AÑADIR / EDITAR PRODUCTO */}
       <div className="print:hidden">
         <Modal 
           isOpen={isModalOpen} 
@@ -337,7 +448,10 @@ export default function InventoryPage() {
         >
           <form onSubmit={handleSubmit(onSubmitProduct)} className="space-y-4">
             
-            {/* Alerta Visual de Error Frontend */}
+            <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
+              Gestionando stock en: {currentStore.name}
+            </div>
+
             {formError && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium animate-in fade-in">
                 {formError}
@@ -358,14 +472,14 @@ export default function InventoryPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Producto</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Producto (Global)</label>
               <input type="text" {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
               {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Categoria</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Categoría</label>
                 <select {...register('category')} className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none">
                   <option value="juguetes">Juguetes</option>
                   <option value="ropa">Ropa</option>
@@ -376,19 +490,19 @@ export default function InventoryPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Precio ($)</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Precio Global ($)</label>
                 <input type="number" step="0.01" {...register('price', { valueAsNumber: true })} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
                 {errors.price && <p className="text-red-500 text-xs mt-1">{errors.price.message}</p>}
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Stock</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Stock para {currentStore.name}</label>
               <input type="number" {...register('stock', { valueAsNumber: true })} placeholder="0" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
               {errors.stock && <p className="text-red-500 text-xs mt-1">{errors.stock.message}</p>}
             </div>
 
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-4">
               <button type="button" onClick={closeModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
               <button type="submit" className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer">
                 {editingProduct ? "Guardar Cambios" : "Guardar Producto"}
@@ -398,19 +512,15 @@ export default function InventoryPage() {
         </Modal>
       </div>
 
-      {/* ================= VISTA DE IMPRESIÓN (Optimizada para Brother DK-1209: 62mm x 29mm) ================= */}
-      {/* ================= VISTA DE IMPRESIÓN (Optimizada para Brother DK-1209: 62mm x 29mm) ================= */}
+      {/* VISTA DE IMPRESIÓN */}
       {selectedProduct && (
         <div className="hidden print:flex flex-row items-center justify-between bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1mm' }}>
-          
-          {/* Texto Vertical: Nombre de la tienda */}
           <div className="flex items-center justify-center h-full pl-1">
             <p className="text-[8px] font-black text-black tracking-wider uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
               Ganesha Store
             </p>
           </div>
 
-          {/* Contenido Principal */}
           <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
             <p className="text-[15px] font-black text-black truncate w-full text-center leading-none">
               {promoName.toUpperCase()}
@@ -421,14 +531,7 @@ export default function InventoryPage() {
               <p className="text-[26px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
             </div>
 
-            <Barcode 
-              value={selectedProduct.sku_barcode} 
-              width={1.3} 
-              height={24} 
-              fontSize={10} 
-              margin={0} 
-              displayValue={true} 
-            />
+            <Barcode value={selectedProduct.sku_barcode} width={1.3} height={24} fontSize={10} margin={0} displayValue={true} />
           </div>
         </div>
       )}

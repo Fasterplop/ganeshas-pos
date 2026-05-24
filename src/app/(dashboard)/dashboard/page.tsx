@@ -4,9 +4,12 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Modal from '@/components/Modal';
+import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 
 export default function DashboardPage() {
   const supabase = createClient();
+  const { currentStore } = usePOSStore(); // <-- 2. Obtenemos la tienda activa
+  
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<string>('');
 
@@ -49,29 +52,27 @@ export default function DashboardPage() {
     end: defaultEnd.toISOString().split('T')[0],
   });
 
-  // =========================================================================
-  // HELPER: Fuerza a Javascript a leer la fecha de Supabase como UTC puro
-  // para que la conversión a Caracas sea exacta (resta 4 horas correctamente).
-  // =========================================================================
   const parseSupabaseDate = (dateStr: string) => {
     if (!dateStr) return new Date();
     let formatted = dateStr;
-    // Reemplaza espacio por 'T' si el formato viene directo de SQL
     if (formatted.includes(' ') && !formatted.includes('T')) {
       formatted = formatted.replace(' ', 'T');
     }
-    // Si no termina en 'Z' (Zulu/UTC) y no tiene un offset (como +00:00), le forzamos la 'Z'
     if (!formatted.endsWith('Z') && !formatted.includes('+') && !formatted.match(/-\d{2}:\d{2}$/)) {
       formatted = formatted + 'Z';
     }
     return new Date(formatted);
   };
 
+  // =======================================================
+  // 1. MÉTRICAS PRINCIPALES Y TOP 50
+  // =======================================================
   useEffect(() => {
     async function fetchDashboardData() {
+      if (!currentStore) return; // Bloqueo de seguridad si no hay tienda
+      
       setLoading(true);
       
-      // Obtener usuario y su rol
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data: profile } = await supabase
@@ -84,9 +85,7 @@ export default function DashboardPage() {
 
       const now = new Date();
 
-      // --- Lógica de Fechas Generales ---
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      
       const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1; 
       const startOfThisWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
       const startOfLastWeek = new Date(startOfThisWeek.getFullYear(), startOfThisWeek.getMonth(), startOfThisWeek.getDate() - 7);
@@ -96,17 +95,17 @@ export default function DashboardPage() {
       const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-      // 1. Obtener todas las ventas desde el mes pasado
+      // A. Obtener todas las ventas desde el mes pasado AISLADAS POR TIENDA
       const { data: recentSales } = await supabase
         .from('sales')
         .select('total_amount, bcv_rate, created_at')
+        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
         .gte('created_at', startOfLastMonth.toISOString());
 
       if (recentSales) {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
 
         recentSales.forEach(sale => {
-          // Usamos el Helper aquí para las métricas
           const saleDate = parseSupabaseDate(sale.created_at);
           const amount = Number(sale.total_amount);
 
@@ -126,21 +125,26 @@ export default function DashboardPage() {
         setThisMonthUSD(tMonth);
         setWeekGrowth(lWeek ? ((tWeek - lWeek) / lWeek) * 100 : 0);
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
+      } else {
+        // Reset a cero si no hay ventas en la nueva tienda
+        setTodayUSD(0); setTodayVES(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
       }
 
-      // 2. Mejores Clientes (Traemos hasta 50 para el modal)
+      // B. Mejores Clientes AISLADOS POR TIENDA
       const { data: customers } = await supabase
         .from('customers')
         .select('full_name, total_spent')
+        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
         .order('total_spent', { ascending: false })
         .limit(50);
       
-      if (customers) setTopCustomers(customers);
+      setTopCustomers(customers || []);
 
-      // 3. Traer Top Productos (Agrupando por PRODUCT_ID)
+      // C. Top Productos usando un Inner Join con Sales para AISLAR POR TIENDA
       const { data: saleItems } = await supabase
         .from('sale_items')
-        .select('product_id, quantity, products(name, price)');
+        .select('product_id, quantity, products(name, price), sales!inner(store_id)')
+        .eq('sales.store_id', currentStore.id); // <-- FILTRO EN TABLA PADRE
 
       if (saleItems) {
         const productCounts: Record<string, { id: string, name: string, price: number, qty: number }> = {};
@@ -156,26 +160,32 @@ export default function DashboardPage() {
           .sort((a, b) => b.qty - a.qty)
           .slice(0, 50); 
         setTopProducts(sortedProducts);
+      } else {
+        setTopProducts([]);
       }
 
       setLoading(false);
     }
     fetchDashboardData();
-  }, [supabase]);
+  }, [supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
 
-  // Efecto para recargar el gráfico
+  // =======================================================
+  // 2. GRÁFICO DE RECHARTS
+  // =======================================================
   useEffect(() => {
     async function fetchChartData() {
+      if (!currentStore) return;
+      
       const { data: chartSales } = await supabase
         .from('sales')
         .select('created_at, total_amount')
+        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
         .gte('created_at', `${dateRange.start}T00:00:00.000Z`)
         .lte('created_at', `${dateRange.end}T23:59:59.999Z`);
 
       if (chartSales) {
         const grouped: Record<string, number> = {};
         chartSales.forEach(sale => {
-          // Usamos el helper también para el gráfico
           const dateStr = parseSupabaseDate(sale.created_at)
             .toLocaleDateString('es-VE', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' })
             .split('/')
@@ -190,14 +200,20 @@ export default function DashboardPage() {
         }));
 
         setChartData(formattedData);
+      } else {
+        setChartData([]);
       }
     }
     fetchChartData();
-  }, [dateRange, supabase]);
+  }, [dateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
 
-  // Efecto para cargar el Historial de Transacciones con filtro de Fechas
+  // =======================================================
+  // 3. HISTORIAL DE TRANSACCIONES
+  // =======================================================
   useEffect(() => {
     async function fetchHistory() {
+      if (!currentStore) return;
+      
       setLoadingHistory(true);
       const { data } = await supabase
         .from('sales')
@@ -216,6 +232,7 @@ export default function DashboardPage() {
             products (name)
           )
         `)
+        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
         .gte('created_at', `${historyDateRange.start}T00:00:00.000Z`)
         .lte('created_at', `${historyDateRange.end}T23:59:59.999Z`)
         .order('created_at', { ascending: false })
@@ -223,11 +240,13 @@ export default function DashboardPage() {
 
       if (data) {
         setSalesHistory(data);
+      } else {
+        setSalesHistory([]);
       }
       setLoadingHistory(false);
     }
     fetchHistory();
-  }, [historyDateRange, supabase]);
+  }, [historyDateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
 
   const handleExportCSV = () => {
     if (salesHistory.length === 0) return;
@@ -235,7 +254,6 @@ export default function DashboardPage() {
     const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
     
     const rows = salesHistory.map(sale => {
-      // Usamos el helper para el CSV y habilitamos hour12 para AM/PM
       const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
         timeZone: 'America/Caracas',
         day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
@@ -257,11 +275,16 @@ export default function DashboardPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `historial_ventas_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
+    link.setAttribute('download', `historial_ventas_${currentStore?.name.replace(/\s+/g, '_').toLowerCase()}_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
+
+  // Bloqueo de seguridad visual mientras carga el contexto de la tienda
+  if (!currentStore) {
+    return <div className="h-full flex items-center justify-center text-slate-500 font-sans">Sincronizando reportes de sucursal...</div>;
+  }
 
   if (loading) {
     return <div className="flex h-full items-center justify-center text-slate-500">Cargando analíticas...</div>;
@@ -276,9 +299,11 @@ export default function DashboardPage() {
       {/* --- CABECERA --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800"></h1>
+          <h1 className="text-3xl font-bold text-slate-800">
+            {role === 'cashier' ? 'Panel de Cajero' : 'Analíticas de la Sucursal'}
+          </h1>
           <p className="text-slate-500">
-            {role === 'cashier' ? 'Resumen de ventas de hoy' : 'Resumen de rendimiento y analíticas'}
+            Mostrando datos de: <strong className="text-teal-700">{currentStore.name}</strong>
           </p>
         </div>
         <div className="bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center capitalize">
@@ -292,7 +317,7 @@ export default function DashboardPage() {
       {role === 'cashier' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full shrink-0">
           <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
-            <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
+            <p className="text-slate-500 font-medium mb-1">Tus Ventas de Hoy</p>
             <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
             <p className="text-sm font-bold text-teal-700 mt-1 truncate">
               Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
@@ -300,7 +325,6 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
-
 
       {/* =========================================================
           VISTA DEL DUEÑO (OWNER / ADMIN)
@@ -311,7 +335,7 @@ export default function DashboardPage() {
           {/* COLUMNA IZQUIERDA */}
           <div className="lg:col-span-2 space-y-6 flex flex-col w-full h-full">
             
-            {/* Métricas (Visibles en móvil como 1 columna, y en md como 3 columnas) */}
+            {/* Métricas */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
                 <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
@@ -336,7 +360,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* GRÁFICO (Oculto en móvil con hidden, visible desde tablet con md:flex) */}
+            {/* GRÁFICO */}
             <div className="hidden md:flex bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex-col flex-1 min-h-[350px]">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 w-full">
                 <div>
@@ -394,7 +418,7 @@ export default function DashboardPage() {
           {/* COLUMNA DERECHA */}
           <div className="space-y-6 flex flex-col w-full h-full">
             
-            {/* Top Productos (Solo 3) */}
+            {/* Top Productos */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold text-slate-800">Mejores Productos</h3>
@@ -424,7 +448,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Mejores Clientes (Solo 3) */}
+            {/* Mejores Clientes */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold text-slate-800">Mejores Clientes</h3>
@@ -461,9 +485,8 @@ export default function DashboardPage() {
       )}
 
 
-      {/* --- SECCIÓN INFERIOR: HISTORIAL DE TRANSACCIONES (VISIBLE PARA TODOS) --- */}
+      {/* --- SECCIÓN INFERIOR: HISTORIAL DE TRANSACCIONES --- */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col w-full min-h-[400px]">
-        {/* Controles del historial responsivos */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 w-full">
           <h3 className="text-lg font-bold text-slate-800 shrink-0">Historial de Transacciones</h3>
           
@@ -503,7 +526,7 @@ export default function DashboardPage() {
             {salesHistory.length === 0 ? (
               <div className="py-10 text-center flex flex-col items-center">
                 <span className="text-4xl mb-2 opacity-50">📂</span>
-                <p className="text-slate-500 font-medium">No hay transacciones en este rango de fecha.</p>
+                <p className="text-slate-500 font-medium">No hay transacciones registradas en {currentStore.name}.</p>
               </div>
             ) : (
               <table className="w-full text-left text-sm border-collapse min-w-[800px]">
@@ -521,7 +544,6 @@ export default function DashboardPage() {
                   {salesHistory.map((sale) => (
                     <tr key={sale.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3 text-slate-600 whitespace-nowrap">
-                        {/* Usamos el helper en la tabla y habilitamos hour12 para el formato AM/PM */}
                         {parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
                           timeZone: 'America/Caracas',
                           day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true

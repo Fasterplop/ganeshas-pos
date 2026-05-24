@@ -4,18 +4,21 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { createClient } from '@/lib/supabase/client';
+import { usePOSStore, Store } from '@/store/usePOSStore';
 
 type Role = 'owner' | 'cashier';
 
 interface TopBarMenuProps {
   userRole: Role;
   userName: string;
+  stores: Store[]; // <-- Nueva prop para recibir las tiendas
 }
 
-export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
+export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
+  const { currentStore, setCurrentStore } = usePOSStore(); // <-- Estado global
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -39,9 +42,6 @@ export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
       {/* Fila superior: Logo y Usuario */}
       <div className="flex items-center justify-between p-3 border-b border-teal-700">
         <div className="flex items-center gap-2">
-          {/* <div className="bg-white p-1 rounded-full">
-            <Image src="/logo.webp" alt="Logo" width={24} height={24} className="object-contain" />
-          </div> */}
           <h2 className="text-base font-bold tracking-wider">GANESHA STORE</h2>
         </div>
         <div className="flex items-center gap-3 text-xs font-medium text-teal-200">
@@ -57,6 +57,34 @@ export default function TopBarMenu({ userRole, userName }: TopBarMenuProps) {
           </button>
         </div>
       </div>
+
+      {/* --- NUEVO BLOQUE: Fila Intermedia (Selector) --- */}
+      {userRole === 'owner' ? (
+        <div className="bg-teal-900 px-3 py-2 border-b border-teal-800 flex items-center justify-between gap-3">
+          <label className="text-xs font-semibold text-teal-200 whitespace-nowrap">
+            Tienda Activa:
+          </label>
+          <select 
+            value={currentStore?.id || ''}
+            onChange={(e) => {
+              const selected = stores.find(s => s.id === e.target.value);
+              if (selected) setCurrentStore(selected);
+            }}
+            className="w-full bg-teal-800 text-white text-xs p-1.5 rounded border border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-400 cursor-pointer"
+          >
+            <option value="" disabled>Seleccione...</option>
+            {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+      ) : (
+        currentStore && (
+          <div className="bg-teal-900 px-3 py-2 border-b border-teal-800 flex items-center gap-2">
+            <span className="text-xs font-semibold text-teal-200">Sucursal:</span>
+            <span className="text-xs font-bold text-white truncate">{currentStore.name}</span>
+          </div>
+        )
+      )}
+      {/* ---------------------------------------------- */}
 
       {/* Fila inferior: Menú horizontal deslizable */}
       <nav className="flex overflow-x-auto gap-2 px-3 py-2 scrollbar-hide items-center">

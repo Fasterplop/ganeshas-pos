@@ -1,15 +1,24 @@
+// usePOSStore.ts
 import { create } from 'zustand';
 
-// Definimos cómo se ve un producto en el carrito
+export interface Store {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
 export interface CartItem {
-  id: string; // Product ID
+  id: string;
   name: string;
   price: number;
   quantity: number;
 }
 
-// Definimos todo lo que guardará nuestro Store
 interface POSState {
+  // --- Nueva Lógica de Tienda ---
+  currentStore: Store | null;
+  setCurrentStore: (store: Store | null) => void;
+
   bcvRate: number;
   setBcvRate: (rate: number) => void;
   
@@ -20,15 +29,19 @@ interface POSState {
 }
 
 export const usePOSStore = create<POSState>((set) => ({
-  // 1. Estado inicial de la Tasa (0 significa que no se ha configurado)
+  currentStore: null,
+  // Al cambiar de tienda, vaciamos el carrito por seguridad
+  setCurrentStore: (store) => set({ 
+    currentStore: store, 
+    cart: [] 
+  }),
+
   bcvRate: 0,
   setBcvRate: (rate) => set({ bcvRate: rate }),
 
-  // 2. Estado del Carrito
   cart: [],
   addToCart: (item) => 
     set((state) => {
-      // Si el producto ya está, sumamos la cantidad
       const existingItem = state.cart.find((i) => i.id === item.id);
       if (existingItem) {
         return {
@@ -37,7 +50,6 @@ export const usePOSStore = create<POSState>((set) => ({
           ),
         };
       }
-      // Si no está, lo agregamos nuevo
       return { cart: [...state.cart, item] };
     }),
   removeFromCart: (id) =>

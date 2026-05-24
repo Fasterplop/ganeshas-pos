@@ -4,18 +4,21 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { createClient } from '@/lib/supabase/client';
+import { usePOSStore, Store } from '@/store/usePOSStore';
 
 type Role = 'owner' | 'cashier';
 
 interface SidebarProps {
   userRole: Role;
   userName: string;
+  stores: Store[]; // <-- Nueva prop para recibir las tiendas
 }
 
-export default function Sidebar({ userRole, userName }: SidebarProps) {
+export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
+  const { currentStore, setCurrentStore } = usePOSStore(); // <-- Estado global
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -38,12 +41,39 @@ export default function Sidebar({ userRole, userName }: SidebarProps) {
     <aside className="hidden md:flex flex-col w-64 bg-[#0f5c5c] text-white min-h-screen shadow-xl print:hidden shrink-0">
       {/* Logo y Título */}
       <div className="p-6 flex flex-col items-center border-b border-teal-700">
-        {/* <div className="bg-white p-2 rounded-full mb-3">
-           <Image src="/logo.webp" alt="Logo" width={40} height={40} className="object-contain" />
-        </div> */}
         <h2 className="text-xl font-bold tracking-wider">GANESHA STORE</h2>
-
       </div>
+
+      {/* --- NUEVO BLOQUE: Selector de Tiendas --- */}
+      {userRole === 'owner' && (
+        <div className="px-6 py-4 border-b border-teal-800">
+          <label className="text-[10px] uppercase tracking-widest text-teal-300 font-bold mb-1 block">
+            Tienda Activa
+          </label>
+          <select 
+            value={currentStore?.id || ''}
+            onChange={(e) => {
+              const selected = stores.find(s => s.id === e.target.value);
+              if (selected) setCurrentStore(selected);
+            }}
+            className="w-full bg-teal-800 text-white text-sm p-2 rounded border border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-400 cursor-pointer"
+          >
+            <option value="" disabled>Seleccione...</option>
+            {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+      )}
+
+      {/* Indicador visual para el Cajero (Solo lectura) */}
+      {userRole === 'cashier' && currentStore && (
+        <div className="px-6 py-4 border-b border-teal-800 bg-teal-900/30">
+          <p className="text-[10px] uppercase tracking-widest text-teal-300 font-bold mb-1">
+            Sucursal Asignada
+          </p>
+          <p className="text-sm font-semibold text-teal-50 truncate">{currentStore.name}</p>
+        </div>
+      )}
+      {/* -------------------------------------- */}
 
       {/* Menú Dinámico */}
       <nav className="flex-1 px-4 py-6 space-y-2">
