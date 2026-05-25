@@ -253,6 +253,10 @@ export default function DashboardPage() {
 
     const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
     
+    // 1. Variables para acumular los totales
+    let totalSumaUSD = 0;
+    let totalSumaVES = 0;
+
     const rows = salesHistory.map(sale => {
       const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
         timeZone: 'America/Caracas',
@@ -264,11 +268,24 @@ export default function DashboardPage() {
       const productos = sale.sale_items?.map((item: any) => `${item.quantity}x ${item.products?.name}`).join(' | ') || '';
       const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
       const referencia = sale.payment_ref || 'N/A';
-      const totalUsd = Number(sale.total_amount).toFixed(2);
-      const totalBs = (Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2);
+      
+      // Calculamos los montos en números
+      const amountUSD = Number(sale.total_amount);
+      const amountVES = amountUSD * Number(sale.bcv_rate);
+
+      // Sumamos al acumulador
+      totalSumaUSD += amountUSD;
+      totalSumaVES += amountVES;
+
+      const totalUsd = amountUSD.toFixed(2);
+      const totalBs = amountVES.toFixed(2);
 
       return `"${fecha}","${cliente}","${cajero}","${productos}","${metodoPago}","${referencia}","${totalUsd}","${totalBs}"`;
     });
+
+    // 2. Agregamos una fila vacía como separador y luego la fila con los totales generales
+    rows.push(`"","","","","","","",""`);
+    rows.push(`"","","","","","TOTAL:","${totalSumaUSD.toFixed(2)}","${totalSumaVES.toFixed(2)}"`);
 
     const csvContent = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -280,7 +297,6 @@ export default function DashboardPage() {
     link.click();
     document.body.removeChild(link);
   };
-
   // Bloqueo de seguridad visual mientras carga el contexto de la tienda
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500 font-sans">Sincronizando reportes de sucursal...</div>;
