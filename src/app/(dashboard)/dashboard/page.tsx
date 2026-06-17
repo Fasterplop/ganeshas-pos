@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Modal from '@/components/Modal';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
+import { deleteSaleAction } from './actions';
 
 export default function DashboardPage() {
   const supabase = createClient();
@@ -590,11 +591,39 @@ export default function DashboardPage() {
                         )}
                       </td>
                       <td className="p-3 text-right">
-                        <p className="font-bold text-slate-800">${Number(sale.total_amount).toFixed(2)}</p>
-                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                          Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
-                        </p>
-                      </td>
+  <p className="font-bold text-slate-800">${Number(sale.total_amount).toFixed(2)}</p>
+  <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+    Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
+  </p>
+  
+  {/* NUEVO: Botón de anular venta */}
+  {role === 'owner' && (
+  <button 
+    onClick={async () => {
+      if (confirm('¿Estás seguro de anular esta venta? El stock y los puntos del cliente serán revertidos inmediatamente.')) {
+        try {
+           await deleteSaleAction(sale.id);
+           
+           // Actualiza el estado local para que desaparezca al instante
+           setSalesHistory(prev => prev.filter(s => s.id !== sale.id));
+           alert('Venta anulada con éxito');
+           
+        } catch (error) {
+           // CORRECCIÓN TYPESCRIPT: Verificamos si es una instancia de Error
+           if (error instanceof Error) {
+             alert(error.message);
+           } else {
+             alert('Ocurrió un error inesperado al intentar anular la venta.');
+           }
+        }
+      }
+    }}
+    className="text-xs text-red-500 hover:text-red-700 mt-2 font-semibold"
+  >
+    Anular Venta
+  </button>
+)}
+</td>
                     </tr>
                   ))}
                 </tbody>
