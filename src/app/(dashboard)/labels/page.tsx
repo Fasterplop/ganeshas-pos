@@ -429,24 +429,27 @@ export default function LabelsPage() {
 function GiftCircleLabel() {
   return (
     <div className="w-[2in] h-[2in] print:w-[2in] print:h-[2in] print:break-after-page print:m-0 flex items-center justify-center bg-white">
-      <div className="relative w-[1.90in] h-[1.90in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-center py-4 px-6 bg-white overflow-hidden">
+      {/* Contenedor interno expandido a 1.95in y padding reducido (py-2 px-3) */}
+      <div className="relative w-[1.95in] h-[1.95in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-center py-2 px-3 bg-white overflow-hidden">
         
-        {/* Logo Superior */}
+        {/* Logo Superior Ampliado (de h-10 a h-16) */}
         <img
           src="/logo.jpg"
           alt="Ganesha"
-          className="h-10 w-auto object-contain grayscale mb-3" 
+          className="h-16 max-w-[85%] w-auto object-contain grayscale mb-4" 
         />
 
-        {/* Campos de texto */}
-        <div className="w-full flex flex-col gap-4 mt-1">
+        {/* Campos de texto Ampliados */}
+        <div className="w-full flex flex-col gap-5 px-2">
           <div className="flex items-end w-full">
-            <span className="text-sm font-bold text-black leading-none mr-2">De:</span>
-            <div className="flex-1 border-b-2 border-black"></div>
+            {/* Fuente más grande (text-lg) */}
+            <span className="text-lg font-bold text-black leading-none mr-2 pb-0.5">De:</span>
+            {/* Línea más gruesa (border-b-[3px]) */}
+            <div className="flex-1 border-b-[3px] border-black"></div>
           </div>
           <div className="flex items-end w-full">
-            <span className="text-sm font-bold text-black leading-none mr-2">Para:</span>
-            <div className="flex-1 border-b-2 border-black"></div>
+            <span className="text-lg font-bold text-black leading-none mr-2 pb-0.5">Para:</span>
+            <div className="flex-1 border-b-[3px] border-black"></div>
           </div>
         </div>
 
@@ -458,24 +461,24 @@ function GiftCircleLabel() {
 function DoubleLogoCircleLabel() {
   return (
     <div className="w-[2in] h-[2in] print:w-[2in] print:h-[2in] print:break-after-page print:m-0 flex items-center justify-center bg-white">
-      {/* Usamos justify-between para empujar un logo arriba, otro abajo y dejar el centro vacío */}
-      <div className="relative w-[1.90in] h-[1.90in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-between py-6 px-6 bg-white overflow-hidden">
+      {/* Contenedor expandido y padding vertical mínimo (py-3) para empujar los logos a los polos */}
+      <div className="relative w-[1.95in] h-[1.95in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-between py-3 px-2 bg-white overflow-hidden">
         
-        {/* Logo Arriba */}
+        {/* Logo Arriba Ampliado al doble (de h-10 a h-20) */}
         <img
           src="/logo.jpg"
           alt="Ganesha Top"
-          className="h-10 w-auto object-contain grayscale" 
+          className="h-20 max-w-[85%] w-auto object-contain grayscale" 
         />
 
         {/* Espacio vacío central estructurado */}
         <div className="flex-1 w-full"></div>
 
-        {/* Mismo Logo Abajo */}
+        {/* Logo Abajo Ampliado al doble */}
         <img
           src="/logo.jpg"
           alt="Ganesha Bottom"
-          className="h-10 w-auto object-contain grayscale" 
+          className="h-20 max-w-[85%] w-auto object-contain grayscale" 
         />
 
       </div>
