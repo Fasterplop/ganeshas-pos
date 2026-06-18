@@ -432,15 +432,15 @@ function GiftCircleLabel() {
       {/* Contenedor interno expandido a 1.95in y padding reducido (py-2 px-3) */}
       <div className="relative w-[1.95in] h-[1.95in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-center py-2 px-3 bg-white overflow-hidden">
         
-        {/* Logo Superior Ampliado (de h-10 a h-16) */}
+        {/* Logo Superior Ampliado */}
         <img
           src="/logo.jpg"
           alt="Ganesha"
           className="h-16 max-w-[85%] w-auto object-contain grayscale mb-4" 
         />
 
-        {/* Campos de texto Ampliados */}
-        <div className="w-full flex flex-col gap-5 px-2">
+        {/* Campos de texto Ampliados - Ajustamos de px-2 a px-6 para esquivar el corte curvo */}
+        <div className="w-full flex flex-col gap-5 px-6">
           <div className="flex items-end w-full">
             {/* Fuente más grande (text-lg) */}
             <span className="text-lg font-bold text-black leading-none mr-2 pb-0.5">De:</span>
@@ -464,17 +464,17 @@ function DoubleLogoCircleLabel() {
       {/* Contenedor expandido y padding vertical mínimo (py-3) para empujar los logos a los polos */}
       <div className="relative w-[1.95in] h-[1.95in] rounded-full border-2 border-dashed border-slate-300 print:border-none print:rounded-none flex flex-col items-center justify-between py-3 px-2 bg-white overflow-hidden">
         
-        {/* Logo Arriba Ampliado al doble (de h-10 a h-20) */}
+        {/* Logo Arriba Volteado 180 grados */}
         <img
           src="/logo.jpg"
           alt="Ganesha Top"
-          className="h-20 max-w-[85%] w-auto object-contain grayscale" 
+          className="h-20 max-w-[85%] w-auto object-contain grayscale rotate-180" 
         />
 
         {/* Espacio vacío central estructurado */}
         <div className="flex-1 w-full"></div>
 
-        {/* Logo Abajo Ampliado al doble */}
+        {/* Logo Abajo en su posición normal */}
         <img
           src="/logo.jpg"
           alt="Ganesha Bottom"
