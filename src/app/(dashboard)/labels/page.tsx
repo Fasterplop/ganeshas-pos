@@ -594,7 +594,7 @@ function ThankYouCard({ instagram }: { instagram: string }) {
         <Heart className="w-7 h-7 text-neutral-400 fill-neutral-400 mb-5" strokeWidth={1} />
 
         <p className="text-lg text-neutral-600 leading-snug mb-6 max-w-[3in]">
-          Tu pedido fue preparado con mucho cariño. Esperamos que disfrutes mucho tu compra.
+          Tu pedido fue preparado con mucho cariño. Gracias por elegirnos. ¡Disfrútalo mucho!
         </p>
 
         <div className="w-[2.6in] border-t-2 border-dotted border-neutral-300 mb-6"></div>

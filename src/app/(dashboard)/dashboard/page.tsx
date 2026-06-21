@@ -142,21 +142,28 @@ export default function DashboardPage() {
       setTopCustomers(customers || []);
 
       // C. Top Productos usando un Inner Join con Sales para AISLAR POR TIENDA
+      // ⚡ CORRECCIÓN: Solicitamos custom_name y unit_price para los productos rápidos
       const { data: saleItems } = await supabase
         .from('sale_items')
-        .select('product_id, quantity, products(name, price), sales!inner(store_id)')
-        .eq('sales.store_id', currentStore.id); // <-- FILTRO EN TABLA PADRE
+        .select('product_id, quantity, custom_name, unit_price, products(name, price), sales!inner(store_id)')
+        .eq('sales.store_id', currentStore.id);
 
       if (saleItems) {
         const productCounts: Record<string, { id: string, name: string, price: number, qty: number }> = {};
+        
         saleItems.forEach((item: any) => {
-          const pId = item.product_id || 'unknown'; 
-          const productName = item.products?.name || 'Desconocido';
+          // Si no hay product_id, usamos el custom_name como ID temporal
+          const pId = item.product_id || `quick-${item.custom_name}`; 
+          
+          const productName = item.custom_name || item.products?.name || 'Desconocido';
+          const price = item.unit_price ?? item.products?.price ?? 0;
+
           if (!productCounts[pId]) {
-            productCounts[pId] = { id: pId, name: productName, price: item.products?.price || 0, qty: 0 };
+            productCounts[pId] = { id: pId, name: productName, price: price, qty: 0 };
           }
           productCounts[pId].qty += item.quantity;
         });
+        
         const sortedProducts = Object.values(productCounts)
           .sort((a, b) => b.qty - a.qty)
           .slice(0, 50); 
@@ -230,14 +237,15 @@ export default function DashboardPage() {
           sale_items (
             quantity,
             unit_price,
+            custom_name,
             products (name)
           )
         `)
-        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
+        .eq('store_id', currentStore.id) 
         .gte('created_at', `${historyDateRange.start}T00:00:00.000Z`)
         .lte('created_at', `${historyDateRange.end}T23:59:59.999Z`)
         .order('created_at', { ascending: false })
-        .limit(50); 
+        .limit(50);
 
       if (data) {
         setSalesHistory(data);
@@ -266,7 +274,10 @@ export default function DashboardPage() {
       
       const cliente = sale.customers?.full_name || 'Anónimo';
       const cajero = sale.profiles?.full_name || 'Desconocido';
-      const productos = sale.sale_items?.map((item: any) => `${item.quantity}x ${item.products?.name}`).join(' | ') || '';
+      const productos = sale.sale_items?.map((item: any) => {
+        const nombre = item.custom_name || item.products?.name || 'Desconocido';
+        return `${item.quantity}x ${nombre}`;
+      }).join(' | ') || '';
       const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
       const referencia = sale.payment_ref || 'N/A';
       
@@ -576,7 +587,7 @@ export default function DashboardPage() {
                         <ul className="list-disc list-inside text-slate-600 text-xs space-y-1">
                           {sale.sale_items?.map((item: any, idx: number) => (
                             <li key={idx} className="truncate max-w-[200px]">
-                              <span className="font-medium text-slate-700">{item.quantity}x</span> {item.products?.name} 
+                              <span className="font-medium text-slate-700">{item.quantity}x</span> {item.custom_name || item.products?.name || 'Desconocido'} 
                               <span className="text-slate-400 ml-1">(${item.unit_price})</span>
                             </li>
                           ))}
