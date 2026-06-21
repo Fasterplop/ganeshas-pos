@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Barcode from 'react-barcode'; 
 import { createClient } from '@/lib/supabase/client';
+import { Heart } from 'lucide-react';
 
 interface LabelProduct {
   id: string;
@@ -16,9 +17,11 @@ export default function LabelsPage() {
   const supabase = createClient();
 
   // 1. Estados para controlar la nueva funcionalidad
-  const [labelMode, setLabelMode] = useState<'barcode' | 'gift' | 'double_logo'>('barcode');
+  const [labelMode, setLabelMode] = useState<'barcode' | 'gift' | 'double_logo' | 'thankyou'>('barcode');
   const [giftLabelCount, setGiftLabelCount] = useState<number>(1);
-
+  // Tarjeta de agradecimiento 4x6
+const [thankYouHandle, setThankYouHandle] = useState<'ganesha_store01' | 'ganesha_jugueteria'>('ganesha_store01');
+const [thankYouCount, setThankYouCount] = useState<number>(1);
   // Estados para el buscador
   const [productSearch, setProductSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -144,6 +147,15 @@ export default function LabelsPage() {
           >
             Logo Doble (Círculo 2x2)
           </button>
+            <button
+  onClick={() => setLabelMode('thankyou')}
+  className={`px-4 py-2 text-sm font-bold rounded-md transition-all ${
+    labelMode === 'thankyou' ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+  }`}
+>
+  Agradecimiento (4x6)
+</button>
+
         </div>
       </div>
 
@@ -412,6 +424,78 @@ export default function LabelsPage() {
         </>
       )}
 
+      {/* ================= MODO: AGRADECIMIENTO (4x6) ================= */}
+{labelMode === 'thankyou' && (
+  <>
+    <div className="print:hidden flex flex-col md:flex-row gap-6 h-full font-sans">
+      <div className="w-full md:w-80 bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-max">
+        <h3 className="font-bold text-slate-800 mb-4 text-lg">Tarjeta de Agradecimiento 4x6</h3>
+
+        {/* Selector de cuenta / tienda */}
+        <div className="mb-6">
+          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+            Cuenta de Instagram
+          </label>
+          <div className="bg-slate-100 p-1 rounded-lg flex flex-col gap-1">
+            <button
+              onClick={() => setThankYouHandle('ganesha_store01')}
+              className={`px-3 py-2 text-sm font-bold rounded-md transition-all text-left ${
+                thankYouHandle === 'ganesha_store01' ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              @ganesha_store01
+            </button>
+            <button
+              onClick={() => setThankYouHandle('ganesha_jugueteria')}
+              className={`px-3 py-2 text-sm font-bold rounded-md transition-all text-left ${
+                thankYouHandle === 'ganesha_jugueteria' ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              @ganesha_jugueteria
+            </button>
+          </div>
+        </div>
+
+        {/* Cantidad */}
+        <div className="mb-6">
+          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+            Cantidad a Imprimir
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={thankYouCount}
+            onChange={(e) => setThankYouCount(Number(e.target.value))}
+            className="w-full border border-slate-200 rounded-lg p-3 font-semibold text-slate-700 focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+          />
+        </div>
+
+        <button
+          onClick={() => window.print()}
+          className="w-full bg-[#0f5c5c] text-white py-3 rounded-lg font-bold hover:bg-[#0a4545] transition flex items-center justify-center gap-2 shadow-md"
+        >
+          🖨️ Imprimir Tarjetas
+        </button>
+      </div>
+
+      {/* Vista Previa */}
+      <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-6 flex flex-wrap gap-4 items-start overflow-y-auto">
+        <p className="w-full text-slate-400 text-sm mb-2">Vista Previa (4x6 pulgadas):</p>
+        {Array.from({ length: thankYouCount }).map((_, index) => (
+          <ThankYouCard key={`ty-preview-${index}`} instagram={thankYouHandle} />
+        ))}
+      </div>
+    </div>
+
+    {/* VISTA DE IMPRESIÓN */}
+    <div className="hidden print:block print:w-auto print:m-0">
+      {Array.from({ length: thankYouCount }).map((_, index) => (
+        <ThankYouCard key={`ty-print-${index}`} instagram={thankYouHandle} />
+      ))}
+    </div>
+  </>
+)}
+
       {/* INYECCIÓN GLOBAL DE REGLAS DE IMPRESIÓN PARA LOS FORMATOS DE 2x2 PULGADAS */}
       {(labelMode === 'gift' || labelMode === 'double_logo') && (
         <style dangerouslySetInnerHTML={{ __html: `
@@ -421,6 +505,15 @@ export default function LabelsPage() {
           }
         `}} />
       )}
+
+      {labelMode === 'thankyou' && (
+  <style dangerouslySetInnerHTML={{ __html: `
+    @media print {
+      @page { size: 4in 6in; margin: 0; }
+      body { margin: 0; -webkit-print-color-adjust: exact; }
+    }
+  `}} />
+)}
 
     </div>
   );
@@ -481,6 +574,46 @@ function DoubleLogoCircleLabel() {
           className="h-20 max-w-[85%] w-auto object-contain grayscale" 
         />
 
+      </div>
+    </div>
+  );
+}
+
+function ThankYouCard({ instagram }: { instagram: string }) {
+  return (
+    <div className="w-[4in] h-[6in] print:w-[4in] print:h-[6in] print:break-after-page print:m-0 flex items-center justify-center bg-white">
+      <div className="w-full h-full flex flex-col items-center justify-center text-center px-8 py-10 bg-white">
+        <img
+          src="/logo.jpg"
+          alt="Ganesha Store"
+          className="w-[60%] max-w-[2.4in] object-contain grayscale mb-6"
+        />
+
+        <p className="text-2xl font-semibold text-neutral-800 mb-3">¡Gracias por tu compra!</p>
+
+        <Heart className="w-7 h-7 text-neutral-400 fill-neutral-400 mb-5" strokeWidth={1} />
+
+        <p className="text-lg text-neutral-600 leading-snug mb-6 max-w-[3in]">
+          Tu pedido fue preparado con mucho cariño. Esperamos que disfrutes mucho tu compra.
+        </p>
+
+        <div className="w-[2.6in] border-t-2 border-dotted border-neutral-300 mb-6"></div>
+
+        <p className="text-base text-neutral-600 mb-1">Síguenos en Instagram</p>
+        <p className="text-lg font-medium text-neutral-800 mb-3">@{instagram}</p>
+        <svg
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  strokeWidth={1.5}
+  strokeLinecap="round"
+  strokeLinejoin="round"
+  className="w-7 h-7 text-neutral-700"
+>
+  <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+  <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
+  <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
+</svg>
       </div>
     </div>
   );
