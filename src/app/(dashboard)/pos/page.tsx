@@ -35,6 +35,11 @@ export default function POSPage() {
   const [productSearch, setProductSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
 
+  // NUEVOS ESTADOS PARA PRODUCTO RÁPIDO
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [quickName, setQuickName] = useState('');
+  const [quickPrice, setQuickPrice] = useState('');
+
   const [notification, setNotification] = useState<NotificationType>(null);
 
   // ==========================================
@@ -132,6 +137,29 @@ export default function POSPage() {
     searchInputRef.current?.focus();
   };
 
+  const handleAddQuickProduct = () => {
+    if (!quickName.trim() || !quickPrice || isNaN(Number(quickPrice)) || Number(quickPrice) <= 0) {
+      showNotification('Ingresa un nombre y precio válido', 'error');
+      return;
+    }
+
+    // Usamos un ID temporal que empiece con "quick-" para identificarlo
+    // y evitar que el sistema intente descontarlo del inventario real.
+    const tempId = `quick-${Date.now()}`;
+    
+    addToCart({
+      id: tempId,
+      name: `⚡ ${quickName.trim()}`,
+      price: Number(quickPrice),
+      quantity: 1
+    });
+
+    // Limpiamos y cerramos
+    setQuickName('');
+    setQuickPrice('');
+    setShowQuickAdd(false);
+  };
+
   const handleDecreaseQuantity = (item: any) => {
     if (item.quantity > 1) {
       addToCart({ ...item, quantity: -1 });
@@ -159,7 +187,7 @@ export default function POSPage() {
       const fullDocumentId = cleanDocNumber !== '' ? `${docType}${cleanDocNumber}` : null;
 
       // ==========================================
-      // AISLAMIENTO DE CLIENTES (Customer Scope)
+      // AISLAMIENTO DE CLIENTES
       // ==========================================
       if (fullDocumentId || cleanPhone !== '' || cleanName !== '') {
         if (!fullDocumentId) {
@@ -170,7 +198,7 @@ export default function POSPage() {
           .from('customers')
           .select('*')
           .eq('document_id', fullDocumentId)
-          .eq('store_id', currentStore.id) // <-- FILTRO ESTRICTO
+          .eq('store_id', currentStore.id)
           .maybeSingle();
 
         if (searchError) throw new Error('Error al buscar el cliente en esta sucursal.');
@@ -186,7 +214,7 @@ export default function POSPage() {
               .from('customers')
               .update(updates)
               .eq('document_id', finalCustomerId)
-              .eq('store_id', currentStore.id); // <-- FILTRO ESTRICTO
+              .eq('store_id', currentStore.id);
               
             if (updateError) {
                 if (updateError.code === '23505') throw new Error('Este número de teléfono ya está asociado a otro cliente.');
@@ -198,7 +226,7 @@ export default function POSPage() {
           finalCustomerId = fullDocumentId;
           const { error: insertError } = await supabase.from('customers').insert({
             document_id: finalCustomerId,
-            store_id: currentStore.id, // <-- LLAVE COMPUESTA INYECTADA
+            store_id: currentStore.id,
             full_name: cleanName !== '' ? cleanName : `Cliente ${finalCustomerId}`,
             phone: cleanPhone !== '' ? cleanPhone : null,
             total_spent: 0,
@@ -213,12 +241,12 @@ export default function POSPage() {
       }
 
       // ==========================================
-      // REGISTRO DE VENTA POR SUCURSAL
+      // REGISTRO DE VENTA
       // ==========================================
       const { data: saleData, error: saleError } = await supabase
         .from('sales')
         .insert({
-          store_id: currentStore.id, // <-- ATADURA A LA TIENDA
+          store_id: currentStore.id,
           cashier_id: user.id,
           customer_id: finalCustomerId, 
           total_amount: totalUSD,
@@ -231,40 +259,47 @@ export default function POSPage() {
 
       if (saleError) throw saleError;
 
-      const itemsToInsert = cart.map(item => ({
-        sale_id: saleData.id,
-        product_id: item.id,
-        quantity: item.quantity,
-        unit_price: item.price,
-        subtotal: item.price * item.quantity 
-      }));
+      // ⚡ NUEVO: Preparamos los items evaluando si son rápidos o normales
+      const itemsToInsert = cart.map(item => {
+        const isQuickProduct = item.id.startsWith('quick-');
+        
+        return {
+          sale_id: saleData.id,
+          // Si es rápido mandamos null en product_id, de lo contrario su id real
+          product_id: isQuickProduct ? null : item.id,
+          // Si es rápido guardamos su nombre, de lo contrario null
+          custom_name: isQuickProduct ? item.name : null, 
+          quantity: item.quantity,
+          unit_price: item.price,
+          subtotal: item.price * item.quantity 
+        };
+      });
 
       const { error: itemsError } = await supabase.from('sale_items').insert(itemsToInsert);
       if (itemsError) throw itemsError;
 
       // ==========================================
-      // DESCUENTO DE INVENTARIO AISLADO (store_stock)
+      // DESCUENTO DE INVENTARIO AISLADO
       // ==========================================
       for (const item of cart) {
+        // ⚡ NUEVO: Saltamos el chequeo de inventario si es un producto rápido
+        if (item.id.startsWith('quick-')) continue;
+
         const { data: stockData } = await supabase
           .from('store_stock')
           .select('stock') 
           .eq('product_id', item.id)
           .eq('store_id', currentStore.id)
-          .maybeSingle(); // <-- CLAVE: No explota si el producto no tiene registro de stock
+          .maybeSingle();
 
         if (stockData) {
-          // Descontamos asegurando que no baje de 0 (por la restricción de Postgres)
           const newStock = Math.max(0, stockData.stock - item.quantity);
-          
           await supabase
             .from('store_stock')
             .update({ stock: newStock })
             .eq('product_id', item.id)
             .eq('store_id', currentStore.id);
         } else {
-          // Si el producto es antiguo y no tenía stock registrado en esta tienda, 
-          // creamos la fila en 0 para que no falle el sistema y quede registrado.
           await supabase
             .from('store_stock')
             .insert({
@@ -275,8 +310,11 @@ export default function POSPage() {
         }
       }
 
-      // Actualizar Puntos del Cliente (aislado por tienda)
+      // ==========================================
+      // PUNTOS Y GASTO DEL CLIENTE (Aplica automático a productos rápidos)
+      // ==========================================
       if (finalCustomerId) {
+         // ⚡ NOTA: totalUSD ya incluye el precio de los productos rápidos
          const pointsEarned = Math.floor(totalUSD / 20);
 
          const { data: custData } = await supabase
@@ -408,17 +446,30 @@ export default function POSPage() {
 
             <hr className="border-slate-200" />
 
+            {/* SECCIÓN DE BÚSQUEDA Y PRODUCTO RÁPIDO */}
             <div className="relative">
-              <input 
-                ref={searchInputRef}
-                type="text" 
-                value={productSearch}
-                onChange={handleSearchChange}
-                onKeyDown={handleKeyDown}
-                autoFocus
-                placeholder="🛒 Busca por nombre o escanea código de barras..." 
-                className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
-              />
+              <div className="flex gap-2">
+                <input 
+                  ref={searchInputRef}
+                  type="text" 
+                  value={productSearch}
+                  onChange={handleSearchChange}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                  placeholder="🛒 Busca por nombre o escanea código de barras..." 
+                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                />
+                <button 
+                  onClick={() => setShowQuickAdd(!showQuickAdd)}
+                  className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
+                    showQuickAdd 
+                      ? 'bg-slate-200 text-slate-700 border-slate-300' 
+                      : 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
+                  }`}
+                >
+                  {showQuickAdd ? '✕ Cerrar' : 'Producto Rápido'}
+                </button>
+              </div>
               {searchResults.length > 0 && (
                 <ul className="absolute z-10 w-full bg-white border border-slate-200 shadow-xl rounded-lg mt-1 max-h-60 overflow-y-auto">
                   {searchResults.map(p => (
@@ -436,6 +487,41 @@ export default function POSPage() {
                   ))}
                 </ul>
               )}
+
+                {/* FORMULARIO DE PRODUCTO RÁPIDO */}
+              {showQuickAdd && (
+                <div className="absolute z-10 w-full bg-white border-2 border-teal-500 shadow-xl rounded-lg mt-1 p-4 animate-fade-in-down">
+                  <h4 className="text-sm font-bold text-teal-700 mb-3 uppercase tracking-wide">Añadir Producto Manual</h4>
+                  <div className="flex gap-3">
+                    <input 
+                      type="text" 
+                      value={quickName}
+                      onChange={(e) => setQuickName(e.target.value)}
+                      placeholder="Nombre del producto..."
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                    />
+                    <div className="relative w-32">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        min="0"
+                        value={quickPrice}
+                        onChange={(e) => setQuickPrice(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full pl-7 pr-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                      />
+                    </div>
+                    <button 
+                      onClick={handleAddQuickProduct}
+                      className="bg-[#0f5c5c] hover:bg-[#0a4545] text-white px-4 py-2 rounded-lg font-medium transition"
+                    >
+                      Añadir
+                    </button>
+                  </div>
+                </div>
+              )}
+
             </div>
           </div>
 
