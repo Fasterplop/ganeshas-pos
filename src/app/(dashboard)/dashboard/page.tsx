@@ -49,6 +49,7 @@ export default function DashboardPage() {
   // Estados para el HISTORIAL DE TRANSACCIONES
   const [salesHistory, setSalesHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [historyDateRange, setHistoryDateRange] = useState({
     start: defaultStart.toISOString().split('T')[0],
     end: defaultEnd.toISOString().split('T')[0],
@@ -189,8 +190,8 @@ export default function DashboardPage() {
         .from('sales')
         .select('created_at, total_amount')
         .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
-        .gte('created_at', `${dateRange.start}T00:00:00.000Z`)
-        .lte('created_at', `${dateRange.end}T23:59:59.999Z`);
+        .gte('created_at', `${dateRange.start}T00:00:00.000-04:00`)
+        .lte('created_at', `${dateRange.end}T23:59:59.999-04:00`);
 
       if (chartSales) {
         const grouped: Record<string, number> = {};
@@ -243,10 +244,10 @@ export default function DashboardPage() {
           )
         `)
         .eq('store_id', currentStore.id) 
-        .gte('created_at', `${historyDateRange.start}T00:00:00.000Z`)
-        .lte('created_at', `${historyDateRange.end}T23:59:59.999Z`)
+        .gte('created_at', `${historyDateRange.start}T00:00:00.000-04:00`)
+        .lte('created_at', `${historyDateRange.end}T23:59:59.999-04:00`)
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(100);
 
       if (data) {
         setSalesHistory(data);
@@ -259,94 +260,133 @@ export default function DashboardPage() {
   }, [historyDateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
 
   const handleExportCSV = async () => {
-  if (salesHistory.length === 0) return;
+    if (!currentStore || exporting) return;
+    setExporting(true);
 
-  const workbook = new ExcelJS.Workbook();
-  const ws = workbook.addWorksheet('Historial de Ventas', {
-    views: [{ state: 'frozen', ySplit: 1 }], // congela el header al hacer scroll
-  });
+    try {
+      // Límites anclados a Caracas (UTC-4 fijo). Funciona porque created_at ya es timestamptz.
+      const fromISO = `${historyDateRange.start}T00:00:00.000-04:00`;
+      const toISO   = `${historyDateRange.end}T23:59:59.999-04:00`;
 
-  ws.columns = [
-    { header: 'Fecha',          key: 'fecha',      width: 20 },
-    { header: 'Cliente',        key: 'cliente',    width: 22 },
-    { header: 'Cajero',         key: 'cajero',     width: 20 },
-    { header: 'Productos',      key: 'productos',  width: 40 },
-    { header: 'Método de Pago', key: 'metodo',     width: 16 },
-    { header: 'Referencia',     key: 'referencia', width: 16 },
-    { header: 'Total USD',      key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
-    { header: 'Total Bs',       key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
-  ];
+      // Query PROPIA del export: SIN .limit() → trae TODO el rango (la tabla sí está capada a 50).
+      const { data: rows, error } = await supabase
+        .from('sales')
+        .select(`
+          id,
+          created_at,
+          total_amount,
+          bcv_rate,
+          payment_method,
+          payment_ref,
+          customers (full_name),
+          profiles (full_name),
+          sale_items (
+            quantity,
+            unit_price,
+            custom_name,
+            products (name)
+          )
+        `)
+        .eq('store_id', currentStore.id)
+        .gte('created_at', fromISO)
+        .lte('created_at', toISO)
+        .order('created_at', { ascending: false });
 
-  // --- Estilo del header ---
-  const headerRow = ws.getRow(1);
-  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
-  headerRow.height = 22;
-  headerRow.eachCell(cell => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } }; // slate-800
-    cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
-  });
+      if (error) throw error;
+      if (!rows || rows.length === 0) {
+        alert('No hay transacciones en el rango seleccionado.');
+        return;
+      }
 
-  let totalSumaUSD = 0;
-  let totalSumaVES = 0;
+      const workbook = new ExcelJS.Workbook();
+      const ws = workbook.addWorksheet('Historial de Ventas', {
+        views: [{ state: 'frozen', ySplit: 1 }],
+      });
 
-  salesHistory.forEach(sale => {
-    const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
-      timeZone: 'America/Caracas',
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    }).replace(/,/g, '');
+      ws.columns = [
+        { header: 'Fecha',          key: 'fecha',      width: 20 },
+        { header: 'Cliente',        key: 'cliente',    width: 22 },
+        { header: 'Cajero',         key: 'cajero',     width: 20 },
+        { header: 'Productos',      key: 'productos',  width: 40 },
+        { header: 'Método de Pago', key: 'metodo',     width: 16 },
+        { header: 'Referencia',     key: 'referencia', width: 16 },
+        { header: 'Total USD',      key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Total Bs',       key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
+      ];
 
-    const productos = sale.sale_items?.map((item: any) =>
-      `${item.quantity}x ${item.custom_name || item.products?.name || 'Desconocido'}`
-    ).join(' | ') || '';
+      const headerRow = ws.getRow(1);
+      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+      headerRow.height = 22;
+      headerRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
+      });
 
-    const amountUSD = Number(sale.total_amount) || 0;
-    const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
-    totalSumaUSD += amountUSD;
-    totalSumaVES += amountVES;
+      let totalSumaUSD = 0;
+      let totalSumaVES = 0;
 
-    ws.addRow({
-      fecha,
-      cliente: sale.customers?.full_name || 'Anónimo',
-      cajero: sale.profiles?.full_name || 'Desconocido',
-      productos,
-      metodo: sale.payment_method?.replace(/_/g, ' ') || 'N/A',
-      referencia: sale.payment_ref || 'N/A',
-      usd: amountUSD,   // número real, no string → Excel lo formatea
-      bs: amountVES,
-    });
-  });
+      rows.forEach((sale: any) => {
+        const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
+          timeZone: 'America/Caracas',
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', hour12: true,
+        }).replace(/,/g, '');
 
-  // --- Fila de totales ---
-  ws.addRow({});
-  const totalRow = ws.addRow({
-    referencia: 'TOTAL:',
-    usd: totalSumaUSD,
-    bs: totalSumaVES,
-  });
-  totalRow.font = { bold: true };
-  totalRow.eachCell(cell => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; // slate-100
-  });
+        const productos = sale.sale_items?.map((item: any) =>
+          `${item.quantity}x ${item.custom_name || item.products?.name || 'Desconocido'}`
+        ).join(' | ') || '';
 
-  // Autofiltro sobre el header
-  ws.autoFilter = { from: 'A1', to: 'H1' };
+        const amountUSD = Number(sale.total_amount) || 0;
+        const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
+        totalSumaUSD += amountUSD;
+        totalSumaVES += amountVES;
 
-  // --- Descarga ---
-  const buffer = await workbook.xlsx.writeBuffer();
-  const blob = new Blob([buffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `historial_ventas_${currentStore?.name.replace(/\s+/g, '_').toLowerCase()}_${historyDateRange.start}_al_${historyDateRange.end}.xlsx`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url); // libera memoria — tu versión actual no lo hacía
-};
+        ws.addRow({
+          fecha,
+          cliente: sale.customers?.full_name || 'Anónimo',
+          cajero: sale.profiles?.full_name || 'Desconocido',
+          productos,
+          metodo: sale.payment_method?.replace(/_/g, ' ') || 'N/A',
+          referencia: sale.payment_ref || 'N/A',
+          usd: amountUSD,
+          bs: amountVES,
+        });
+      });
+
+      ws.addRow({});
+      const totalRow = ws.addRow({
+        referencia: 'TOTAL:',
+        usd: totalSumaUSD,
+        bs: totalSumaVES,
+      });
+      totalRow.font = { bold: true };
+      totalRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+      });
+
+      ws.autoFilter = { from: 'A1', to: 'H1' };
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const storeName = currentStore.name?.replace(/\s+/g, '_').toLowerCase() || 'tienda';
+      link.download = `historial_ventas_${storeName}_${historyDateRange.start}_al_${historyDateRange.end}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert(err instanceof Error ? err.message : 'Error al exportar el reporte.');
+    } finally {
+      setExporting(false);
+    }
+  };
   // Bloqueo de seguridad visual mientras carga el contexto de la tienda
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500 font-sans">Sincronizando reportes de sucursal...</div>;
@@ -559,10 +599,10 @@ export default function DashboardPage() {
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
             <button 
               onClick={handleExportCSV}
-              disabled={salesHistory.length === 0}
+              disabled={exporting}
               className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed w-full sm:w-auto shrink-0"
             >
-              📥 Exportar a .xlsx
+              {exporting ? '⏳ Exportando...' : '📥 Exportar a .xlsx'}
             </button>
 
             <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">
