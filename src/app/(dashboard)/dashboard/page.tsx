@@ -6,6 +6,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import Modal from '@/components/Modal';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
+import ExcelJS from 'exceljs';
 
 export default function DashboardPage() {
   const supabase = createClient();
@@ -257,58 +258,95 @@ export default function DashboardPage() {
     fetchHistory();
   }, [historyDateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
 
-  const handleExportCSV = () => {
-    if (salesHistory.length === 0) return;
+  const handleExportCSV = async () => {
+  if (salesHistory.length === 0) return;
 
-    const headers = ['Fecha', 'Cliente', 'Cajero', 'Productos', 'Metodo de Pago', 'Referencia', 'Total USD', 'Total Bs'];
-    
-    // 1. Variables para acumular los totales
-    let totalSumaUSD = 0;
-    let totalSumaVES = 0;
+  const workbook = new ExcelJS.Workbook();
+  const ws = workbook.addWorksheet('Historial de Ventas', {
+    views: [{ state: 'frozen', ySplit: 1 }], // congela el header al hacer scroll
+  });
 
-    const rows = salesHistory.map(sale => {
-      const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
-        timeZone: 'America/Caracas',
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
-      }).replace(/,/g, ''); 
-      
-      const cliente = sale.customers?.full_name || 'Anónimo';
-      const cajero = sale.profiles?.full_name || 'Desconocido';
-      const productos = sale.sale_items?.map((item: any) => {
-        const nombre = item.custom_name || item.products?.name || 'Desconocido';
-        return `${item.quantity}x ${nombre}`;
-      }).join(' | ') || '';
-      const metodoPago = sale.payment_method?.replace(/_/g, ' ') || 'N/A';
-      const referencia = sale.payment_ref || 'N/A';
-      
-      // Calculamos los montos en números
-      const amountUSD = Number(sale.total_amount);
-      const amountVES = amountUSD * Number(sale.bcv_rate);
+  ws.columns = [
+    { header: 'Fecha',          key: 'fecha',      width: 20 },
+    { header: 'Cliente',        key: 'cliente',    width: 22 },
+    { header: 'Cajero',         key: 'cajero',     width: 20 },
+    { header: 'Productos',      key: 'productos',  width: 40 },
+    { header: 'Método de Pago', key: 'metodo',     width: 16 },
+    { header: 'Referencia',     key: 'referencia', width: 16 },
+    { header: 'Total USD',      key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
+    { header: 'Total Bs',       key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
+  ];
 
-      // Sumamos al acumulador
-      totalSumaUSD += amountUSD;
-      totalSumaVES += amountVES;
+  // --- Estilo del header ---
+  const headerRow = ws.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  headerRow.height = 22;
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } }; // slate-800
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
+  });
 
-      const totalUsd = amountUSD.toFixed(2);
-      const totalBs = amountVES.toFixed(2);
+  let totalSumaUSD = 0;
+  let totalSumaVES = 0;
 
-      return `"${fecha}","${cliente}","${cajero}","${productos}","${metodoPago}","${referencia}","${totalUsd}","${totalBs}"`;
+  salesHistory.forEach(sale => {
+    const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
+      timeZone: 'America/Caracas',
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+    }).replace(/,/g, '');
+
+    const productos = sale.sale_items?.map((item: any) =>
+      `${item.quantity}x ${item.custom_name || item.products?.name || 'Desconocido'}`
+    ).join(' | ') || '';
+
+    const amountUSD = Number(sale.total_amount) || 0;
+    const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
+    totalSumaUSD += amountUSD;
+    totalSumaVES += amountVES;
+
+    ws.addRow({
+      fecha,
+      cliente: sale.customers?.full_name || 'Anónimo',
+      cajero: sale.profiles?.full_name || 'Desconocido',
+      productos,
+      metodo: sale.payment_method?.replace(/_/g, ' ') || 'N/A',
+      referencia: sale.payment_ref || 'N/A',
+      usd: amountUSD,   // número real, no string → Excel lo formatea
+      bs: amountVES,
     });
+  });
 
-    // 2. Agregamos una fila vacía como separador y luego la fila con los totales generales
-    rows.push(`"","","","","","","",""`);
-    rows.push(`"","","","","","TOTAL:","${totalSumaUSD.toFixed(2)}","${totalSumaVES.toFixed(2)}"`);
+  // --- Fila de totales ---
+  ws.addRow({});
+  const totalRow = ws.addRow({
+    referencia: 'TOTAL:',
+    usd: totalSumaUSD,
+    bs: totalSumaVES,
+  });
+  totalRow.font = { bold: true };
+  totalRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; // slate-100
+  });
 
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `historial_ventas_${currentStore?.name.replace(/\s+/g, '_').toLowerCase()}_${historyDateRange.start}_al_${historyDateRange.end}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  // Autofiltro sobre el header
+  ws.autoFilter = { from: 'A1', to: 'H1' };
+
+  // --- Descarga ---
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `historial_ventas_${currentStore?.name.replace(/\s+/g, '_').toLowerCase()}_${historyDateRange.start}_al_${historyDateRange.end}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url); // libera memoria — tu versión actual no lo hacía
+};
   // Bloqueo de seguridad visual mientras carga el contexto de la tienda
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500 font-sans">Sincronizando reportes de sucursal...</div>;
@@ -524,7 +562,7 @@ export default function DashboardPage() {
               disabled={salesHistory.length === 0}
               className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed w-full sm:w-auto shrink-0"
             >
-              📥 Exportar a .csv
+              📥 Exportar a .xlsx
             </button>
 
             <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">

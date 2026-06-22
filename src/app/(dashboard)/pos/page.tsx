@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 
+
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
 type DiscountType = 'none' | 'percent' | 'fixed';
 

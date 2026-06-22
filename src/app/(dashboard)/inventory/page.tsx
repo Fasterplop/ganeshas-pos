@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore } from '@/store/usePOSStore';
+import ExcelJS from 'exceljs';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -248,20 +249,89 @@ export default function InventoryPage() {
     reset({ sku_barcode: '', name: '', category: 'otros', price: 0, stock: 0 });
   };
 
-  const handleExportCSV = () => {
-    if (products.length === 0 || !currentStore) return;
-    const headers = ['SKU', 'Nombre', 'Categoria', 'Precio', `Stock (${currentStore.name})`];
-    const csvContent = [
-      headers.join(','),
-      ...products.map(p => `"${p.sku_barcode}","${p.name}","${p.category}",${p.price},${p.stock}`)
-    ].join('\n');
+  const LOW_STOCK_THRESHOLD = 5; // ajústalo a tu realidad
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `inventario_${currentStore.name.replace(/\s+/g, '_').toLowerCase()}.csv`;
-    link.click();
-  };
+const handleExportCSV = async () => {
+  if (products.length === 0 || !currentStore) return;
+
+  const workbook = new ExcelJS.Workbook();
+  const ws = workbook.addWorksheet('Inventario', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  ws.columns = [
+    { header: 'SKU',                          key: 'sku',      width: 18 },
+    { header: 'Nombre',                       key: 'nombre',   width: 36 },
+    { header: 'Categoría',                    key: 'categoria', width: 16 },
+    { header: 'Precio',                       key: 'precio',   width: 14, style: { numFmt: '"$"#,##0.00' } },
+    { header: `Stock (${currentStore.name})`, key: 'stock',    width: 18 },
+    { header: 'Valor inventario',             key: 'valor',    width: 18, style: { numFmt: '"$"#,##0.00' } },
+  ];
+
+  // --- Header ---
+  const headerRow = ws.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  headerRow.height = 22;
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  });
+
+  let totalUnidades = 0;
+  let totalValor = 0;
+
+  products.forEach(p => {
+    const stock = Number(p.stock) || 0;
+    const precio = Number(p.price) || 0;
+    const valor = precio * stock;
+    totalUnidades += stock;
+    totalValor += valor;
+
+    const row = ws.addRow({
+      sku: p.sku_barcode,
+      nombre: p.name,
+      categoria: p.category,
+      precio,           // número real → Excel formatea
+      stock,
+      valor,
+    });
+
+    // Resaltar stock bajo
+    if (stock <= LOW_STOCK_THRESHOLD) {
+      row.getCell('stock').fill = {
+        type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' }, // red-100
+      };
+      row.getCell('stock').font = { color: { argb: 'FFB91C1C' }, bold: true }; // red-700
+    }
+  });
+
+  // --- Totales ---
+  const totalRow = ws.addRow({
+    nombre: 'TOTAL',
+    stock: totalUnidades,
+    valor: totalValor,
+  });
+  totalRow.font = { bold: true };
+  totalRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  });
+
+  ws.autoFilter = { from: 'A1', to: 'F1' };
+
+  // --- Descarga ---
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `inventario_${currentStore.name.replace(/\s+/g, '_').toLowerCase()}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
 
   const handlePrint = () => {
     if (!selectedProduct) return alert('Selecciona un producto primero');
@@ -305,7 +375,7 @@ export default function InventoryPage() {
 
             <div className="flex gap-2 w-full md:w-auto">
               <button onClick={handleExportCSV} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer font-medium">
-                Exportar CSV
+                Exportar Excel
               </button>
               
               {/* MODIFICADO: Botón habilitado tanto para Owner como para Cashier */}
