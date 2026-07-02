@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Modal from '@/components/Modal';
+import LoyaltySettingsCard from '@/components/LoyaltySettingsCard';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
@@ -585,6 +586,9 @@ export default function DashboardPage() {
                 )}
               </div>
             </div>
+
+            {/* Configuración de Descuento por Puntos (owner) */}
+            <LoyaltySettingsCard />
 
           </div>
         </div>

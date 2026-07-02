@@ -43,6 +43,13 @@ export default function POSPage() {
 
   const [notification, setNotification] = useState<NotificationType>(null);
 
+  // NUEVOS ESTADOS PARA CANJE DE PUNTOS
+  const [customerPoints, setCustomerPoints] = useState<number | null>(null);
+  const [customerLookupName, setCustomerLookupName] = useState<string | null>(null);
+  const [loyaltyCfg, setLoyaltyCfg] = useState({ points_per_block: 10, discount_per_block_usd: 10 });
+  const [redeemBlocks, setRedeemBlocks] = useState(0);
+  const redeemTouchedRef = useRef(false); // ¿el cajero ya ajustó el canje manualmente?
+
   // ==========================================
   // MITIGACIÓN CASO #2 TDD: Cambio de Tienda
   // ==========================================
@@ -58,7 +65,64 @@ export default function POSPage() {
     setDiscountValue('');
     setProductSearch('');
     setSearchResults([]);
+    setRedeemBlocks(0);
+    setCustomerPoints(null);
+    setCustomerLookupName(null);
+    redeemTouchedRef.current = false;
   }, [currentStore?.id, clearCart]);
+
+  // Cargar la configuración de lealtad de la sucursal activa (fallback 10/10)
+  useEffect(() => {
+    if (!currentStore) return;
+    (async () => {
+      const { data } = await supabase
+        .from('loyalty_settings')
+        .select('points_per_block, discount_per_block_usd')
+        .eq('store_id', currentStore.id)
+        .maybeSingle();
+      if (data) {
+        setLoyaltyCfg({
+          points_per_block: data.points_per_block,
+          discount_per_block_usd: Number(data.discount_per_block_usd),
+        });
+      } else {
+        setLoyaltyCfg({ points_per_block: 10, discount_per_block_usd: 10 });
+      }
+    })();
+  }, [currentStore?.id]);
+
+  // Leer el saldo de puntos EN VIVO cuando el cajero ingresa la cédula
+  useEffect(() => {
+    const cleanDocNumber = docNumber.trim();
+    redeemTouchedRef.current = false; // al cambiar de cliente, volvemos al default (máximo)
+    if (!currentStore || cleanDocNumber === '') {
+      setCustomerPoints(null);
+      setCustomerLookupName(null);
+      return;
+    }
+    const fullDocumentId = `${docType}${cleanDocNumber}`;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from('customers')
+        .select('full_name, reward_points')
+        .eq('document_id', fullDocumentId)
+        .eq('store_id', currentStore.id)
+        .maybeSingle();
+      if (cancelled) return;
+      if (data) {
+        setCustomerPoints(data.reward_points ?? 0);
+        setCustomerLookupName(data.full_name);
+      } else {
+        setCustomerPoints(null);
+        setCustomerLookupName(null);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [docType, docNumber, currentStore?.id]);
 
   // Cálculos de totales y descuentos
   const subtotalUSD = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
@@ -74,8 +138,29 @@ export default function POSPage() {
     }
   }
 
-  const totalUSD = Math.max(0, subtotalUSD - discountAmount);
+  const totalAfterManual = Math.max(0, subtotalUSD - discountAmount);
+
+  // --- Canje de puntos (descuento por lealtad) ---
+  const maxBlocksByBalance = customerPoints !== null
+    ? Math.floor(customerPoints / loyaltyCfg.points_per_block)
+    : 0;
+  const maxBlocksByTotal = Math.floor(totalAfterManual / loyaltyCfg.discount_per_block_usd);
+  const maxBlocks = Math.max(0, Math.min(maxBlocksByBalance, maxBlocksByTotal));
+  const redemptionDiscount = redeemBlocks * loyaltyCfg.discount_per_block_usd;
+  const pointsToConsume = redeemBlocks * loyaltyCfg.points_per_block;
+
+  const totalUSD = Math.max(0, totalAfterManual - redemptionDiscount);
   const totalVES = totalUSD * bcvRate;
+
+  // Default: aplicar el descuento MÁXIMO disponible. Si el cajero ya ajustó
+  // el canje manualmente, respetamos su elección (solo acotamos hacia abajo).
+  useEffect(() => {
+    if (redeemTouchedRef.current) {
+      setRedeemBlocks((b) => Math.min(b, maxBlocks));
+    } else {
+      setRedeemBlocks(maxBlocks);
+    }
+  }, [maxBlocks]);
 
   const showNotification = (message: string, type: 'success' | 'error') => {
     setNotification({ message, type });
@@ -242,6 +327,25 @@ export default function POSPage() {
       }
 
       // ==========================================
+      // CANJE DE PUNTOS (resta atómica ANTES de crear la venta)
+      // Funciona como compuerta de elegibilidad: si falla (saldo insuficiente
+      // o carrera perdida), abortamos el checkout sin crear la venta.
+      // ==========================================
+      if (redeemBlocks > 0) {
+        if (!finalCustomerId) {
+          throw new Error('Para canjear puntos debes asociar un cliente con su cédula.');
+        }
+        const { error: redeemError } = await supabase.rpc('redeem_points', {
+          p_document_id: finalCustomerId,
+          p_store_id: currentStore.id,
+          p_points: redeemBlocks * loyaltyCfg.points_per_block,
+        });
+        if (redeemError) {
+          throw new Error('El saldo de puntos cambió o es insuficiente. Refresca el cliente e intenta de nuevo.');
+        }
+      }
+
+      // ==========================================
       // REGISTRO DE VENTA
       // ==========================================
       const { data: saleData, error: saleError } = await supabase
@@ -347,6 +451,10 @@ export default function POSPage() {
       setPaymentMethod(null);
       setDiscountType('none');
       setDiscountValue('');
+      setRedeemBlocks(0);
+      setCustomerPoints(null);
+      setCustomerLookupName(null);
+      redeemTouchedRef.current = false;
       
       setTimeout(() => {
         searchInputRef.current?.focus();
@@ -579,7 +687,7 @@ export default function POSPage() {
           <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
             <p className="text-slate-600 font-medium">{totalItems} Artículos</p>
             <div className="text-right flex flex-col items-end">
-              {discountAmount > 0 && (
+              {(discountAmount + redemptionDiscount) > 0 && (
                 <p className="text-sm text-red-500 line-through mb-1">${subtotalUSD.toFixed(2)}</p>
               )}
               <div className="flex gap-2 items-baseline">
@@ -596,13 +704,70 @@ export default function POSPage() {
           <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-6 text-white flex flex-col justify-center items-end shrink-0">
             <p className="text-teal-100 text-sm mb-1">Total a Pagar</p>
             <p className="text-5xl font-bold mb-2">${totalUSD.toFixed(2)}</p>
-            {discountAmount > 0 && (
+            {(discountAmount + redemptionDiscount) > 0 && (
               <p className="text-teal-200 text-sm mb-1 bg-[#0a4545] px-2 py-1 rounded">
-                Ahorro: ${discountAmount.toFixed(2)}
+                Ahorro: ${(discountAmount + redemptionDiscount).toFixed(2)}
               </p>
             )}
             <p className="text-teal-200 text-sm">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
           </div>
+
+          {/* TARJETA DE CANJE DE PUNTOS (aparece al detectar un cliente) */}
+          {customerPoints !== null && (
+            <div className="bg-white rounded-xl shadow-sm border border-teal-200 p-5 shrink-0">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                  <span className="text-teal-600">✪</span> Puntos de Lealtad
+                </h3>
+                <span className="text-sm font-bold text-teal-700">{customerPoints} pts</span>
+              </div>
+              {customerLookupName && (
+                <p className="text-xs text-slate-500 mb-3">{customerLookupName}</p>
+              )}
+
+              {maxBlocks === 0 ? (
+                <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 mt-2">
+                  {customerPoints < loyaltyCfg.points_per_block
+                    ? `Necesita ${loyaltyCfg.points_per_block} pts para $${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento.`
+                    : 'El total es muy bajo para aplicar descuento por puntos.'}
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-500 mb-3">
+                    {loyaltyCfg.points_per_block} pts = ${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento
+                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.max(0, b - 1)); }}
+                      disabled={redeemBlocks === 0}
+                      className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      −
+                    </button>
+                    <div className="text-center">
+                      <p className="text-xl font-bold text-teal-700">−${redemptionDiscount.toFixed(2)}</p>
+                      <p className="text-xs text-slate-500">{pointsToConsume} pts · {redeemBlocks} de {maxBlocks}</p>
+                    </div>
+                    <button
+                      onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.min(maxBlocks, b + 1)); }}
+                      disabled={redeemBlocks >= maxBlocks}
+                      className="w-10 h-10 flex items-center justify-center rounded-full bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks(redeemBlocks === maxBlocks ? 0 : maxBlocks); }}
+                    className="w-full mt-3 text-xs font-semibold text-teal-700 hover:underline"
+                  >
+                    {redeemBlocks === maxBlocks
+                      ? 'Quitar descuento'
+                      : `Aplicar máximo (−$${(maxBlocks * loyaltyCfg.discount_per_block_usd).toFixed(2)})`}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
             <h3 className="font-semibold text-slate-800 mb-4">Método de Pago <span className="text-red-500">*</span></h3>
