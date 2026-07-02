@@ -116,7 +116,7 @@ Sistema de impresión masiva integrado directamente en el navegador:
 
 * **Redención de Puntos (POS — ✅ Implementado):** El cajero ya puede canjear los `reward_points` del cliente como descuento directo en caja, con configuración por sucursal (`loyalty_settings`) y deducción atómica (`redeem_points`). **Pendiente:** exponer el balance y el canje también desde la Customer App.
 
-> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio); la anulación de una venta con canje no reintegra los puntos automáticamente; y no se guarda un historial de canjes más allá del saldo reducido del cliente. Ver `db/loyalty_redemption.sql`.
+> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio); la anulación de una venta con canje no reintegra los puntos automáticamente; y no se guarda un historial de canjes más allá del saldo reducido del cliente.
 
 ---
 *GaneshaStores POS - Desarrollado para optimización de flujo en mostrador y alta fidelidad contable.*
