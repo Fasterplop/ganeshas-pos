@@ -232,6 +232,7 @@ export default function DashboardPage() {
           id,
           created_at,
           total_amount,
+          redemption_discount_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -276,6 +277,7 @@ export default function DashboardPage() {
           id,
           created_at,
           total_amount,
+          redemption_discount_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -311,6 +313,7 @@ export default function DashboardPage() {
         { header: 'Productos',      key: 'productos',  width: 40 },
         { header: 'Método de Pago', key: 'metodo',     width: 16 },
         { header: 'Referencia',     key: 'referencia', width: 16 },
+        { header: 'Descuento USD',  key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',      key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',       key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
@@ -326,6 +329,7 @@ export default function DashboardPage() {
 
       let totalSumaUSD = 0;
       let totalSumaVES = 0;
+      let totalDescuento = 0;
 
       rows.forEach((sale: any) => {
         const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
@@ -340,8 +344,10 @@ export default function DashboardPage() {
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
+        const descuentoUSD = Number(sale.redemption_discount_usd) || 0;
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
+        totalDescuento += descuentoUSD;
 
         ws.addRow({
           fecha,
@@ -350,6 +356,7 @@ export default function DashboardPage() {
           productos,
           metodo: sale.payment_method?.replace(/_/g, ' ') || 'N/A',
           referencia: sale.payment_ref || 'N/A',
+          descuento: descuentoUSD,
           usd: amountUSD,
           bs: amountVES,
         });
@@ -358,6 +365,7 @@ export default function DashboardPage() {
       ws.addRow({});
       const totalRow = ws.addRow({
         referencia: 'TOTAL:',
+        descuento: totalDescuento,
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
@@ -366,7 +374,7 @@ export default function DashboardPage() {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
       });
 
-      ws.autoFilter = { from: 'A1', to: 'H1' };
+      ws.autoFilter = { from: 'A1', to: 'I1' };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -688,7 +696,12 @@ export default function DashboardPage() {
   <p className="text-[11px] text-slate-500 font-medium mt-0.5">
     Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
   </p>
-  
+  {Number(sale.redemption_discount_usd) > 0 && (
+    <p className="text-[11px] text-teal-600 font-semibold mt-0.5">
+      ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}
+    </p>
+  )}
+
   {/* NUEVO: Botón de anular venta */}
   {role === 'owner' && (
   <button 

@@ -103,16 +103,14 @@ export default function POSPage() {
     const fullDocumentId = `${docType}${cleanDocNumber}`;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const { data } = await supabase
-        .from('customers')
-        .select('full_name, reward_points')
-        .eq('document_id', fullDocumentId)
-        .eq('store_id', currentStore.id)
-        .maybeSingle();
+      // Saldo UNIFICADO: suma de puntos del cliente en TODAS las sucursales
+      const { data } = await supabase.rpc('get_global_points', {
+        p_document_id: fullDocumentId,
+      });
       if (cancelled) return;
       if (data) {
-        setCustomerPoints(data.reward_points ?? 0);
-        setCustomerLookupName(data.full_name);
+        setCustomerPoints(data.points ?? 0);
+        setCustomerLookupName(data.full_name ?? null);
       } else {
         setCustomerPoints(null);
         setCustomerLookupName(null);
@@ -335,9 +333,8 @@ export default function POSPage() {
         if (!finalCustomerId) {
           throw new Error('Para canjear puntos debes asociar un cliente con su cédula.');
         }
-        const { error: redeemError } = await supabase.rpc('redeem_points', {
+        const { error: redeemError } = await supabase.rpc('redeem_points_global', {
           p_document_id: finalCustomerId,
-          p_store_id: currentStore.id,
           p_points: redeemBlocks * loyaltyCfg.points_per_block,
         });
         if (redeemError) {
@@ -357,7 +354,8 @@ export default function POSPage() {
           total_amount: totalUSD,
           bcv_rate: bcvRate,
           payment_method: paymentMethod,
-          payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim()
+          payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim(),
+          redemption_discount_usd: redemptionDiscount
         })
         .select()
         .single();

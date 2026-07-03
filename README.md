@@ -52,13 +52,13 @@ La base de datos relacional en PostgreSQL está protegida por **Row-Level Securi
 ### Esquema Relacional Actualizado
 * **`stores` (NUEVO):** Define las sucursales disponibles (`id`, `name`, `address`, `is_active`).
 * **`profiles`**: Extiende `auth.users`. Almacena el `full_name`, el `role` y la atadura a la sucursal obligatoria (`assigned_store_id`).
-* **`customers` (Aislado):** CRM del negocio. Su Primary Key es ahora compuesta: `(document_id, store_id)`. Un cliente tiene historiales y puntos completamente independientes en cada sucursal. Se reemplazó el uso de email por `phone`.
+* **`customers`:** CRM del negocio. Su Primary Key es compuesta: `(document_id, store_id)`, por lo que cada sucursal mantiene su propia fila e historial de venta del cliente. **Los puntos de fidelidad, en cambio, se manejan como un pool UNIFICADO:** se leen y canjean sumando el saldo del cliente en todas las sucursales (ver `get_global_points` / `redeem_points_global`). Se reemplazó el uso de email por `phone`.
 * **`products` (Catálogo Global):** Almacena `sku_barcode`, `name`, `category` y `price` compartidos para toda la empresa.
 * **`store_stock` (Inventario Local):** Nueva tabla que maneja el stock físico por tienda `(product_id, store_id)`. **Incluye un Trigger automático** que inicializa el stock en 0 en todas las sucursales cuando nace un nuevo producto.
-* **`sales`**: Cabecera de facturación. Vinculada obligatoriamente al cajero (`cashier_id`), cliente (`customer_id`) y sucursal (`store_id`). Guarda el `total_amount`, método de pago y la tasa BCV exacta.
+* **`sales`**: Cabecera de facturación. Vinculada obligatoriamente al cajero (`cashier_id`), cliente (`customer_id`) y sucursal (`store_id`). Guarda el `total_amount`, el `redemption_discount_usd` (descuento por canje aplicado, para auditoría en el historial), método de pago y la tasa BCV exacta.
 * **`sale_items`**: Detalle de productos adquiridos (`sale_id`, `product_id`, `quantity`, `unit_price`, `subtotal`).
-* **`loyalty_settings` (NUEVO):** Configuración del programa de fidelidad **por sucursal** (`store_id`, `points_per_block`, `discount_per_block_usd`). Editable únicamente por el `owner`; define cuántos puntos se necesitan y a cuánto descuento en USD equivalen. Semilla por defecto: **10 puntos = $10**.
-* **`redeem_points` (RPC, NUEVO):** Función transaccional que descuenta puntos del cliente con un `UPDATE` condicional atómico (`reward_points >= :pts`). Corre bajo la sesión del cajero (`SECURITY INVOKER`), **impide saldos negativos y el doble gasto**, y resuelve carreras entre cajas por el bloqueo de fila.
+* **`loyalty_settings` (NUEVO):** Configuración del programa de fidelidad (`store_id`, `points_per_block`, `discount_per_block_usd`). Editable únicamente por el `owner`; define el monto a gastar y el descuento en USD equivalente. La regla es **GLOBAL**: aunque la tabla guarda una fila por sucursal, la app la mantiene idéntica en todas. Semilla por defecto: **$200 gastados = $10 de descuento**.
+* **`get_global_points` / `redeem_points_global` (RPC, NUEVO):** Funciones (`SECURITY DEFINER`) que leen y canjean el saldo de puntos como un **pool unificado** entre sucursales. El canje bloquea las filas del cliente (`FOR UPDATE`), **impide saldos negativos y el doble gasto**, resuelve carreras entre cajas y aborta si el saldo GLOBAL no alcanza. (La versión previa `redeem_points`, por sucursal, queda en la base pero ya no se usa.)
 
 ---
 
@@ -80,7 +80,7 @@ El cajero ingresa la cédula/nombre/teléfono directamente. Al "Finalizar Venta"
   * Si es nuevo, lo crea automáticamente y le asigna la venta en la misma transacción.
   * Si se deja vacío, se procesa como "Consumidor Final" (`customer_id: null`).
 * **Sistema de Reward Points:** El sistema calcula y guarda de forma automatizada los puntos de fidelidad del cliente, aplicando la regla de negocio inmutable de **1 punto por cada $20 gastados**.
-* **Canje de Puntos (Descuento por Lealtad):** Al ingresar la cédula, el POS lee el saldo **en vivo de la sucursal** y aplica automáticamente el **descuento máximo disponible** (según la configuración de `loyalty_settings`, por defecto 10 pts = $10). El cajero puede subir, bajar o quitar el canje libremente. El descuento se acota al total de la venta (nunca lo deja negativo), se apila con el descuento manual (efectivo/zelle) y la acumulación se recalcula sobre el **neto** pagado. Al finalizar, los puntos se descuentan con la función atómica `redeem_points` **antes** de crear la venta: si el saldo es insuficiente o hay carrera, se aborta el cobro sin registrar la venta.
+* **Canje de Puntos (Descuento por Lealtad):** Al ingresar la cédula, el POS lee el saldo **unificado** del cliente (suma de todas las sucursales, vía `get_global_points`) y **precarga automáticamente el descuento máximo disponible**, acotado por el saldo y por el total de la venta. El cajero u owner puede subir, bajar o quitar el canje libremente. El descuento se apila con el descuento manual (efectivo/zelle), nunca deja el total negativo, y la acumulación se recalcula sobre el **neto** pagado. Al finalizar, los puntos se descuentan del pool global con `redeem_points_global` **antes** de crear la venta: si el saldo global es insuficiente o hay carrera, se aborta el cobro sin registrar la venta. El monto descontado queda guardado en la venta y visible en el **Historial de Transacciones** (y en el export a Excel).
 * **Búsqueda Dinámica:** Dropdown de búsqueda de productos en tiempo real por nombre o escaneo de código de barras.
 
 ### 3. Gestión de Clientes (CRM)
@@ -114,9 +114,9 @@ Sistema de impresión masiva integrado directamente en el navegador:
 ## ⏭️ Fase 2 (Próximos Pasos)
 * **Customer App (Ecosistema Multiplataforma):** Expansión del sistema mediante el desarrollo de una aplicación dedicada para clientes, disponible tanto en versión **Web App** como en formato nativo para **App Store (iOS)** y **Google Play (Android)**.
 
-* **Redención de Puntos (POS — ✅ Implementado):** El cajero ya puede canjear los `reward_points` del cliente como descuento directo en caja, con configuración por sucursal (`loyalty_settings`) y deducción atómica (`redeem_points`). **Pendiente:** exponer el balance y el canje también desde la Customer App.
+* **Redención de Puntos (POS — ✅ Implementado):** El cajero ya puede canjear los `reward_points` del cliente como descuento directo en caja. Los **puntos son un pool unificado** entre sucursales y la **regla de descuento es global** (configurable por el `owner` en `loyalty_settings`), con deducción atómica sobre el saldo global (`redeem_points_global`). **Pendiente:** exponer el balance y el canje también desde la Customer App.
 
-> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio); la anulación de una venta con canje no reintegra los puntos automáticamente; y no se guarda un historial de canjes más allá del saldo reducido del cliente.
+> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio); la anulación de una venta con canje no reintegra los puntos automáticamente; y no se guarda un ledger de canjes (solo el `redemption_discount_usd` en la venta y el saldo reducido del cliente).
 
 ---
 *GaneshaStores POS - Desarrollado para optimización de flujo en mostrador y alta fidelidad contable.*
