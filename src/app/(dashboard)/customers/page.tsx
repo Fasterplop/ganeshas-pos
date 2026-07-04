@@ -19,7 +19,6 @@ type CustomerFormValues = z.infer<typeof customerSchema>;
 
 interface Customer {
   document_id: string;
-  store_id: string; // <-- Nueva columna requerida
   full_name: string;
   phone: string | null;
   total_spent: number;
@@ -49,11 +48,12 @@ export default function CustomersPage() {
     resolver: zodResolver(customerSchema),
   });
 
-  // Cargar lista de clientes Aislada por Tienda
+  // Cargar lista de clientes GLOBAL (todas las tiendas), unificada por document_id
   async function fetchCustomers() {
-    if (!currentStore) return; // Protección: Si no hay tienda, no consultamos
-    
+    if (!currentStore) return; // Protección: si no hay contexto aún, no consultamos
+
     setLoading(true);
+    // Sin filtro de tienda: traemos todas las filas y las unificamos en el cliente
     const { data } = await supabase
       .from('customers')
       .select(`
@@ -62,17 +62,55 @@ export default function CustomersPage() {
           created_at
         )
       `)
-      .eq('store_id', currentStore.id) // <-- FILTRADO ESTRICTO TDD
       .order('created_at', { ascending: false });
-    
+
     if (data) {
-      const orderedData = data.map((customer: any) => {
-        if (customer.sales && customer.sales.length > 0) {
-          customer.sales.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      // Unificar filas duplicadas (misma cédula en varias sucursales) en un cliente global:
+      //  - total_spent y reward_points se SUMAN
+      //  - full_name y phone se toman de la fila más reciente (por created_at)
+      //  - created_at global = el más antiguo
+      //  - el historial de compras se combina entre tiendas
+      const byDoc = new Map<string, any>();
+      for (const row of data as any[]) {
+        const rowSales = row.sales || [];
+        const existing = byDoc.get(row.document_id);
+        if (!existing) {
+          byDoc.set(row.document_id, {
+            document_id: row.document_id,
+            full_name: row.full_name,
+            phone: row.phone,
+            total_spent: Number(row.total_spent) || 0,
+            reward_points: row.reward_points || 0,
+            created_at: row.created_at,
+            _latest: row.created_at,
+            sales: [...rowSales],
+          });
+        } else {
+          existing.total_spent += Number(row.total_spent) || 0;
+          existing.reward_points += row.reward_points || 0;
+          if (new Date(row.created_at).getTime() < new Date(existing.created_at).getTime()) {
+            existing.created_at = row.created_at; // el más antiguo
+          }
+          if (new Date(row.created_at).getTime() > new Date(existing._latest).getTime()) {
+            existing._latest = row.created_at; // fila más reciente gana nombre/teléfono
+            existing.full_name = row.full_name;
+            existing.phone = row.phone;
+          }
+          existing.sales.push(...rowSales);
         }
-        return customer;
+      }
+
+      const aggregated = Array.from(byDoc.values()).map((c) => {
+        c.sales.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        return c;
       });
-      setCustomers(orderedData);
+      // Orden: por última compra (más reciente primero); si no tiene, por antigüedad
+      aggregated.sort((a, b) => {
+        const la = a.sales[0]?.created_at || a.created_at;
+        const lb = b.sales[0]?.created_at || b.created_at;
+        return new Date(lb).getTime() - new Date(la).getTime();
+      });
+      setCustomers(aggregated);
     } else {
       setCustomers([]);
     }
@@ -110,13 +148,13 @@ export default function CustomersPage() {
         total_amount,
         sale_items (
           quantity,
+          custom_name,
           products (
             name
           )
         )
       `)
-      .eq('customer_id', customer.document_id)
-      .eq('store_id', currentStore.id) // <-- DOBLE VALIDACIÓN (Cliente y Tienda)
+      .eq('customer_id', customer.document_id) // <-- GLOBAL: todas las sucursales
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -180,7 +218,7 @@ export default function CustomersPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Gestión de Clientes</h1>
-          <p className="text-slate-500 text-sm">Administrando base de datos de: <strong className="text-teal-700">{currentStore.name}</strong></p>
+          <p className="text-slate-500 text-sm">Base de datos <strong className="text-teal-700">global</strong> de clientes (todas las sucursales)</p>
         </div>
         <div className="flex gap-4 w-full md:w-auto">
           <input 
@@ -220,7 +258,7 @@ export default function CustomersPage() {
               ) : (
                 filteredCustomers.map((customer) => (
                   <tr 
-                    key={`${customer.document_id}-${customer.store_id}`} 
+                    key={customer.document_id}
                     onClick={() => handleRowClick(customer)}
                     className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition"
                   >
@@ -251,7 +289,7 @@ export default function CustomersPage() {
       >
         <form onSubmit={handleSubmit(onAddCustomerSubmit)} className="space-y-4">
           <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
-            Registrando en: {currentStore.name}
+            Se agrega a la base global de clientes
           </div>
 
           <div>
@@ -321,7 +359,7 @@ export default function CustomersPage() {
                 <h3 className="text-xl font-bold text-slate-800">{selectedCustomer.full_name}</h3>
                 <p className="text-sm text-slate-500">{selectedCustomer.document_id} • Tel: {selectedCustomer.phone || 'No registrado'}</p>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-teal-600 bg-teal-50 px-2 py-0.5 rounded mt-1 inline-block border border-teal-200">
-                  {currentStore.name}
+                  Cliente global
                 </span>
               </div>
             </div>
@@ -380,8 +418,8 @@ export default function CustomersPage() {
                       </tr>
                     ) : (
                       customerSales.map((sale) => {
-                        const itemsString = sale.sale_items?.map((item: any) => 
-                          `${item.quantity}x ${item.products?.name || 'Producto Desconocido'}`
+                        const itemsString = sale.sale_items?.map((item: any) =>
+                          `${item.quantity}x ${item.custom_name || item.products?.name || 'Producto Desconocido'}`
                         ).join(', ');
 
                         return (
