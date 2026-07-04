@@ -10,7 +10,8 @@ import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el Store
 
 // Esquema de validación con Zod
 const customerSchema = z.object({
-  document_id: z.string().min(5, { message: 'La cédula debe tener al menos 5 caracteres' }),
+  docType: z.enum(['V-', 'J-', 'E-', 'G-']),
+  docNumber: z.string().min(4, { message: 'El número debe tener al menos 4 dígitos' }),
   full_name: z.string().min(3, { message: 'El nombre completo debe tener al menos 3 caracteres' }),
   phone: z.string().min(7, { message: 'El teléfono debe tener al menos 7 dígitos' }),
 });
@@ -46,6 +47,7 @@ export default function CustomersPage() {
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
+    defaultValues: { docType: 'V-' },
   });
 
   // Cargar lista de clientes GLOBAL (todas las tiendas), unificada por document_id
@@ -174,9 +176,12 @@ export default function CustomersPage() {
       return;
     }
 
+    // Formato unificado con el POS: prefijo + número (ej. "V-12345678")
+    const fullDocumentId = `${data.docType}${data.docNumber.trim()}`;
+
     const { error } = await supabase.from('customers').insert([
       {
-        document_id: data.document_id,
+        document_id: fullDocumentId,
         store_id: currentStore.id, // <-- INSERCIÓN DE LLAVE COMPUESTA
         full_name: data.full_name,
         phone: data.phone,
@@ -293,14 +298,25 @@ export default function CustomersPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Cédula o Identificación (V-/J-)</label>
-            <input 
-              type="text"
-              {...register('document_id')}
-              placeholder="Ej: V12345678"
-              className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
-            />
-            {errors.document_id && <p className="text-red-500 text-xs mt-1">{errors.document_id.message}</p>}
+            <label className="block text-sm font-medium text-slate-700 mb-1">Cédula o Identificación</label>
+            <div className="flex">
+              <select
+                {...register('docType')}
+                className="bg-slate-100 border border-slate-300 border-r-0 rounded-l-lg px-3 text-slate-700 outline-none focus:ring-2 focus:ring-teal-600 font-medium"
+              >
+                <option value="V-">V-</option>
+                <option value="J-">J-</option>
+                <option value="E-">E-</option>
+                <option value="G-">G-</option>
+              </select>
+              <input
+                type="text"
+                {...register('docNumber')}
+                placeholder="Número de identificación"
+                className="w-full p-2.5 border border-slate-300 rounded-r-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+              />
+            </div>
+            {errors.docNumber && <p className="text-red-500 text-xs mt-1">{errors.docNumber.message}</p>}
           </div>
 
           <div>
