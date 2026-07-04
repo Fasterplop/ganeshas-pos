@@ -33,8 +33,15 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  // Refrescamos la sesión de forma segura
-  await supabase.auth.getUser();
+  // Refrescamos la sesión. Si Supabase no resuelve (DNS/ENOTFOUND) o el refresh
+  // falla de forma transitoria (AuthRetryableFetchError / Invalid Refresh Token),
+  // NO dejamos que la excepción tumbe el proceso: logueamos, tratamos la sesión
+  // como no autenticada y dejamos pasar el request.
+  try {
+    await supabase.auth.getUser();
+  } catch (error) {
+    console.error('[middleware] Fallo al refrescar la sesión de Supabase (se continúa sin sesión):', error);
+  }
 
   return response;
 }
