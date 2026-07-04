@@ -3,9 +3,9 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
-// Regla inmutable de acumulación: 1 punto por cada $20 gastados.
+// Regla de acumulación: 1 punto por cada $1 gastado.
 // La UI se expresa en "monto gastado" pero el backend sigue guardando puntos.
-const DOLLARS_PER_POINT = 20;
+const DOLLARS_PER_POINT = 1;
 
 // Tarjeta de configuración del programa de fidelidad.
 // La regla es GLOBAL: se aplica igual a TODAS las sucursales.
@@ -48,7 +48,7 @@ export default function LoyaltySettingsCard() {
     const dpb = Number(discountPerBlock);
 
     if (isNaN(monto) || monto <= 0 || monto % DOLLARS_PER_POINT !== 0) {
-      setMsg({ text: `El monto debe ser un múltiplo de $${DOLLARS_PER_POINT} (ej. 20, 40, 200).`, ok: false });
+      setMsg({ text: 'El monto debe ser un número entero de dólares mayor a 0 (ej. 50, 100, 200).', ok: false });
       return;
     }
     if (isNaN(dpb) || dpb <= 0) {
@@ -143,7 +143,7 @@ export default function LoyaltySettingsCard() {
               <strong>${Number(discountPerBlock || 0).toFixed(2)}</strong> de descuento.
             </p>
             <p className="text-slate-400">
-              El gasto acumulado se cuenta en bloques de ${DOLLARS_PER_POINT}.
+              El gasto se cuenta en dólares enteros; los centavos no acumulan puntos.
             </p>
           </div>
 

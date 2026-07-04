@@ -418,7 +418,8 @@ export default function POSPage() {
       // ==========================================
       if (finalCustomerId) {
          // ⚡ NOTA: totalUSD ya incluye el precio de los productos rápidos
-         const pointsEarned = Math.floor(totalUSD / 20);
+         // Regla de acumulación: 1 punto por cada $1 gastado (los centavos no suman).
+         const pointsEarned = Math.floor(totalUSD);
 
          const { data: custData } = await supabase
            .from('customers')

@@ -531,15 +531,15 @@ export default function DashboardPage() {
           </div>
 
           {/* COLUMNA DERECHA */}
-          <div className="space-y-6 flex flex-col w-full h-full">
-            
+          <div className="space-y-6 flex flex-col w-full">
+
             {/* Top Productos */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col min-h-[200px]">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold text-slate-800">Mejores Productos</h3>
-                {topProducts.length > 3 && (
+                {topProducts.length > 0 && (
                   <button onClick={() => setIsProductsModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
-                    Ver más
+                    Ver todos
                   </button>
                 )}
               </div>
@@ -564,12 +564,12 @@ export default function DashboardPage() {
             </div>
 
             {/* Mejores Clientes */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 min-h-[200px]">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col min-h-[200px]">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold text-slate-800">Mejores Clientes</h3>
-                {topCustomers.length > 3 && (
+                {topCustomers.length > 0 && (
                   <button onClick={() => setIsCustomersModalOpen(true)} className="text-xs font-semibold text-teal-600 hover:text-teal-800 transition">
-                    Ver más
+                    Ver todos
                   </button>
                 )}
               </div>
