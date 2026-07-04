@@ -478,17 +478,23 @@ export default function POSPage() {
   return (
     <div className="relative font-sans h-auto lg:h-[calc(100vh-6rem)]">
       
-      {/* Notificaciones */}
-      {notification && (
-        <div className="fixed top-6 right-6 z-50 animate-fade-in-down">
-          <div className={`flex items-center gap-3 px-6 py-4 rounded-xl shadow-lg border ${
-            notification.type === 'success' 
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-              : 'bg-red-50 border-red-200 text-red-800'
-          }`}>
-            <span className="text-2xl">
-              {notification.type === 'success' ? '✅' : '⚠️'}
-            </span>
+      {/* Notificación de ÉXITO: cartel grande y centrado, imposible de no ver */}
+      {notification && notification.type === 'success' && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-900/50 backdrop-blur-sm animate-fade-in-down pointer-events-none p-4">
+          <div className="bg-white border-4 border-emerald-400 rounded-3xl shadow-2xl px-10 sm:px-20 py-12 sm:py-16 text-center max-w-3xl w-full">
+            <div className="text-8xl sm:text-9xl mb-6 leading-none">✅</div>
+            <p className="text-4xl sm:text-6xl font-extrabold text-emerald-700 leading-tight">
+              {notification.message}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Notificación de ERROR: toast en la esquina */}
+      {notification && notification.type === 'error' && (
+        <div className="fixed top-6 right-6 z-[100] animate-fade-in-down">
+          <div className="flex items-center gap-3 px-6 py-4 rounded-xl shadow-lg border bg-red-50 border-red-200 text-red-800">
+            <span className="text-2xl">⚠️</span>
             <p className="font-medium">{notification.message}</p>
           </div>
         </div>
