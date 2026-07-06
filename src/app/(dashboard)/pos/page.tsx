@@ -355,7 +355,8 @@ export default function POSPage() {
           bcv_rate: bcvRate,
           payment_method: paymentMethod,
           payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim(),
-          redemption_discount_usd: redemptionDiscount
+          redemption_discount_usd: redemptionDiscount,
+          redemption_points: pointsToConsume
         })
         .select()
         .single();

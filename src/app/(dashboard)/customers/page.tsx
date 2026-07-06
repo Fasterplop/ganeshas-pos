@@ -45,10 +45,22 @@ export default function CustomersPage() {
   const [customerSales, setCustomerSales] = useState<any[]>([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
+  // Rol del usuario (solo el owner puede eliminar clientes)
+  const [userRole, setUserRole] = useState<string | null>(null);
+
   const { register, handleSubmit, reset, formState: { errors } } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
     defaultValues: { docType: 'V-' },
   });
+
+  useEffect(() => {
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+      if (profile) setUserRole(profile.role);
+    })();
+  }, []);
 
   // Cargar lista de clientes GLOBAL (todas las tiendas), unificada por document_id
   async function fetchCustomers() {
@@ -64,6 +76,7 @@ export default function CustomersPage() {
           created_at
         )
       `)
+      .eq('is_hidden', false) // no traer los ocultados por el owner
       .order('created_at', { ascending: false });
 
     if (data) {
@@ -148,6 +161,7 @@ export default function CustomersPage() {
         id,
         created_at,
         total_amount,
+        stores ( name ),
         sale_items (
           quantity,
           custom_name,
@@ -167,6 +181,24 @@ export default function CustomersPage() {
     }
     
     setLoadingSales(false);
+  };
+
+  // Eliminar (ocultar) un cliente de la lista — solo owner. Los datos e
+  // historial se conservan; solo se marca is_hidden en todas sus filas.
+  const handleDeleteCustomer = async (e: React.MouseEvent, documentId: string) => {
+    e.stopPropagation();
+    if (!confirm('¿Eliminar este cliente de la lista? Sus datos e historial se conservan, solo desaparece de la vista.')) return;
+
+    const { error } = await supabase
+      .from('customers')
+      .update({ is_hidden: true })
+      .eq('document_id', documentId);
+
+    if (error) {
+      alert('No se pudo eliminar el cliente: ' + error.message);
+      return;
+    }
+    setCustomers((prev) => prev.filter((c) => c.document_id !== documentId));
   };
 
   // Guardar el cliente atado a la llave compuesta
@@ -253,13 +285,14 @@ export default function CustomersPage() {
                 <th className="p-4">Teléfono</th>
                 <th className="p-4">Última Compra</th>
                 <th className="p-4 text-right">Puntos</th>
+                {userRole === 'owner' && <th className="p-4 text-center">Acciones</th>}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">Cargando clientes de {currentStore.name}...</td></tr>
+                <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-4 text-center text-slate-500">Cargando clientes...</td></tr>
               ) : filteredCustomers.length === 0 ? (
-                <tr><td colSpan={5} className="p-4 text-center text-slate-500">No se encontraron clientes en esta sucursal.</td></tr>
+                <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-4 text-center text-slate-500">No se encontraron clientes.</td></tr>
               ) : (
                 filteredCustomers.map((customer) => (
                   <tr 
@@ -278,6 +311,17 @@ export default function CustomersPage() {
                         : 'Sin compras'}
                     </td>
                     <td className="p-4 text-right font-bold text-teal-700">{customer.reward_points}</td>
+                    {userRole === 'owner' && (
+                      <td className="p-4 text-center">
+                        <button
+                          onClick={(e) => handleDeleteCustomer(e, customer.document_id)}
+                          className="text-red-500 hover:text-red-700 text-sm font-semibold"
+                          title="Eliminar de la lista"
+                        >
+                          Eliminar
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}
@@ -415,6 +459,7 @@ export default function CustomersPage() {
                   <thead className="bg-slate-50 text-slate-500 font-bold tracking-wider text-xs sticky top-0">
                     <tr>
                       <th className="p-3">FECHA</th>
+                      <th className="p-3">TIENDA</th>
                       <th className="p-3">ARTÍCULOS</th>
                       <th className="p-3 text-right">TOTAL</th>
                     </tr>
@@ -422,13 +467,13 @@ export default function CustomersPage() {
                   <tbody className="divide-y divide-slate-100 text-slate-600 bg-white">
                     {loadingSales ? (
                       <tr>
-                        <td colSpan={3} className="p-6 text-center text-slate-500 bg-slate-50/50">
+                        <td colSpan={4} className="p-6 text-center text-slate-500 bg-slate-50/50">
                           Cargando historial de compras...
                         </td>
                       </tr>
                     ) : customerSales.length === 0 ? (
                       <tr>
-                        <td colSpan={3} className="p-6 text-center text-slate-500 bg-slate-50/50">
+                        <td colSpan={4} className="p-6 text-center text-slate-500 bg-slate-50/50">
                           No hay compras registradas para este cliente.
                         </td>
                       </tr>
@@ -441,9 +486,12 @@ export default function CustomersPage() {
                         return (
                           <tr key={sale.id} className="hover:bg-slate-50 transition">
                             <td className="p-3 whitespace-nowrap">
-                              {new Date(sale.created_at).toLocaleDateString('es-VE', { 
-                                day: '2-digit', month: 'short', year: 'numeric' 
+                              {new Date(sale.created_at).toLocaleDateString('es-VE', {
+                                day: '2-digit', month: 'short', year: 'numeric'
                               })}
+                            </td>
+                            <td className="p-3 whitespace-nowrap text-teal-700 font-medium">
+                              {sale.stores?.name || '—'}
                             </td>
                             <td className="p-3">
                               <div className="truncate max-w-[200px] md:max-w-xs" title={itemsString}>
