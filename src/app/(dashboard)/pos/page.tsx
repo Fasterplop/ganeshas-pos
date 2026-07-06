@@ -504,8 +504,8 @@ export default function POSPage() {
       {/* Indicador de Tienda Activa en el POS */}
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Terminal de Venta</h1>
-          <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
+          <h1 className="text-3xl font-bold text-slate-800">Terminal de Venta</h1>
+          <p className="text-base text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
       </div>
 
@@ -515,46 +515,46 @@ export default function POSPage() {
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden min-h-[600px] lg:min-h-0">
           <div className="p-4 border-b border-slate-200 space-y-4 bg-slate-50 shrink-0">
             <div>
-              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                 <div className="flex">
-                  <select 
+                  <select
                     value={docType}
                     onChange={(e) => setDocType(e.target.value)}
-                    className="bg-slate-100 border border-slate-300 border-r-0 rounded-l-lg px-2 text-slate-700 outline-none focus:ring-2 focus:ring-teal-600 transition font-medium"
+                    className="bg-slate-100 border border-slate-300 border-r-0 rounded-l-lg px-2 text-slate-700 text-lg outline-none focus:ring-2 focus:ring-teal-600 transition font-medium"
                   >
                     <option value="V-">V-</option>
                     <option value="J-">J-</option>
                     <option value="E-">E-</option>
                     <option value="G-">G-</option>
                   </select>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={docNumber}
                     onChange={(e) => setDocNumber(e.target.value)}
-                    placeholder="Número de Identificación..." 
-                    className="w-full pl-3 pr-4 py-2 border border-slate-300 rounded-r-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    placeholder="Número de Identificación..."
+                    className="w-full pl-3 pr-4 py-2.5 border border-slate-300 rounded-r-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
                 </div>
 
                 <div>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={customerPhone}
                     onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="📱 Teléfono (Ej: 04141234567)" 
-                    className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    placeholder="📱 Teléfono (Ej: 04141234567)"
+                    className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
                 </div>
               </div>
 
               <div>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
-                  placeholder="👤 Nombre Completo..." 
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                  placeholder="👤 Nombre Completo..."
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
             </div>
@@ -571,8 +571,8 @@ export default function POSPage() {
                   onChange={handleSearchChange}
                   onKeyDown={handleKeyDown}
                   autoFocus
-                  placeholder="🛒 Busca por nombre o escanea código de barras..." 
-                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                  placeholder="🛒 Busca por nombre o escanea código de barras..."
+                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
                 />
                 <button 
                   onClick={() => setShowQuickAdd(!showQuickAdd)}
@@ -594,10 +594,10 @@ export default function POSPage() {
                       className="p-3 hover:bg-teal-50 cursor-pointer border-b border-slate-100 flex justify-between items-center transition"
                     >
                       <div>
-                        <p className="font-semibold text-slate-800">{p.name}</p>
-                        <p className="text-xs text-slate-500">SKU: {p.sku_barcode}</p>
+                        <p className="text-lg font-semibold text-slate-800">{p.name}</p>
+                        <p className="text-sm text-slate-500">SKU: {p.sku_barcode}</p>
                       </div>
-                      <p className="font-bold text-teal-700">${p.price.toFixed(2)}</p>
+                      <p className="text-lg font-bold text-teal-700">${p.price.toFixed(2)}</p>
                     </li>
                   ))}
                 </ul>
@@ -642,7 +642,7 @@ export default function POSPage() {
 
           <div className="flex-1 overflow-y-auto overflow-x-auto">
             <table className="w-full text-left min-w-[450px]">
-              <thead className="bg-slate-600 text-white text-sm sticky top-0 z-0">
+              <thead className="bg-slate-600 text-white text-base sticky top-0 z-0">
                 <tr>
                   <th className="p-3 pl-4">Producto</th>
                   <th className="p-3 text-center">Cant.</th>
@@ -662,27 +662,27 @@ export default function POSPage() {
                   cart.map(item => (
                     <tr key={item.id} className="hover:bg-slate-50 transition">
                       <td className="p-3 pl-4">
-                        <p className="font-semibold text-slate-800">{item.name}</p>
+                        <p className="text-lg font-semibold text-slate-800">{item.name}</p>
                       </td>
                       <td className="p-3">
                         <div className="flex items-center justify-center gap-3">
-                          <button 
-                            onClick={() => handleDecreaseQuantity(item)} 
-                            className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold shrink-0"
+                          <button
+                            onClick={() => handleDecreaseQuantity(item)}
+                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold text-xl shrink-0"
                           >
                             −
                           </button>
-                          <span className="w-6 text-center font-bold text-slate-800">{item.quantity}</span>
-                          <button 
-                            onClick={() => addToCart({ ...item, quantity: 1 })} 
-                            className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold shrink-0"
+                          <span className="w-8 text-center text-xl font-bold text-slate-800">{item.quantity}</span>
+                          <button
+                            onClick={() => addToCart({ ...item, quantity: 1 })}
+                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
                           >
                             +
                           </button>
                         </div>
                       </td>
-                      <td className="p-3 text-right text-slate-600">${item.price.toFixed(2)}</td>
-                      <td className="p-3 text-right pr-4 font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
+                      <td className="p-3 text-right text-lg text-slate-600">${item.price.toFixed(2)}</td>
+                      <td className="p-3 text-right pr-4 text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
                     </tr>
                   ))
                 )}
@@ -691,14 +691,14 @@ export default function POSPage() {
           </div>
 
           <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
-            <p className="text-slate-600 font-medium">{totalItems} Artículos</p>
+            <p className="text-lg text-slate-600 font-medium">{totalItems} Artículos</p>
             <div className="text-right flex flex-col items-end">
               {(discountAmount + redemptionDiscount) > 0 && (
-                <p className="text-sm text-red-500 line-through mb-1">${subtotalUSD.toFixed(2)}</p>
+                <p className="text-base text-red-500 line-through mb-1">${subtotalUSD.toFixed(2)}</p>
               )}
               <div className="flex gap-2 items-baseline">
-                <p className="text-sm text-slate-500">Total:</p>
-                <p className="text-xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
+                <p className="text-lg text-slate-500">Total:</p>
+                <p className="text-3xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
               </div>
             </div>
           </div>
@@ -708,63 +708,63 @@ export default function POSPage() {
         <div className="w-full lg:w-96 flex flex-col gap-6 shrink-0">
           
           <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-6 text-white flex flex-col justify-center items-end shrink-0">
-            <p className="text-teal-100 text-sm mb-1">Total a Pagar</p>
-            <p className="text-5xl font-bold mb-2">${totalUSD.toFixed(2)}</p>
+            <p className="text-teal-100 text-lg mb-1">Total a Pagar</p>
+            <p className="text-6xl font-bold mb-2">${totalUSD.toFixed(2)}</p>
             {(discountAmount + redemptionDiscount) > 0 && (
-              <p className="text-teal-200 text-sm mb-1 bg-[#0a4545] px-2 py-1 rounded">
+              <p className="text-teal-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
                 Ahorro: ${(discountAmount + redemptionDiscount).toFixed(2)}
               </p>
             )}
-            <p className="text-teal-200 text-sm">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
+            <p className="text-teal-200 text-base">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
           </div>
 
           {/* TARJETA DE CANJE DE PUNTOS (aparece al detectar un cliente) */}
           {customerPoints !== null && (
-            <div className="bg-white rounded-xl shadow-sm border border-teal-200 p-5 shrink-0">
+            <div className="bg-white rounded-xl shadow-sm border-2 border-teal-200 p-6 shrink-0">
               <div className="flex items-center justify-between mb-1">
-                <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-                  <span className="text-teal-600">✪</span> Puntos de Lealtad
+                <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                  <span className="text-2xl text-teal-600">✪</span> Puntos de Lealtad
                 </h3>
-                <span className="text-sm font-bold text-teal-700">{customerPoints} pts</span>
+                <span className="text-2xl font-bold text-teal-700">{customerPoints} pts</span>
               </div>
               {customerLookupName && (
-                <p className="text-xs text-slate-500 mb-3">{customerLookupName}</p>
+                <p className="text-base text-slate-500 mb-3">{customerLookupName}</p>
               )}
 
               {maxBlocks === 0 ? (
-                <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 mt-2">
+                <p className="text-lg text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-4 mt-2">
                   {customerPoints < loyaltyCfg.points_per_block
                     ? `Necesita ${loyaltyCfg.points_per_block} pts para $${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento.`
                     : 'El total es muy bajo para aplicar descuento por puntos.'}
                 </p>
               ) : (
                 <>
-                  <p className="text-xs text-slate-500 mb-3">
+                  <p className="text-base text-slate-500 mb-4">
                     {loyaltyCfg.points_per_block} pts = ${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento
                   </p>
                   <div className="flex items-center justify-between gap-3">
                     <button
                       onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.max(0, b - 1)); }}
                       disabled={redeemBlocks === 0}
-                      className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-16 h-16 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-4xl disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       −
                     </button>
                     <div className="text-center">
-                      <p className="text-xl font-bold text-teal-700">−${redemptionDiscount.toFixed(2)}</p>
-                      <p className="text-xs text-slate-500">{pointsToConsume} pts · {redeemBlocks} de {maxBlocks}</p>
+                      <p className="text-5xl font-extrabold text-teal-700">−${redemptionDiscount.toFixed(2)}</p>
+                      <p className="text-base text-slate-500 mt-1">{pointsToConsume} pts · {redeemBlocks} de {maxBlocks}</p>
                     </div>
                     <button
                       onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.min(maxBlocks, b + 1)); }}
                       disabled={redeemBlocks >= maxBlocks}
-                      className="w-10 h-10 flex items-center justify-center rounded-full bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-16 h-16 flex items-center justify-center rounded-full bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-4xl disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       +
                     </button>
                   </div>
                   <button
                     onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks(redeemBlocks === maxBlocks ? 0 : maxBlocks); }}
-                    className="w-full mt-3 text-xs font-semibold text-teal-700 hover:underline"
+                    className="w-full mt-4 text-base font-bold text-teal-700 hover:underline"
                   >
                     {redeemBlocks === maxBlocks
                       ? 'Quitar descuento'
@@ -776,61 +776,61 @@ export default function POSPage() {
           )}
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
-            <h3 className="font-semibold text-slate-800 mb-4">Método de Pago <span className="text-red-500">*</span></h3>
+            <h3 className="text-xl font-bold text-slate-800 mb-4">Método de Pago <span className="text-red-500">*</span></h3>
             
             <div className="grid grid-cols-2 gap-3 mb-6">
               <button 
                 onClick={() => setPaymentMethod('efectivo')}
                 className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'efectivo' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-xl">💵</span>
-                <span className="text-xs font-medium">Efectivo</span>
+                <span className="text-3xl">💵</span>
+                <span className="text-base font-medium">Efectivo</span>
               </button>
               
               <button 
                 onClick={() => setPaymentMethod('punto_de_venta')}
                 className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'punto_de_venta' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-xl">💳</span>
-                <span className="text-xs font-medium text-center">Punto de Venta</span>
+                <span className="text-3xl">💳</span>
+                <span className="text-base font-medium text-center">Punto de Venta</span>
               </button>
 
               <button 
                 onClick={() => setPaymentMethod('zelle')}
                 className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'zelle' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-xl">🔄</span>
-                <span className="text-xs font-medium">Zelle</span>
+                <span className="text-3xl">🔄</span>
+                <span className="text-base font-medium">Zelle</span>
               </button>
               
               <button 
                 onClick={() => setPaymentMethod('pago_movil')}
                 className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'pago_movil' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-xl">📱</span>
-                <span className="text-xs font-medium">Pago Móvil</span>
+                <span className="text-3xl">📱</span>
+                <span className="text-base font-medium">Pago Móvil</span>
               </button>
 
               <button 
                 onClick={() => setPaymentMethod('cashea')}
                 className={`py-3 rounded-lg border flex flex-col col-span-2 items-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-xl">🛍️</span>
-                <span className="text-xs font-medium">Cashea</span>
+                <span className="text-3xl">🛍️</span>
+                <span className="text-base font-medium">Cashea</span>
               </button>
             </div>
 
             {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
               <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
-                <h4 className="text-sm font-semibold text-slate-700 mb-3">Aplicar Descuento</h4>
+                <h4 className="text-lg font-semibold text-slate-700 mb-3">Aplicar Descuento</h4>
                 <div className="flex gap-2">
-                  <select 
-                    value={discountType} 
+                  <select
+                    value={discountType}
                     onChange={(e) => {
                       setDiscountType(e.target.value as DiscountType);
                       if (e.target.value === 'none') setDiscountValue('');
                     }}
-                    className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
                   >
                     <option value="none">Sin descuento</option>
                     <option value="percent">Porcentaje (%)</option>
@@ -845,7 +845,7 @@ export default function POSPage() {
                       value={discountValue}
                       onChange={(e) => setDiscountValue(e.target.value)}
                       placeholder={discountType === 'percent' ? "Ej. 10" : "Ej. 5.00"}
-                      className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                      className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
                     />
                   )}
                 </div>
@@ -853,22 +853,22 @@ export default function POSPage() {
             )}
 
             <div className="mb-auto">
-              <label className="block text-sm text-slate-500 mb-2">
+              <label className="block text-base text-slate-500 mb-2">
                 Referencia de Transacción (Opcional)
               </label>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={paymentRef}
                 onChange={(e) => setPaymentRef(e.target.value)}
-                placeholder="Ej. 12345678" 
-                className="w-full p-3 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                placeholder="Ej. 12345678"
+                className="w-full p-3 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
               />
             </div>
 
             <button 
               onClick={handleCheckout}
               disabled={isLoading || cart.length === 0 || !paymentMethod}
-              className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition flex items-center justify-center gap-2 mt-6 text-lg shadow-md shrink-0"
+              className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-5 px-4 rounded-xl transition flex items-center justify-center gap-2 mt-6 text-2xl shadow-md shrink-0"
             >
               {isLoading ? 'Procesando...' : '🧾 Finalizar Venta'}
             </button>
