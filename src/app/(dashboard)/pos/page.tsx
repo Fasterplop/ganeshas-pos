@@ -477,7 +477,7 @@ export default function POSPage() {
   }
 
   return (
-    <div className="relative font-sans h-auto lg:h-[calc(100vh-6rem)]">
+    <div className="relative font-sans h-auto lg:h-[calc(100vh-4rem)] lg:flex lg:flex-col lg:overflow-hidden">
       
       {/* Notificación de ÉXITO: cartel grande y centrado, imposible de no ver */}
       {notification && notification.type === 'success' && (
@@ -502,14 +502,14 @@ export default function POSPage() {
       )}
 
       {/* Indicador de Tienda Activa en el POS */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-2 flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Terminal de Venta</h1>
-          <p className="text-base text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
+          <h1 className="text-2xl font-bold text-slate-800">Terminal de Venta</h1>
+          <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row gap-6 pb-10 lg:pb-0 h-[calc(100%-4rem)]">
+      <div className="flex flex-col lg:flex-row gap-4 pb-6 lg:pb-0 lg:flex-1 lg:min-h-0">
         
         {/* Columna Izquierda: Búsqueda y Carrito */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden min-h-[600px] lg:min-h-0">
@@ -705,11 +705,11 @@ export default function POSPage() {
         </div>
 
         {/* Columna Derecha: Pagos y Cobro */}
-        <div className="w-full lg:w-96 flex flex-col gap-6 shrink-0">
-          
-          <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-6 text-white flex flex-col justify-center items-end shrink-0">
-            <p className="text-teal-100 text-lg mb-1">Total a Pagar</p>
-            <p className="text-6xl font-bold mb-2">${totalUSD.toFixed(2)}</p>
+        <div className="w-full lg:w-96 flex flex-col gap-2 shrink-0 lg:min-h-0 lg:overflow-y-auto">
+
+          <div className="bg-[#0f5c5c] rounded-xl shadow-sm p-4 text-white flex flex-col justify-center items-end shrink-0">
+            <p className="text-teal-100 text-base mb-0.5">Total a Pagar</p>
+            <p className="text-4xl font-bold mb-1">${totalUSD.toFixed(2)}</p>
             {(discountAmount + redemptionDiscount) > 0 && (
               <p className="text-teal-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
                 Ahorro: ${(discountAmount + redemptionDiscount).toFixed(2)}
@@ -720,51 +720,51 @@ export default function POSPage() {
 
           {/* TARJETA DE CANJE DE PUNTOS (aparece al detectar un cliente) */}
           {customerPoints !== null && (
-            <div className="bg-white rounded-xl shadow-sm border-2 border-teal-200 p-6 shrink-0">
-              <div className="flex items-center justify-between mb-1">
+            <div className="bg-white rounded-xl shadow-sm border-2 border-teal-200 p-4 shrink-0">
+              <div className="flex items-center justify-between mb-0.5">
                 <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                   <span className="text-2xl text-teal-600">✪</span> Puntos de Lealtad
                 </h3>
                 <span className="text-2xl font-bold text-teal-700">{customerPoints} pts</span>
               </div>
               {customerLookupName && (
-                <p className="text-base text-slate-500 mb-3">{customerLookupName}</p>
+                <p className="text-base text-slate-500 mb-2">{customerLookupName}</p>
               )}
 
               {maxBlocks === 0 ? (
-                <p className="text-lg text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-4 mt-2">
+                <p className="text-lg text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 mt-1">
                   {customerPoints < loyaltyCfg.points_per_block
                     ? `Necesita ${loyaltyCfg.points_per_block} pts para $${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento.`
                     : 'El total es muy bajo para aplicar descuento por puntos.'}
                 </p>
               ) : (
                 <>
-                  <p className="text-base text-slate-500 mb-4">
+                  <p className="text-base text-slate-500 mb-3">
                     {loyaltyCfg.points_per_block} pts = ${loyaltyCfg.discount_per_block_usd.toFixed(2)} de descuento
                   </p>
                   <div className="flex items-center justify-between gap-3">
                     <button
                       onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.max(0, b - 1)); }}
                       disabled={redeemBlocks === 0}
-                      className="w-16 h-16 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-4xl disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-14 h-14 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-3xl disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       −
                     </button>
                     <div className="text-center">
-                      <p className="text-5xl font-extrabold text-teal-700">−${redemptionDiscount.toFixed(2)}</p>
+                      <p className="text-4xl font-extrabold text-teal-700">−${redemptionDiscount.toFixed(2)}</p>
                       <p className="text-base text-slate-500 mt-1">{pointsToConsume} pts · {redeemBlocks} de {maxBlocks}</p>
                     </div>
                     <button
                       onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks((b) => Math.min(maxBlocks, b + 1)); }}
                       disabled={redeemBlocks >= maxBlocks}
-                      className="w-16 h-16 flex items-center justify-center rounded-full bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-4xl disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-14 h-14 flex items-center justify-center rounded-full bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-3xl disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       +
                     </button>
                   </div>
                   <button
                     onClick={() => { redeemTouchedRef.current = true; setRedeemBlocks(redeemBlocks === maxBlocks ? 0 : maxBlocks); }}
-                    className="w-full mt-4 text-base font-bold text-teal-700 hover:underline"
+                    className="w-full mt-3 text-base font-bold text-teal-700 hover:underline"
                   >
                     {redeemBlocks === maxBlocks
                       ? 'Quitar descuento'
@@ -775,54 +775,54 @@ export default function POSPage() {
             </div>
           )}
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
-            <h3 className="text-xl font-bold text-slate-800 mb-4">Método de Pago <span className="text-red-500">*</span></h3>
-            
-            <div className="grid grid-cols-2 gap-3 mb-6">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col shrink-0">
+            <h3 className="text-xl font-bold text-slate-800 mb-2">Método de Pago <span className="text-red-500">*</span></h3>
+
+            <div className="grid grid-cols-2 gap-2 mb-3">
               <button 
                 onClick={() => setPaymentMethod('efectivo')}
-                className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'efectivo' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'efectivo' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-3xl">💵</span>
-                <span className="text-base font-medium">Efectivo</span>
+                <span className="text-xl">💵</span>
+                <span className="text-sm font-medium">Efectivo</span>
               </button>
               
               <button 
                 onClick={() => setPaymentMethod('punto_de_venta')}
-                className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'punto_de_venta' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'punto_de_venta' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-3xl">💳</span>
-                <span className="text-base font-medium text-center">Punto de Venta</span>
+                <span className="text-xl">💳</span>
+                <span className="text-sm font-medium text-center">Punto de Venta</span>
               </button>
 
               <button 
                 onClick={() => setPaymentMethod('zelle')}
-                className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'zelle' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'zelle' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-3xl">🔄</span>
-                <span className="text-base font-medium">Zelle</span>
+                <span className="text-xl">🔄</span>
+                <span className="text-sm font-medium">Zelle</span>
               </button>
               
               <button 
                 onClick={() => setPaymentMethod('pago_movil')}
-                className={`py-3 rounded-lg border flex flex-col items-center gap-2 transition ${paymentMethod === 'pago_movil' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'pago_movil' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-3xl">📱</span>
-                <span className="text-base font-medium">Pago Móvil</span>
+                <span className="text-xl">📱</span>
+                <span className="text-sm font-medium">Pago Móvil</span>
               </button>
 
               <button 
                 onClick={() => setPaymentMethod('cashea')}
-                className={`py-3 rounded-lg border flex flex-col col-span-2 items-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                className={`py-2.5 rounded-lg border flex col-span-2 items-center justify-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
               >
-                <span className="text-3xl">🛍️</span>
-                <span className="text-base font-medium">Cashea</span>
+                <span className="text-xl">🛍️</span>
+                <span className="text-sm font-medium">Cashea</span>
               </button>
             </div>
 
             {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
-              <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
-                <h4 className="text-lg font-semibold text-slate-700 mb-3">Aplicar Descuento</h4>
+              <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
+                <h4 className="text-lg font-semibold text-slate-700 mb-2">Aplicar Descuento</h4>
                 <div className="flex gap-2">
                   <select
                     value={discountType}
@@ -852,8 +852,8 @@ export default function POSPage() {
               </div>
             )}
 
-            <div className="mb-auto">
-              <label className="block text-base text-slate-500 mb-2">
+            <div className="mb-4">
+              <label className="block text-base text-slate-500 mb-1">
                 Referencia de Transacción (Opcional)
               </label>
               <input
@@ -868,7 +868,7 @@ export default function POSPage() {
             <button 
               onClick={handleCheckout}
               disabled={isLoading || cart.length === 0 || !paymentMethod}
-              className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-5 px-4 rounded-xl transition flex items-center justify-center gap-2 mt-6 text-2xl shadow-md shrink-0"
+              className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-4 px-4 rounded-xl transition flex items-center justify-center gap-2 mt-3 text-2xl shadow-md shrink-0"
             >
               {isLoading ? 'Procesando...' : '🧾 Finalizar Venta'}
             </button>
