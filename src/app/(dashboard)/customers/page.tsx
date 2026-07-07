@@ -76,7 +76,6 @@ export default function CustomersPage() {
           created_at
         )
       `)
-      .eq('is_hidden', false) // no traer los ocultados por el owner
       .order('created_at', { ascending: false });
 
     if (data) {
@@ -183,16 +182,15 @@ export default function CustomersPage() {
     setLoadingSales(false);
   };
 
-  // Eliminar (ocultar) un cliente de la lista — solo owner. Los datos e
-  // historial se conservan; solo se marca is_hidden en todas sus filas.
+  // Eliminar DEFINITIVAMENTE un cliente — solo owner. Se borran sus datos y
+  // puntos en todas las sucursales; las VENTAS se conservan (se desvinculan).
   const handleDeleteCustomer = async (e: React.MouseEvent, documentId: string) => {
     e.stopPropagation();
-    if (!confirm('¿Eliminar este cliente de la lista? Sus datos e historial se conservan, solo desaparece de la vista.')) return;
+    if (!confirm('¿Eliminar definitivamente a este cliente? Se borrarán sus datos y puntos en todas las sucursales. Las ventas se conservan. Esta acción no se puede deshacer.')) return;
 
-    const { error } = await supabase
-      .from('customers')
-      .update({ is_hidden: true })
-      .eq('document_id', documentId);
+    const { error } = await supabase.rpc('delete_customer_global', {
+      p_document_id: documentId,
+    });
 
     if (error) {
       alert('No se pudo eliminar el cliente: ' + error.message);
@@ -211,22 +209,21 @@ export default function CustomersPage() {
     // Formato unificado con el POS: prefijo + número (ej. "V-12345678")
     const fullDocumentId = `${data.docType}${data.docNumber.trim()}`;
 
-    const { error } = await supabase.from('customers').insert([
+    // Upsert: si el cliente ya existe en esta sucursal, se ACTUALIZAN su nombre
+    // y teléfono en vez de bloquear la acción. total_spent y reward_points no se
+    // tocan (no van en el payload), así no se pierden puntos ni el gasto.
+    const { error } = await supabase.from('customers').upsert(
       {
         document_id: fullDocumentId,
-        store_id: currentStore.id, // <-- INSERCIÓN DE LLAVE COMPUESTA
+        store_id: currentStore.id, // <-- LLAVE COMPUESTA
         full_name: data.full_name,
         phone: data.phone,
       },
-    ]);
+      { onConflict: 'document_id,store_id' }
+    );
 
     if (error) {
-      // Manejo amigable si el cliente ya existe EN ESTA TIENDA
-      if (error.code === '23505') {
-        alert('Este documento ya está registrado en esta sucursal.');
-      } else {
-        alert('Error al registrar el cliente: ' + error.message);
-      }
+      alert('Error al guardar el cliente: ' + error.message);
     } else {
       setIsAddModalOpen(false);
       reset();
@@ -338,7 +335,7 @@ export default function CustomersPage() {
       >
         <form onSubmit={handleSubmit(onAddCustomerSubmit)} className="space-y-4">
           <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
-            Se agrega a la base global de clientes
+            Se agrega a la base global de clientes. Si el documento ya existe, se actualizan su nombre y teléfono.
           </div>
 
           <div>
