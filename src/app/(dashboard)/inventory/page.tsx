@@ -84,19 +84,20 @@ export default function InventoryPage() {
   // Capacidades según rol y permiso especial:
   const isOwner = userRole === 'owner';
   const isCashier = userRole === 'cashier';
-  const isSpecial = isCashier && canRestockAll;      // cajero "reponedor" (todas las tiendas)
+  const isSpecial = isCashier && canRestockAll;      // cajero "reponedor"
   const isOwnStore = !!currentStore && viewStoreId === currentStore.id;
 
-  // Añadir productos: owner o cajero NORMAL, solo en su propia tienda.
-  const canAdd = isOwnStore && (isOwner || (isCashier && !isSpecial));
+  // Añadir productos: owner (su tienda) o cajero REPONEDOR (cualquier tienda).
+  // El cajero SIN permiso no puede añadir.
+  const canAdd = (isOwner && isOwnStore) || isSpecial;
   // Borrar: solo owner en su propia tienda.
-  const canDelete = isOwnStore && isOwner;
-  // Abrir el editor: quien puede añadir, o el cajero especial en CUALQUIER tienda.
-  const canEditRow = canAdd || isSpecial;
-  // Vista de solo lectura (no puede gestionar nada en esta tienda).
-  const readOnly = !canEditRow;
-  // El cajero especial solo puede tocar el stock (nada más del producto).
-  const stockOnly = isSpecial;
+  const canDelete = isOwner && isOwnStore;
+  // Abrir el editor: owner (su tienda) o reponedor (cualquier tienda).
+  const canEditRow = (isOwner && isOwnStore) || isSpecial;
+  // Solo lectura: no puede gestionar nada aquí (cajero sin permiso, u owner en otra tienda).
+  const readOnly = !canAdd && !canEditRow;
+  // Al EDITAR, el reponedor solo puede tocar el stock (al AÑADIR usa el formulario completo).
+  const editStockOnly = isSpecial && !!editingProduct;
 
   // Tienda seleccionada en el formulario de alta (para el aviso y el prefijo del SKU).
   const watchedOwnerStoreId = watch('owner_store_id');
@@ -196,10 +197,10 @@ export default function InventoryPage() {
     reset({
       sku_barcode: '',
       name: '',
-      category: defaultCategoryForStore(currentStore?.name || ''),
+      category: defaultCategoryForStore(effectiveStore?.name || currentStore?.name || ''),
       price: 0,
       stock: 1, // stock inicial por defecto
-      owner_store_id: currentStore?.id || '', // default: la tienda actual del cajero
+      owner_store_id: viewStoreId || currentStore?.id || '', // default: la tienda que se está viendo
     });
     setIsModalOpen(true);
   };
@@ -216,7 +217,7 @@ export default function InventoryPage() {
 
     // Cajero REPONEDOR editando: solo repone stock en la tienda que ve (cruza
     // tiendas vía RPC), sin tocar ningún otro dato del producto.
-    if (editingProduct && stockOnly) {
+    if (editingProduct && editStockOnly) {
       const { error } = await supabase.rpc('restock_stock', {
         p_product_id: editingProduct.id,
         p_store_id: viewStoreId,
@@ -296,17 +297,26 @@ export default function InventoryPage() {
         return;
       }
 
-      // IMPORTANTE: El trigger de la base de datos ya creó las filas de stock en 0 para todas las tiendas.
-      // Si el usuario especificó un stock inicial mayor a 0, lo cargamos en la tienda dueña.
+      // El trigger de la BD ya creó las filas de stock en 0 para todas las tiendas.
+      // Cargamos el stock inicial en la tienda dueña. El cajero reponedor puede
+      // crear en otra tienda, así que su stock inicial va por el RPC (cruza tiendas).
       if (data.stock > 0) {
-        const { error: stockUpdateError } = await supabase
-          .from('store_stock')
-          .update({ stock: data.stock })
-          .eq('product_id', newProduct.id)
-          .eq('store_id', targetStoreId);
-
-        if (stockUpdateError) {
-          console.error("Error al actualizar el stock inicial en la tienda dueña:", stockUpdateError);
+        if (isSpecial) {
+          const { error } = await supabase.rpc('restock_stock', {
+            p_product_id: newProduct.id,
+            p_store_id: targetStoreId,
+            p_new_stock: data.stock,
+          });
+          if (error) console.error("Error al cargar el stock inicial (reponedor):", error);
+        } else {
+          const { error: stockUpdateError } = await supabase
+            .from('store_stock')
+            .update({ stock: data.stock })
+            .eq('product_id', newProduct.id)
+            .eq('store_id', targetStoreId);
+          if (stockUpdateError) {
+            console.error("Error al actualizar el stock inicial en la tienda dueña:", stockUpdateError);
+          }
         }
       }
     }
@@ -482,9 +492,9 @@ const handleExportCSV = async () => {
                       Solo lectura
                     </span>
                   )}
-                  {stockOnly && (
+                  {isSpecial && (
                     <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
-                      Reponer stock
+                      Reponedor
                     </span>
                   )}
                 </div>
@@ -558,9 +568,9 @@ const handleExportCSV = async () => {
                             <button
                               onClick={(e) => handleEdit(e, product)}
                               className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
-                              title={stockOnly ? 'Reponer stock' : 'Editar'}
+                              title={isSpecial ? 'Reponer stock' : 'Editar'}
                             >
-                              {stockOnly ? '📦' : '✏️'}
+                              {isSpecial ? '📦' : '✏️'}
                             </button>
                             {/* Eliminar: solo owner en su tienda. */}
                             {canDelete && (
@@ -655,13 +665,13 @@ const handleExportCSV = async () => {
         <Modal
           isOpen={isModalOpen}
           onClose={closeModal}
-          title={stockOnly ? "Reponer Stock" : (editingProduct ? "Editar Producto" : "Registrar Nuevo Producto")}
+          title={editStockOnly ? "Reponer Stock" : (editingProduct ? "Editar Producto" : "Registrar Nuevo Producto")}
         >
           <form onSubmit={handleSubmit(onSubmitProduct)} className="space-y-4">
 
             <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
               {editingProduct
-                ? <>{stockOnly ? 'Reponiendo' : 'Gestionando'} stock en: {effectiveStore?.name ?? currentStore.name}</>
+                ? <>{editStockOnly ? 'Reponiendo' : 'Gestionando'} stock en: {effectiveStore?.name ?? currentStore.name}</>
                 : <>El producto pertenecerá a: {formStore?.name ?? currentStore.name}</>}
               {editingProduct && isCashier && (
                 <span className="block font-normal text-teal-700/80 mt-0.5">Como cajero solo puedes aumentar el stock, no reducirlo.</span>
@@ -680,8 +690,8 @@ const handleExportCSV = async () => {
               </label>
               <input
                 type="text"
-                autoFocus={!stockOnly}
-                readOnly={stockOnly}
+                autoFocus={!editStockOnly}
+                readOnly={editStockOnly}
                 {...register('sku_barcode')}
                 placeholder="Escanea el código aquí..."
                 className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed"
@@ -690,7 +700,7 @@ const handleExportCSV = async () => {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Producto (Global)</label>
-              <input type="text" readOnly={stockOnly} {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+              <input type="text" readOnly={editStockOnly} {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
               {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>}
             </div>
 
@@ -708,7 +718,7 @@ const handleExportCSV = async () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Categoría</label>
-                <select tabIndex={stockOnly ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${stockOnly ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
+                <select tabIndex={editStockOnly ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${editStockOnly ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
                   <option value="juguetes">Juguetes</option>
                   <option value="ropa">Ropa</option>
                   <option value="zapato">Zapato</option>
@@ -719,7 +729,7 @@ const handleExportCSV = async () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Precio Global ($)</label>
-                <input type="number" step="0.01" readOnly={stockOnly} {...register('price', { valueAsNumber: true })} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+                <input type="number" step="0.01" readOnly={editStockOnly} {...register('price', { valueAsNumber: true })} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
                 {errors.price && <p className="text-red-500 text-xs mt-1">{errors.price.message}</p>}
               </div>
             </div>
