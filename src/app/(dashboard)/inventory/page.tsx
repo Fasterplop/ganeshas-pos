@@ -105,6 +105,15 @@ export default function InventoryPage() {
     }
   }, [currentStore?.id]);
 
+  // Al seleccionar un producto: el nombre de promoción arranca con el nombre
+  // del producto y el descuento se reinicia (opcional, 0 = sin descuento).
+  useEffect(() => {
+    if (selectedProduct) {
+      setPromoName(selectedProduct.name);
+      setDiscountPercent(0);
+    }
+  }, [selectedProduct?.id]);
+
   // Manejador dinámico para abrir el formulario asignando los valores por defecto requeridos
   const handleOpenAddModal = () => {
     setEditingProduct(null);
@@ -461,39 +470,42 @@ const handleExportCSV = async () => {
           ) : (
             <div className="space-y-4 animate-in fade-in">
               <div className="mb-4">
-                <p className="text-sm font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
-                <p className="text-xs text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
-                <p className="text-[10px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
+                <p className="text-base font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
+                <p className="text-sm text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
+                <p className="text-[11px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-500">Nombre de Promoción</label>
-                <input 
-                  type="text" 
+                <label className="text-sm font-semibold text-slate-500">Nombre de Promoción</label>
+                <input
+                  type="text"
                   value={promoName}
                   onChange={(e) => setPromoName(e.target.value)}
-                  className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition" 
+                  className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
               <div className="flex gap-4">
                 <div className="flex-1">
-                  <label className="text-xs font-semibold text-slate-500">Precio Original</label>
-                  <input 
-                    type="text" 
-                    disabled 
+                  <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">Precio Original</label>
+                  <input
+                    type="text"
+                    disabled
                     value={`$ ${originalPrice.toFixed(2)}`}
-                    className="w-full p-2 border border-slate-200 bg-slate-50 text-slate-500 rounded-md mt-1" 
+                    className="w-full p-2 border border-slate-200 bg-slate-50 text-slate-500 rounded-md mt-1"
                   />
                 </div>
                 <div className="flex-1">
-                  <label className="text-xs font-semibold text-slate-500">% Descuento</label>
-                  <input 
-                    type="number" 
+                  <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">% Descuento</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
                     value={discountPercent}
                     onChange={(e) => setDiscountPercent(Number(e.target.value))}
-                    className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition" 
+                    className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
                 </div>
               </div>
+              <p className="text-xs text-slate-400 -mt-2">El descuento es opcional. Con 0% se imprime el precio normal.</p>
               <div className="bg-blue-50 p-4 rounded-lg mt-4 flex justify-between items-center border border-blue-100">
                 <span className="text-sm font-medium text-blue-900">Precio Final</span>
                 <span className="text-2xl font-bold text-[#0f5c5c]">${finalPrice.toFixed(2)}</span>
@@ -592,13 +604,15 @@ const handleExportCSV = async () => {
           </div>
 
           <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-            <p className="text-[15px] font-black text-black truncate w-full text-center leading-none">
+            <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
               {promoName.toUpperCase()}
             </p>
 
             <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
-              <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
-              <p className="text-[26px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
+              {discountPercent > 0 && (
+                <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
+              )}
+              <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
             </div>
 
             <Barcode value={selectedProduct.sku_barcode} width={1.3} height={24} fontSize={10} margin={0} displayValue={true} />
