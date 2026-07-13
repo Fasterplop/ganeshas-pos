@@ -106,10 +106,23 @@ export default function InventoryPage() {
   async function loadStores() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const { data: profile } = await supabase.from('profiles').select('role, can_restock_all').eq('id', user.id).single();
+      // Intentamos leer el permiso especial; si la columna aún no existe (SQL sin
+      // aplicar), caemos a leer solo el rol para no romper el resto de la vista.
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, can_restock_all')
+        .eq('id', user.id)
+        .single();
+
       if (profile) {
         setUserRole(profile.role);
         setCanRestockAll(profile.can_restock_all ?? false);
+      } else if (error) {
+        const { data: basic } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+        if (basic) {
+          setUserRole(basic.role);
+          setCanRestockAll(false);
+        }
       }
     }
     const { data: activeStores } = await supabase
