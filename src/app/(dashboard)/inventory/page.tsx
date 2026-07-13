@@ -13,7 +13,7 @@ import ExcelJS from 'exceljs';
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -723,6 +723,7 @@ const handleExportCSV = async () => {
                   <option value="ropa">Ropa</option>
                   <option value="zapato">Zapato</option>
                   <option value="perfume">Perfume</option>
+                  <option value="accesorios">Accesorios</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
