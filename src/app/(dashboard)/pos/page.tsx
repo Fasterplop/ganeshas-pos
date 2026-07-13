@@ -397,7 +397,9 @@ export default function POSPage() {
           .maybeSingle();
 
         if (stockData) {
-          const newStock = Math.max(0, stockData.stock - item.quantity);
+          // Sin tope en 0: si se vende más de lo que hay, el stock queda NEGATIVO
+          // (p.ej. de 0 a -1) para reflejar la sobreventa en esa tienda.
+          const newStock = stockData.stock - item.quantity;
           await supabase
             .from('store_stock')
             .update({ stock: newStock })
@@ -409,7 +411,7 @@ export default function POSPage() {
             .insert({
               product_id: item.id,
               store_id: currentStore.id,
-              stock: 0 
+              stock: -item.quantity
             });
         }
       }

@@ -7,17 +7,18 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
-import { usePOSStore } from '@/store/usePOSStore';
+import { usePOSStore, Store } from '@/store/usePOSStore';
 import ExcelJS from 'exceljs';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'otros', 'descuento'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
-  stock: z.number({ message: 'Debe ser un número válido' }).min(0, { message: 'El stock no puede ser negativo' }),
+  stock: z.number({ message: 'Debe ser un número válido' }),
+  owner_store_id: z.string().min(1, { message: 'Selecciona una tienda' }),
 });
 
 type ProductFormValues = z.infer<typeof productSchema>;
@@ -29,6 +30,23 @@ interface Product {
   category: string;
   price: number;
   stock: number;
+  owner_store_id: string | null;
+}
+
+// Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
+function storePrefix(storeName: string): string {
+  const n = storeName.toLowerCase();
+  if (n.includes('juguet')) return 'JUG';
+  if (n.includes('ropa')) return 'ROP';
+  return storeName.trim().substring(0, 3).toUpperCase() || 'GEN';
+}
+
+// Categoría por defecto sugerida según la tienda.
+function defaultCategoryForStore(storeName: string): 'juguetes' | 'ropa' | 'zapato' | 'perfume' {
+  const n = storeName.toLowerCase();
+  if (n.includes('ropa')) return 'ropa';
+  if (n.includes('juguet')) return 'juguetes';
+  return 'juguetes';
 }
 
 export default function InventoryPage() {
@@ -38,6 +56,7 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [canRestockAll, setCanRestockAll] = useState(false); // permiso especial de reposición
   
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -50,60 +69,102 @@ export default function InventoryPage() {
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<ProductFormValues>({
+  // Tiendas activas + tienda que se está VIENDO (filtro local, solo para vista).
+  const [stores, setStores] = useState<Store[]>([]);
+  const [viewStoreId, setViewStoreId] = useState<string>('');
+
+  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
     defaultValues: { stock: 0, sku_barcode: '' }
   });
 
-  async function fetchData() {
-    if (!currentStore) return;
-    setLoading(true);
+  // La tienda que se está viendo.
+  const effectiveStore = stores.find(s => s.id === viewStoreId) ?? currentStore;
 
+  // Capacidades según rol y permiso especial:
+  const isOwner = userRole === 'owner';
+  const isCashier = userRole === 'cashier';
+  const isSpecial = isCashier && canRestockAll;      // cajero "reponedor" (todas las tiendas)
+  const isOwnStore = !!currentStore && viewStoreId === currentStore.id;
+
+  // Añadir productos: owner o cajero NORMAL, solo en su propia tienda.
+  const canAdd = isOwnStore && (isOwner || (isCashier && !isSpecial));
+  // Borrar: solo owner en su propia tienda.
+  const canDelete = isOwnStore && isOwner;
+  // Abrir el editor: quien puede añadir, o el cajero especial en CUALQUIER tienda.
+  const canEditRow = canAdd || isSpecial;
+  // Vista de solo lectura (no puede gestionar nada en esta tienda).
+  const readOnly = !canEditRow;
+  // El cajero especial solo puede tocar el stock (nada más del producto).
+  const stockOnly = isSpecial;
+
+  // Tienda seleccionada en el formulario de alta (para el aviso y el prefijo del SKU).
+  const watchedOwnerStoreId = watch('owner_store_id');
+  const formStore = stores.find(s => s.id === watchedOwnerStoreId) ?? currentStore;
+
+  // Rol del usuario + tiendas activas (para los selectores de vista y de alta).
+  async function loadStores() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-      if (profile) setUserRole(profile.role);
+      const { data: profile } = await supabase.from('profiles').select('role, can_restock_all').eq('id', user.id).single();
+      if (profile) {
+        setUserRole(profile.role);
+        setCanRestockAll(profile.can_restock_all ?? false);
+      }
     }
+    const { data: activeStores } = await supabase
+      .from('stores')
+      .select('id, name, is_active')
+      .eq('is_active', true)
+      .order('name');
+    if (activeStores) setStores(activeStores as Store[]);
+  }
+
+  // Inventario (productos + stock) de UNA tienda: los productos cuya tienda dueña
+  // es esa, con el stock de esa tienda (puede ser negativo si hubo sobreventa).
+  async function fetchProducts(storeId: string) {
+    setLoading(true);
 
     const { data: globalProducts } = await supabase
       .from('products')
-      .select('id, sku_barcode, name, category, price')
+      .select('id, sku_barcode, name, category, price, owner_store_id')
       .eq('is_active', true)
+      .eq('owner_store_id', storeId)
       .order('name');
 
     const { data: storeStock } = await supabase
       .from('store_stock')
       .select('product_id, stock')
-      .eq('store_id', currentStore.id);
+      .eq('store_id', storeId);
 
     if (globalProducts) {
       const stockMap: Record<string, number> = {};
-      if (storeStock) {
-        storeStock.forEach(s => {
-          stockMap[s.product_id] = s.stock;
-        });
-      }
-
-      const mergedProducts: Product[] = globalProducts.map(p => ({
-        ...p,
-        stock: stockMap[p.id] || 0
-      }));
-
+      if (storeStock) storeStock.forEach(s => { stockMap[s.product_id] = s.stock; });
+      const mergedProducts: Product[] = globalProducts.map(p => ({ ...p, stock: stockMap[p.id] ?? 0 }));
       setProducts(mergedProducts);
+    } else {
+      setProducts([]);
     }
-    
+
     setLoading(false);
   }
 
+  // Al cambiar la tienda de operación: reseteamos la vista a esa tienda y recargamos catálogos.
   useEffect(() => {
     setIsModalOpen(false);
     setSelectedProduct(null);
     if (currentStore) {
-      fetchData();
+      loadStores();
+      setViewStoreId(currentStore.id);
     } else {
       setProducts([]);
     }
   }, [currentStore?.id]);
+
+  // Cargar el inventario de la tienda que se está viendo.
+  useEffect(() => {
+    if (viewStoreId) fetchProducts(viewStoreId);
+  }, [viewStoreId]);
 
   // Al seleccionar un producto: el nombre de promoción arranca con el nombre
   // del producto y el descuento se reinicia (opcional, 0 = sin descuento).
@@ -119,22 +180,13 @@ export default function InventoryPage() {
     setEditingProduct(null);
     setFormError(null);
 
-    // Asignación inteligente de categoría por defecto según el nombre de la tienda activa
-    let defaultCategory: 'ropa' | 'juguetes' | 'otros' = 'otros';
-    const storeName = currentStore?.name.toLowerCase() || '';
-    
-    if (storeName.includes('ropa')) {
-      defaultCategory = 'ropa';
-    } else if (storeName.includes('juguete')) {
-      defaultCategory = 'juguetes';
-    }
-
     reset({
       sku_barcode: '',
       name: '',
-      category: defaultCategory,
+      category: defaultCategoryForStore(currentStore?.name || ''),
       price: 0,
-      stock: 0,
+      stock: 1, // stock inicial por defecto
+      owner_store_id: currentStore?.id || '', // default: la tienda actual del cajero
     });
     setIsModalOpen(true);
   };
@@ -143,11 +195,40 @@ export default function InventoryPage() {
     if (!currentStore) return;
     setFormError(null);
 
+    // Cajero (normal o reponedor): solo puede AUMENTAR el stock, nunca bajarlo.
+    if (editingProduct && isCashier && data.stock < editingProduct.stock) {
+      setFormError(`⚠️ Como cajero solo puedes aumentar el stock (actual: ${editingProduct.stock}).`);
+      return;
+    }
+
+    // Cajero REPONEDOR editando: solo repone stock en la tienda que ve (cruza
+    // tiendas vía RPC), sin tocar ningún otro dato del producto.
+    if (editingProduct && stockOnly) {
+      const { error } = await supabase.rpc('restock_stock', {
+        p_product_id: editingProduct.id,
+        p_store_id: viewStoreId,
+        p_new_stock: data.stock,
+      });
+      if (error) {
+        setFormError('No se pudo reponer el stock: ' + error.message);
+        return;
+      }
+      closeModal();
+      fetchProducts(viewStoreId);
+      return;
+    }
+
+    // En edición (owner / cajero normal), el producto pertenece a la tienda que se
+    // ve (== su tienda de operación). En creación, la tienda dueña la elige el usuario.
+    const targetStoreId = editingProduct ? viewStoreId : data.owner_store_id;
+    const targetStore = stores.find(s => s.id === targetStoreId) ?? currentStore;
+
     let finalSku = data.sku_barcode?.trim();
     if (!finalSku) {
-      const categoryPrefix = data.category.substring(0, 3).toUpperCase();
+      // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la categoría.
+      const prefix = storePrefix(targetStore.name);
       const uniqueNumber = Math.floor(100000 + Math.random() * 900000);
-      finalSku = `${categoryPrefix}-${uniqueNumber}`;
+      finalSku = `${prefix}-${uniqueNumber}`;
     }
 
     if (editingProduct) {
@@ -160,7 +241,7 @@ export default function InventoryPage() {
           price: data.price
         })
         .eq('id', editingProduct.id);
-      
+
       if (productError) {
         if (productError.code === '23505') setFormError('⚠️ Ya existe un producto con este código.');
         else setFormError('Error al actualizar info global: ' + productError.message);
@@ -172,7 +253,7 @@ export default function InventoryPage() {
         .from('store_stock')
         .upsert({
           product_id: editingProduct.id,
-          store_id: currentStore.id,
+          store_id: targetStoreId,
           stock: data.stock
         }, { onConflict: 'product_id, store_id' });
 
@@ -182,7 +263,7 @@ export default function InventoryPage() {
       }
 
     } else {
-      // MODO CREACIÓN: Insertar Producto Globalmente
+      // MODO CREACIÓN: Insertar Producto Globalmente, atado a su tienda dueña.
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -190,11 +271,12 @@ export default function InventoryPage() {
           name: data.name,
           category: data.category,
           price: data.price,
-          is_active: true
+          is_active: true,
+          owner_store_id: targetStoreId
         }])
         .select('id')
         .single();
-      
+
       if (productError || !newProduct) {
         if (productError?.code === '23505') setFormError('⚠️ Ya existe un producto con este código.');
         else setFormError('Error al crear producto: ' + productError?.message);
@@ -202,22 +284,22 @@ export default function InventoryPage() {
       }
 
       // IMPORTANTE: El trigger de la base de datos ya creó las filas de stock en 0 para todas las tiendas.
-      // Si el usuario especificó un stock inicial mayor a 0 para esta tienda, simplemente ejecutamos un update.
+      // Si el usuario especificó un stock inicial mayor a 0, lo cargamos en la tienda dueña.
       if (data.stock > 0) {
         const { error: stockUpdateError } = await supabase
           .from('store_stock')
           .update({ stock: data.stock })
           .eq('product_id', newProduct.id)
-          .eq('store_id', currentStore.id);
+          .eq('store_id', targetStoreId);
 
         if (stockUpdateError) {
-          console.error("Error al actualizar el stock inicial en la sucursal activa:", stockUpdateError);
+          console.error("Error al actualizar el stock inicial en la tienda dueña:", stockUpdateError);
         }
       }
     }
 
     closeModal();
-    fetchData();
+    fetchProducts(viewStoreId);
   };
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
@@ -233,7 +315,7 @@ export default function InventoryPage() {
         return;
       }
       if (selectedProduct?.id === id) setSelectedProduct(null);
-      fetchData();
+      fetchProducts(viewStoreId);
     }
   };
 
@@ -247,6 +329,7 @@ export default function InventoryPage() {
       category: product.category as any,
       price: product.price,
       stock: product.stock,
+      owner_store_id: product.owner_store_id ?? currentStore?.id ?? '',
     });
     setIsModalOpen(true);
   };
@@ -255,7 +338,7 @@ export default function InventoryPage() {
     setIsModalOpen(false);
     setEditingProduct(null);
     setFormError(null);
-    reset({ sku_barcode: '', name: '', category: 'otros', price: 0, stock: 0 });
+    reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0, owner_store_id: currentStore?.id ?? '' });
   };
 
   const LOW_STOCK_THRESHOLD = 5; // ajústalo a tu realidad
@@ -273,7 +356,7 @@ const handleExportCSV = async () => {
     { header: 'Nombre',                       key: 'nombre',   width: 36 },
     { header: 'Categoría',                    key: 'categoria', width: 16 },
     { header: 'Precio',                       key: 'precio',   width: 14, style: { numFmt: '"$"#,##0.00' } },
-    { header: `Stock (${currentStore.name})`, key: 'stock',    width: 18 },
+    { header: `Stock (${effectiveStore?.name ?? currentStore.name})`, key: 'stock', width: 18 },
     { header: 'Valor inventario',             key: 'valor',    width: 18, style: { numFmt: '"$"#,##0.00' } },
   ];
 
@@ -335,7 +418,7 @@ const handleExportCSV = async () => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `inventario_${currentStore.name.replace(/\s+/g, '_').toLowerCase()}.xlsx`;
+  link.download = `inventario_${(effectiveStore?.name ?? currentStore.name).replace(/\s+/g, '_').toLowerCase()}.xlsx`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -369,7 +452,32 @@ const handleExportCSV = async () => {
             
             <div className="flex flex-col w-full md:w-auto">
               <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
-              <p className="text-slate-500 text-sm">Mostrando stock para: <strong className="text-teal-700">{currentStore.name}</strong></p>
+              {isCashier ? (
+                /* Filtro de VISTA (solo cajeros). Cambia qué inventario se ve;
+                   no cambia la tienda asignada del cajero. */
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="text-slate-500 text-sm">Ver inventario de:</span>
+                  <select
+                    value={viewStoreId || currentStore.id}
+                    onChange={(e) => setViewStoreId(e.target.value)}
+                    className="text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                  >
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  {readOnly && (
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                      Solo lectura
+                    </span>
+                  )}
+                  {stockOnly && (
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
+                      Reponer stock
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p className="text-slate-500 text-sm">Mostrando stock para: <strong className="text-teal-700">{currentStore.name}</strong></p>
+              )}
             </div>
 
             <div className="relative w-full md:w-80">
@@ -387,8 +495,8 @@ const handleExportCSV = async () => {
                 Exportar Excel
               </button>
               
-              {/* MODIFICADO: Botón habilitado tanto para Owner como para Cashier */}
-              {(userRole === 'owner' || userRole === 'cashier') && (
+              {/* Añadir: owner y cajero normal, solo en su propia tienda (no en vista de otra). */}
+              {canAdd && (
                 <button onClick={handleOpenAddModal} className="flex-1 md:flex-none px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm cursor-pointer font-medium">
                   + Añadir Producto
                 </button>
@@ -405,14 +513,14 @@ const handleExportCSV = async () => {
                   <th className="p-3">Categoría</th>
                   <th className="p-3 text-right">Precio</th>
                   <th className="p-3 text-right">Stock Local</th>
-                  {userRole === 'owner' && <th className="p-3 text-center rounded-tr-lg">Acciones</th>}
+                  <th className="p-3 text-center rounded-tr-lg">Acciones</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">Sincronizando inventario con {currentStore.name}...</td></tr>
+                  <tr><td colSpan={6} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
                 ) : filteredProducts.length === 0 ? (
-                  <tr><td colSpan={userRole === 'owner' ? 6 : 5} className="p-8 text-center text-slate-500">No hay productos disponibles.</td></tr>
+                  <tr><td colSpan={6} className="p-8 text-center text-slate-500">No hay productos en esta tienda.</td></tr>
                 ) : (
                   filteredProducts.map((product) => (
                     <tr 
@@ -427,27 +535,35 @@ const handleExportCSV = async () => {
                       </td>
                       <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
                       <td className="p-3 text-right font-bold text-emerald-600">
-                        {product.stock > 0 ? product.stock : <span className="text-red-500">0</span>}
+                        {product.stock > 0 ? product.stock : <span className="text-red-500">{product.stock}</span>}
                       </td>
-                      
-                      {userRole === 'owner' && (
-                        <td className="p-3 text-center">
-                          <button 
-                            onClick={(e) => handleEdit(e, product)}
-                            className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
-                            title="Editar"
-                          >
-                            ✏️
-                          </button>
-                          <button 
-                            onClick={(e) => handleDelete(e, product.id)}
-                            className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
-                            title="Desactivar Globalmente"
-                          >
-                            🗑️
-                          </button>
-                        </td>
-                      )}
+
+                      <td className="p-3 text-center">
+                        {canEditRow ? (
+                          <>
+                            {/* Editar / Reponer stock. El cajero especial solo repone stock. */}
+                            <button
+                              onClick={(e) => handleEdit(e, product)}
+                              className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
+                              title={stockOnly ? 'Reponer stock' : 'Editar'}
+                            >
+                              {stockOnly ? '📦' : '✏️'}
+                            </button>
+                            {/* Eliminar: solo owner en su tienda. */}
+                            {canDelete && (
+                              <button
+                                onClick={(e) => handleDelete(e, product.id)}
+                                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                                title="Desactivar Globalmente"
+                              >
+                                🗑️
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -523,15 +639,20 @@ const handleExportCSV = async () => {
 
       {/* MODAL: AÑADIR / EDITAR PRODUCTO */}
       <div className="print:hidden">
-        <Modal 
-          isOpen={isModalOpen} 
-          onClose={closeModal} 
-          title={editingProduct ? "Editar Producto" : "Registrar Nuevo Producto"}
+        <Modal
+          isOpen={isModalOpen}
+          onClose={closeModal}
+          title={stockOnly ? "Reponer Stock" : (editingProduct ? "Editar Producto" : "Registrar Nuevo Producto")}
         >
           <form onSubmit={handleSubmit(onSubmitProduct)} className="space-y-4">
-            
+
             <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200 mb-4">
-              Gestionando stock en: {currentStore.name}
+              {editingProduct
+                ? <>{stockOnly ? 'Reponiendo' : 'Gestionando'} stock en: {effectiveStore?.name ?? currentStore.name}</>
+                : <>El producto pertenecerá a: {formStore?.name ?? currentStore.name}</>}
+              {editingProduct && isCashier && (
+                <span className="block font-normal text-teal-700/80 mt-0.5">Como cajero solo puedes aumentar el stock, no reducirlo.</span>
+              )}
             </div>
 
             {formError && (
@@ -544,43 +665,63 @@ const handleExportCSV = async () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Código de Barras (Escanea o deja vacío)
               </label>
-              <input 
-                type="text" 
-                autoFocus 
-                {...register('sku_barcode')} 
-                placeholder="Escanea el código aquí..." 
-                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" 
+              <input
+                type="text"
+                autoFocus={!stockOnly}
+                readOnly={stockOnly}
+                {...register('sku_barcode')}
+                placeholder="Escanea el código aquí..."
+                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Producto (Global)</label>
-              <input type="text" {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
+              <input type="text" readOnly={stockOnly} {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
               {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>}
             </div>
+
+            {/* Tienda dueña (solo al registrar): define en qué inventario aparece. */}
+            {!editingProduct && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Tienda a la que pertenece</label>
+                <select {...register('owner_store_id')} className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none">
+                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                {errors.owner_store_id && <p className="text-red-500 text-xs mt-1">{errors.owner_store_id.message}</p>}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Categoría</label>
-                <select {...register('category')} className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none">
+                <select tabIndex={stockOnly ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${stockOnly ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
                   <option value="juguetes">Juguetes</option>
                   <option value="ropa">Ropa</option>
-                  <option value="otros">Otros</option>
-                  <option value="descuento">Descuento</option>
+                  <option value="zapato">Zapato</option>
+                  <option value="perfume">Perfume</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Precio Global ($)</label>
-                <input type="number" step="0.01" {...register('price', { valueAsNumber: true })} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
+                <input type="number" step="0.01" readOnly={stockOnly} {...register('price', { valueAsNumber: true })} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
                 {errors.price && <p className="text-red-500 text-xs mt-1">{errors.price.message}</p>}
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Stock para {currentStore.name}</label>
-              <input type="number" {...register('stock', { valueAsNumber: true })} placeholder="0" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none" />
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Stock {editingProduct ? `para ${effectiveStore?.name ?? currentStore.name}` : `inicial (${formStore?.name ?? currentStore.name})`}
+              </label>
+              <input
+                type="number"
+                min={editingProduct && userRole === 'cashier' ? editingProduct.stock : undefined}
+                {...register('stock', { valueAsNumber: true })}
+                placeholder="0"
+                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+              />
               {errors.stock && <p className="text-red-500 text-xs mt-1">{errors.stock.message}</p>}
             </div>
 

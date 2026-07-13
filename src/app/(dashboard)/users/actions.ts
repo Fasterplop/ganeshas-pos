@@ -58,10 +58,10 @@ export async function getUsersAction() {
   if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
 
   try {
-    // Traemos también assigned_store_id
+    // Traemos también assigned_store_id y el permiso especial de reposición
     const { data: profiles, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select('id, full_name, role, is_active, assigned_store_id')
+      .select('id, full_name, role, is_active, assigned_store_id, can_restock_all')
       .order('full_name', { ascending: true });
       
     if (profileError) throw profileError;
@@ -75,13 +75,30 @@ export async function getUsersAction() {
         id: profile.id,
         full_name: profile.full_name,
         role: profile.role,
-        is_active: profile.is_active ?? true, 
+        is_active: profile.is_active ?? true,
         email: authUser?.email || 'Sin correo',
         assigned_store_id: profile.assigned_store_id, // <-- NUEVO CAMPO
+        can_restock_all: profile.can_restock_all ?? false, // permiso especial de reposición
       };
     });
 
     return { success: true, users };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function setRestockPermissionAction(userId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+
+  try {
+    const { error } = await supabaseAdmin
+      .from('profiles')
+      .update({ can_restock_all: value })
+      .eq('id', userId);
+
+    if (error) return { success: false, error: error.message };
+    return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }

@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
-import { createCashierAction, getUsersAction, toggleUserActiveAction } from './actions';
+import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockPermissionAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
 
 // 1. Agregamos assigned_store_id como obligatorio en el esquema
@@ -90,6 +90,19 @@ export default function UsersPage() {
         await fetchUsers();
       } else {
         alert('Error al cambiar el estado: ' + result.error);
+      }
+    }
+  };
+
+  // Permiso especial: reponer (subir) stock en TODAS las tiendas.
+  const handleToggleRestock = async (userId: string, userName: string, current: boolean) => {
+    const accion = current ? 'quitar' : 'dar';
+    if (window.confirm(`¿${accion.charAt(0).toUpperCase() + accion.slice(1)} a ${userName} el permiso de reponer stock en todas las tiendas?`)) {
+      const result = await setRestockPermissionAction(userId, !current);
+      if (result.success) {
+        await fetchUsers();
+      } else {
+        alert('Error al cambiar el permiso: ' + result.error);
       }
     }
   };
@@ -208,13 +221,13 @@ export default function UsersPage() {
                     <span className={`w-2 h-2 rounded-full ${user.is_active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-rose-500'}`}></span>
                     {user.is_active ? 'Activo' : 'Inactivo'}
                   </span>
-                  
+
                   {user.role !== 'owner' && (
                     <button
                       onClick={() => handleToggleStatus(user.id, user.full_name, user.is_active)}
                       className={`px-3 py-1.5 rounded-lg transition border text-xs font-bold ${
-                        user.is_active 
-                          ? 'text-rose-600 border-rose-200 bg-rose-50 hover:bg-rose-100' 
+                        user.is_active
+                          ? 'text-rose-600 border-rose-200 bg-rose-50 hover:bg-rose-100'
                           : 'text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
                       }`}
                     >
@@ -222,6 +235,22 @@ export default function UsersPage() {
                     </button>
                   )}
                 </div>
+
+                {user.role === 'cashier' && (
+                  <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+                    <span className="text-xs font-semibold text-slate-500">Reposición global</span>
+                    <button
+                      onClick={() => handleToggleRestock(user.id, user.full_name, user.can_restock_all)}
+                      className={`px-3 py-1.5 rounded-lg transition border text-[11px] font-bold uppercase tracking-wide ${
+                        user.can_restock_all
+                          ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
+                          : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {user.can_restock_all ? '✓ Activado' : 'Desactivado'}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -234,6 +263,7 @@ export default function UsersPage() {
                   <th className="px-6 py-4">Usuario</th>
                   <th className="px-6 py-4">Sucursal</th>
                   <th className="px-6 py-4">Rol</th>
+                  <th className="px-6 py-4 text-center">Reposición global</th>
                   <th className="px-6 py-4">Estado</th>
                   <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
@@ -256,6 +286,23 @@ export default function UsersPage() {
                       <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase ${user.role === 'owner' ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-teal-50 text-teal-700 border border-teal-200'}`}>
                         {user.role === 'owner' ? 'Dueño' : 'Cajero'}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      {user.role === 'cashier' ? (
+                        <button
+                          onClick={() => handleToggleRestock(user.id, user.full_name, user.can_restock_all)}
+                          title="Permite subir stock en TODAS las tiendas"
+                          className={`px-3 py-1.5 rounded-full transition border text-[11px] font-bold uppercase tracking-wide ${
+                            user.can_restock_all
+                              ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
+                              : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {user.can_restock_all ? '✓ Activado' : 'Desactivado'}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-400 italic">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${user.is_active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
@@ -283,7 +330,7 @@ export default function UsersPage() {
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
+                    <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
                       <svg className="w-12 h-12 mx-auto mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                       <p className="text-base font-medium text-slate-500">No hay usuarios registrados</p>
                     </td>
