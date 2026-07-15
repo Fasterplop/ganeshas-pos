@@ -713,11 +713,11 @@ export default function DashboardPage() {
                       <td className="p-3 text-slate-600 max-w-[150px] truncate">
                         {sale.profiles?.full_name || 'Desconocido'}
                       </td>
-                      <td className="p-3">
-                        <ul className="list-disc list-inside text-slate-600 text-xs space-y-1">
+                      <td className="p-3 align-top">
+                        <ul className="list-disc list-inside text-slate-600 text-xs space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
                           {sale.sale_items?.map((item: any, idx: number) => (
                             <li key={idx} className="truncate max-w-[200px]">
-                              <span className="font-medium text-slate-700">{item.quantity}x</span> {item.custom_name || item.products?.name || 'Desconocido'} 
+                              <span className="font-medium text-slate-700">{item.quantity}x</span> {item.custom_name || item.products?.name || 'Desconocido'}
                               <span className="text-slate-400 ml-1">(${item.unit_price})</span>
                             </li>
                           ))}
