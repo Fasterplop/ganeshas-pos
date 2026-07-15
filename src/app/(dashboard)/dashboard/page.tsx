@@ -335,8 +335,8 @@ export default function DashboardPage() {
         { header: 'Cajero',                key: 'cajero',     width: 20 },
         { header: 'Productos comprados',   key: 'productos',  width: 42 },
         { header: 'Método de Pago',        key: 'metodo',     width: 26 },
-        { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
+        { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
@@ -397,7 +397,8 @@ export default function DashboardPage() {
         });
       });
 
-      // Fila de totales generales (etiqueta combinada A:F, verde claro)
+      // Fila de totales generales (etiqueta combinada A:E, verde claro).
+      // Cantidad de artículos (F) lleva su total; Referencia (G) queda vacía.
       const totalRow = ws.addRow({
         fecha: 'TOTALES GENERALES',
         cantidad: totalCantidad,
@@ -405,7 +406,7 @@ export default function DashboardPage() {
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
-      ws.mergeCells(`A${totalRow.number}:F${totalRow.number}`);
+      ws.mergeCells(`A${totalRow.number}:E${totalRow.number}`);
       totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
       totalRow.height = 20;
       totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
