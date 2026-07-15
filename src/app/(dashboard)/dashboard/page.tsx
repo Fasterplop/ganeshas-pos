@@ -9,6 +9,23 @@ import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el conte
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
 
+// Nombre legible de un método de pago ('punto_de_venta' -> 'punto de venta')
+const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
+
+// Texto del/los método(s) de pago de una venta (usado en el Excel).
+// Pago simple: "punto de venta". Pago dividido: "efectivo ($50.00), cashea ($80.00)".
+const paymentToText = (sale: any) => {
+  const m1 = prettyMethod(sale.payment_method) || 'N/A';
+  if (!sale.payment_method_2) return m1;
+  const a1 = Number(sale.payment_amount_1) || 0;
+  const a2 = Number(sale.payment_amount_2) || 0;
+  return `${m1} ($${a1.toFixed(2)}), ${prettyMethod(sale.payment_method_2)} ($${a2.toFixed(2)})`;
+};
+
+// Cantidad total de artículos vendidos en una venta.
+const saleItemCount = (sale: any) =>
+  sale.sale_items?.reduce((acc: number, it: any) => acc + (it.quantity || 0), 0) || 0;
+
 export default function DashboardPage() {
   const supabase = createClient();
   const { currentStore } = usePOSStore(); // <-- 2. Obtenemos la tienda activa
@@ -236,6 +253,9 @@ export default function DashboardPage() {
           bcv_rate,
           payment_method,
           payment_ref,
+          payment_method_2,
+          payment_amount_1,
+          payment_amount_2,
           customers (full_name),
           profiles (full_name),
           sale_items (
@@ -281,6 +301,9 @@ export default function DashboardPage() {
           bcv_rate,
           payment_method,
           payment_ref,
+          payment_method_2,
+          payment_amount_1,
+          payment_amount_2,
           customers (full_name),
           profiles (full_name),
           sale_items (
@@ -307,29 +330,35 @@ export default function DashboardPage() {
       });
 
       ws.columns = [
-        { header: 'Fecha',          key: 'fecha',      width: 20 },
-        { header: 'Cliente',        key: 'cliente',    width: 22 },
-        { header: 'Cajero',         key: 'cajero',     width: 20 },
-        { header: 'Productos',      key: 'productos',  width: 40 },
-        { header: 'Método de Pago', key: 'metodo',     width: 16 },
-        { header: 'Referencia',     key: 'referencia', width: 16 },
-        { header: 'Descuento USD',  key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
-        { header: 'Total USD',      key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
-        { header: 'Total Bs',       key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
+        { header: 'Fecha',                 key: 'fecha',      width: 20 },
+        { header: 'Cliente',               key: 'cliente',    width: 22 },
+        { header: 'Cajero',                key: 'cajero',     width: 20 },
+        { header: 'Productos comprados',   key: 'productos',  width: 42 },
+        { header: 'Método de Pago',        key: 'metodo',     width: 26 },
+        { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
+        { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
+
+      // Las columnas de texto largo se ajustan (wrap) y se alinean arriba.
+      ws.getColumn('productos').alignment = { wrapText: true, vertical: 'top' };
+      ws.getColumn('metodo').alignment = { wrapText: true, vertical: 'top' };
+      ws.getColumn('cantidad').alignment = { horizontal: 'center', vertical: 'top' };
 
       const headerRow = ws.getRow(1);
       headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
-      headerRow.height = 22;
+      headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      headerRow.height = 30;
       headerRow.eachCell(cell => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
         cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
       });
 
       let totalSumaUSD = 0;
       let totalSumaVES = 0;
       let totalDescuento = 0;
+      let totalCantidad = 0;
 
       rows.forEach((sale: any) => {
         const fecha = parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
@@ -338,9 +367,14 @@ export default function DashboardPage() {
           hour: '2-digit', minute: '2-digit', hour12: true,
         }).replace(/,/g, '');
 
-        const productos = sale.sale_items?.map((item: any) =>
-          `${item.quantity}x ${item.custom_name || item.products?.name || 'Desconocido'}`
-        ).join(' | ') || '';
+        // Celda "Productos comprados": encabezado en negrita "N PRODUCTO(S)"
+        // seguido del detalle, una línea por artículo.
+        const itemCount = saleItemCount(sale);
+        const nombres = sale.sale_items?.map((item: any) => {
+          const nm = item.custom_name || item.products?.name || 'Desconocido';
+          return item.quantity > 1 ? `${item.quantity}x ${nm}` : nm;
+        }) || [];
+        const encabezado = `${itemCount} PRODUCTO${itemCount === 1 ? '' : 'S'}`;
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
@@ -348,31 +382,41 @@ export default function DashboardPage() {
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
         totalDescuento += descuentoUSD;
+        totalCantidad += itemCount;
 
         ws.addRow({
           fecha,
           cliente: sale.customers?.full_name || 'Anónimo',
           cajero: sale.profiles?.full_name || 'Desconocido',
-          productos,
-          metodo: sale.payment_method?.replace(/_/g, ' ') || 'N/A',
-          referencia: sale.payment_ref || 'N/A',
+          productos: {
+            richText: [
+              { text: encabezado + (nombres.length ? '\n' : ''), font: { bold: true } },
+              { text: nombres.join('\n') },
+            ],
+          },
+          metodo: paymentToText(sale),
+          cantidad: itemCount,
           descuento: descuentoUSD,
           usd: amountUSD,
           bs: amountVES,
         });
       });
 
-      ws.addRow({});
+      // Fila de totales generales (etiqueta combinada A:E, verde claro)
       const totalRow = ws.addRow({
-        referencia: 'TOTAL:',
+        fecha: 'TOTALES GENERALES',
+        cantidad: totalCantidad,
         descuento: totalDescuento,
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
-      totalRow.font = { bold: true };
-      totalRow.eachCell(cell => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
-      });
+      ws.mergeCells(`A${totalRow.number}:E${totalRow.number}`);
+      totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
+      totalRow.height = 20;
+      totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
+      for (let c = 1; c <= 9; c++) {
+        totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
+      }
 
       ws.autoFilter = { from: 'A1', to: 'I1' };
 
@@ -409,7 +453,7 @@ export default function DashboardPage() {
   const formattedDate = new Date().toLocaleDateString('es-ES', dateOptions);
 
   return (
-    <div className="h-full font-sans max-w-7xl mx-auto flex flex-col gap-6 w-full pb-10">
+    <div className="h-full font-sans max-w-[88rem] mx-auto flex flex-col gap-6 w-full pb-10">
       
       {/* --- CABECERA --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
@@ -647,7 +691,7 @@ export default function DashboardPage() {
                 <p className="text-slate-500 font-medium">No hay transacciones registradas en {currentStore.name}.</p>
               </div>
             ) : (
-              <table className="w-full text-left text-sm border-collapse min-w-[800px]">
+              <table className="w-full text-left text-sm border-collapse min-w-[900px]">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
                     <th className="p-3 font-semibold rounded-tl-lg">Fecha</th>
@@ -655,6 +699,7 @@ export default function DashboardPage() {
                     <th className="p-3 font-semibold">Cajero</th>
                     <th className="p-3 font-semibold">Productos</th>
                     <th className="p-3 font-semibold">Pago</th>
+                    <th className="p-3 font-semibold text-center">Cantidad</th>
                     <th className="p-3 font-semibold text-right rounded-tr-lg">Total</th>
                   </tr>
                 </thead>
@@ -684,12 +729,26 @@ export default function DashboardPage() {
                         </ul>
                       </td>
                       <td className="p-3">
-                        <div className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                          {sale.payment_method?.replace(/_/g, ' ')}
-                        </div>
+                        {sale.payment_method_2 ? (
+                          <div className="flex flex-col gap-1 items-start">
+                            <span className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
+                              {prettyMethod(sale.payment_method)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_1).toFixed(2)})</span>
+                            </span>
+                            <span className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
+                              {prettyMethod(sale.payment_method_2)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_2).toFixed(2)})</span>
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
+                            {prettyMethod(sale.payment_method)}
+                          </div>
+                        )}
                         {sale.payment_ref && (
                           <span className="block text-[11px] text-slate-400 mt-1 truncate max-w-[100px]">Ref: {sale.payment_ref}</span>
                         )}
+                      </td>
+                      <td className="p-3 text-center text-slate-700 font-semibold whitespace-nowrap">
+                        {saleItemCount(sale)}
                       </td>
                       <td className="p-3 text-right">
   <p className="font-bold text-slate-800">${Number(sale.total_amount).toFixed(2)}</p>

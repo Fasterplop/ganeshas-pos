@@ -13,6 +13,15 @@ type NotificationType = {
   type: 'success' | 'error';
 } | null;
 
+// Opciones de método de pago (reutilizadas por el modo simple y el dividido)
+const PAYMENT_OPTIONS: { value: PaymentMethod; label: string }[] = [
+  { value: 'efectivo', label: '💵 Efectivo' },
+  { value: 'punto_de_venta', label: '💳 Punto de Venta' },
+  { value: 'zelle', label: '🔄 Zelle' },
+  { value: 'pago_movil', label: '📱 Pago Móvil' },
+  { value: 'cashea', label: '🛍️ Cashea' },
+];
+
 export default function POSPage() {
   const supabase = createClient();
   // 1. Extraemos currentStore del estado global
@@ -27,6 +36,11 @@ export default function POSPage() {
   
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
+
+  // PAGO DIVIDIDO (hasta 2 métodos en una misma venta)
+  const [splitPayment, setSplitPayment] = useState(false);
+  const [paymentMethod2, setPaymentMethod2] = useState<PaymentMethod | null>(null);
+  const [splitAmount1, setSplitAmount1] = useState<string>('');
   
   const [discountType, setDiscountType] = useState<DiscountType>('none');
   const [discountValue, setDiscountValue] = useState<string>('');
@@ -61,6 +75,9 @@ export default function POSPage() {
     setCustomerPhone('');
     setPaymentMethod(null);
     setPaymentRef('');
+    setSplitPayment(false);
+    setPaymentMethod2(null);
+    setSplitAmount1('');
     setDiscountType('none');
     setDiscountValue('');
     setProductSearch('');
@@ -127,7 +144,8 @@ export default function POSPage() {
   const totalItems = cart.reduce((acc, item) => acc + item.quantity, 0);
 
   let discountAmount = 0;
-  if ((paymentMethod === 'efectivo' || paymentMethod === 'zelle') && discountValue !== '' && !isNaN(Number(discountValue))) {
+  // El descuento manual NO aplica en modo de pago dividido.
+  if (!splitPayment && (paymentMethod === 'efectivo' || paymentMethod === 'zelle') && discountValue !== '' && !isNaN(Number(discountValue))) {
     const val = Number(discountValue);
     if (discountType === 'percent') {
       discountAmount = subtotalUSD * (val / 100);
@@ -149,6 +167,25 @@ export default function POSPage() {
 
   const totalUSD = Math.max(0, totalAfterManual - redemptionDiscount);
   const totalVES = totalUSD * bcvRate;
+
+  // --- Pago dividido: el método 1 lleva el monto ingresado; el método 2 el resto ---
+  const splitAmount1Num = isNaN(Number(splitAmount1)) ? 0 : Number(splitAmount1);
+  const splitAmount2Num = Math.max(0, Number((totalUSD - splitAmount1Num).toFixed(2)));
+
+  const toggleSplitPayment = () => {
+    setSplitPayment((prev) => {
+      const next = !prev;
+      if (!next) {
+        setPaymentMethod2(null);
+        setSplitAmount1('');
+      } else {
+        // Al activar, arrancamos sin descuento manual para evitar ambigüedad.
+        setDiscountType('none');
+        setDiscountValue('');
+      }
+      return next;
+    });
+  };
 
   // Default: aplicar el descuento MÁXIMO disponible. Si el cajero ya ajustó
   // el canje manualmente, respetamos su elección (solo acotamos hacia abajo).
@@ -256,7 +293,17 @@ export default function POSPage() {
     if (cart.length === 0) return showNotification('El carrito está vacío', 'error');
     if (!paymentMethod) return showNotification('Debes seleccionar un método de pago', 'error');
     if (!currentStore) return showNotification('Error crítico: No hay tienda activa.', 'error');
-    
+
+    // Validación del pago dividido
+    if (splitPayment) {
+      if (totalUSD <= 0) return showNotification('No se puede dividir un total de $0.00', 'error');
+      if (!paymentMethod2) return showNotification('Selecciona el segundo método de pago', 'error');
+      if (paymentMethod2 === paymentMethod) return showNotification('Los dos métodos de pago deben ser distintos', 'error');
+      if (splitAmount1Num <= 0 || splitAmount1Num >= totalUSD) {
+        return showNotification('El monto del método 1 debe ser mayor a $0 y menor al total', 'error');
+      }
+    }
+
     setIsLoading(true);
 
     try {
@@ -355,6 +402,9 @@ export default function POSPage() {
           bcv_rate: bcvRate,
           payment_method: paymentMethod,
           payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim(),
+          payment_method_2: splitPayment ? paymentMethod2 : null,
+          payment_amount_1: splitPayment ? splitAmount1Num : null,
+          payment_amount_2: splitPayment ? splitAmount2Num : null,
           redemption_discount_usd: redemptionDiscount,
           redemption_points: pointsToConsume
         })
@@ -451,6 +501,9 @@ export default function POSPage() {
       setCustomerPhone('');
       setPaymentRef('');
       setPaymentMethod(null);
+      setSplitPayment(false);
+      setPaymentMethod2(null);
+      setSplitAmount1('');
       setDiscountType('none');
       setDiscountValue('');
       setRedeemBlocks(0);
@@ -778,79 +831,162 @@ export default function POSPage() {
           )}
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col shrink-0">
-            <h3 className="text-xl font-bold text-slate-800 mb-2">Método de Pago <span className="text-red-500">*</span></h3>
-
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <button 
-                onClick={() => setPaymentMethod('efectivo')}
-                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'efectivo' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xl font-bold text-slate-800">Método de Pago <span className="text-red-500">*</span></h3>
+              <button
+                onClick={toggleSplitPayment}
+                className={`text-sm font-bold px-3 py-1.5 rounded-lg border transition whitespace-nowrap ${
+                  splitPayment
+                    ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
+                    : 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
+                }`}
               >
-                <span className="text-xl">💵</span>
-                <span className="text-sm font-medium">Efectivo</span>
-              </button>
-              
-              <button 
-                onClick={() => setPaymentMethod('punto_de_venta')}
-                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'punto_de_venta' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
-              >
-                <span className="text-xl">💳</span>
-                <span className="text-sm font-medium text-center">Punto de Venta</span>
-              </button>
-
-              <button 
-                onClick={() => setPaymentMethod('zelle')}
-                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'zelle' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
-              >
-                <span className="text-xl">🔄</span>
-                <span className="text-sm font-medium">Zelle</span>
-              </button>
-              
-              <button 
-                onClick={() => setPaymentMethod('pago_movil')}
-                className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'pago_movil' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
-              >
-                <span className="text-xl">📱</span>
-                <span className="text-sm font-medium">Pago Móvil</span>
-              </button>
-
-              <button 
-                onClick={() => setPaymentMethod('cashea')}
-                className={`py-2.5 rounded-lg border flex col-span-2 items-center justify-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
-              >
-                <span className="text-xl">🛍️</span>
-                <span className="text-sm font-medium">Cashea</span>
+                {splitPayment ? '✕ Pago simple' : '➗ Dividir pago'}
               </button>
             </div>
 
-            {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
-              <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
-                <h4 className="text-lg font-semibold text-slate-700 mb-2">Aplicar Descuento</h4>
-                <div className="flex gap-2">
-                  <select
-                    value={discountType}
-                    onChange={(e) => {
-                      setDiscountType(e.target.value as DiscountType);
-                      if (e.target.value === 'none') setDiscountValue('');
-                    }}
-                    className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+            {!splitPayment ? (
+              <>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    onClick={() => setPaymentMethod('efectivo')}
+                    className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'efectivo' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
                   >
-                    <option value="none">Sin descuento</option>
-                    <option value="percent">Porcentaje (%)</option>
-                    <option value="fixed">Monto ($)</option>
-                  </select>
-                  
-                  {discountType !== 'none' && (
-                    <input 
-                      type="number" 
-                      min="0"
-                      step="0.01"
-                      value={discountValue}
-                      onChange={(e) => setDiscountValue(e.target.value)}
-                      placeholder={discountType === 'percent' ? "Ej. 10" : "Ej. 5.00"}
-                      className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
-                    />
-                  )}
+                    <span className="text-xl">💵</span>
+                    <span className="text-sm font-medium">Efectivo</span>
+                  </button>
+
+                  <button
+                    onClick={() => setPaymentMethod('punto_de_venta')}
+                    className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'punto_de_venta' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                  >
+                    <span className="text-xl">💳</span>
+                    <span className="text-sm font-medium text-center">Punto de Venta</span>
+                  </button>
+
+                  <button
+                    onClick={() => setPaymentMethod('zelle')}
+                    className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'zelle' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                  >
+                    <span className="text-xl">🔄</span>
+                    <span className="text-sm font-medium">Zelle</span>
+                  </button>
+
+                  <button
+                    onClick={() => setPaymentMethod('pago_movil')}
+                    className={`py-2.5 rounded-lg border flex items-center justify-center gap-2 transition ${paymentMethod === 'pago_movil' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                  >
+                    <span className="text-xl">📱</span>
+                    <span className="text-sm font-medium">Pago Móvil</span>
+                  </button>
+
+                  <button
+                    onClick={() => setPaymentMethod('cashea')}
+                    className={`py-2.5 rounded-lg border flex col-span-2 items-center justify-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                  >
+                    <span className="text-xl">🛍️</span>
+                    <span className="text-sm font-medium">Cashea</span>
+                  </button>
                 </div>
+
+                {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
+                  <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
+                    <h4 className="text-lg font-semibold text-slate-700 mb-2">Aplicar Descuento</h4>
+                    <div className="flex gap-2">
+                      <select
+                        value={discountType}
+                        onChange={(e) => {
+                          setDiscountType(e.target.value as DiscountType);
+                          if (e.target.value === 'none') setDiscountValue('');
+                        }}
+                        className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+                      >
+                        <option value="none">Sin descuento</option>
+                        <option value="percent">Porcentaje (%)</option>
+                        <option value="fixed">Monto ($)</option>
+                      </select>
+
+                      {discountType !== 'none' && (
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={discountValue}
+                          onChange={(e) => setDiscountValue(e.target.value)}
+                          placeholder={discountType === 'percent' ? "Ej. 10" : "Ej. 5.00"}
+                          className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="mb-4 space-y-3 animate-fade-in-down">
+                {/* Método 1 */}
+                <div>
+                  <label className="block text-sm font-semibold text-slate-600 mb-1">Método 1</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={paymentMethod ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value as PaymentMethod;
+                        setPaymentMethod(val);
+                        if (val === paymentMethod2) setPaymentMethod2(null);
+                      }}
+                      className="flex-1 min-w-0 p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    >
+                      <option value="" disabled>Selecciona...</option>
+                      {PAYMENT_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                    <div className="relative w-28 shrink-0">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={splitAmount1}
+                        onChange={(e) => setSplitAmount1(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full pl-7 pr-2 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Método 2 */}
+                <div>
+                  <label className="block text-sm font-semibold text-slate-600 mb-1">Método 2</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={paymentMethod2 ?? ''}
+                      onChange={(e) => setPaymentMethod2(e.target.value as PaymentMethod)}
+                      className="flex-1 min-w-0 p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    >
+                      <option value="" disabled>Selecciona...</option>
+                      {PAYMENT_OPTIONS.filter((o) => o.value !== paymentMethod).map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                    <div className="relative w-28 shrink-0">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                      <input
+                        type="text"
+                        value={splitAmount2Num.toFixed(2)}
+                        readOnly
+                        className="w-full pl-7 pr-2 py-2.5 border border-slate-200 rounded-lg bg-slate-100 text-slate-600 text-base font-semibold outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <p className={`text-sm font-medium ${splitAmount1Num > totalUSD ? 'text-red-500' : 'text-slate-500'}`}>
+                  {splitAmount1Num > totalUSD
+                    ? 'El monto del método 1 supera el total.'
+                    : `El método 2 cubre el resto ($${splitAmount2Num.toFixed(2)}) · Total $${totalUSD.toFixed(2)}`}
+                </p>
               </div>
             )}
 
