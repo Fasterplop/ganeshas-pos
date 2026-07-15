@@ -335,6 +335,7 @@ export default function DashboardPage() {
         { header: 'Cajero',                key: 'cajero',     width: 20 },
         { header: 'Productos comprados',   key: 'productos',  width: 42 },
         { header: 'Método de Pago',        key: 'metodo',     width: 26 },
+        { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
@@ -367,14 +368,12 @@ export default function DashboardPage() {
           hour: '2-digit', minute: '2-digit', hour12: true,
         }).replace(/,/g, '');
 
-        // Celda "Productos comprados": encabezado en negrita "N PRODUCTO(S)"
-        // seguido del detalle, una línea por artículo.
+        // Celda "Productos comprados": una línea por artículo con formato "Nx nombre".
         const itemCount = saleItemCount(sale);
-        const nombres = sale.sale_items?.map((item: any) => {
+        const productos = sale.sale_items?.map((item: any) => {
           const nm = item.custom_name || item.products?.name || 'Desconocido';
-          return item.quantity > 1 ? `${item.quantity}x ${nm}` : nm;
-        }) || [];
-        const encabezado = `${itemCount} PRODUCTO${itemCount === 1 ? '' : 'S'}`;
+          return `${item.quantity}x ${nm}`;
+        }).join('\n') || '';
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
@@ -388,13 +387,9 @@ export default function DashboardPage() {
           fecha,
           cliente: sale.customers?.full_name || 'Anónimo',
           cajero: sale.profiles?.full_name || 'Desconocido',
-          productos: {
-            richText: [
-              { text: encabezado + (nombres.length ? '\n' : ''), font: { bold: true } },
-              { text: nombres.join('\n') },
-            ],
-          },
+          productos,
           metodo: paymentToText(sale),
+          referencia: sale.payment_ref || 'N/A',
           cantidad: itemCount,
           descuento: descuentoUSD,
           usd: amountUSD,
@@ -402,7 +397,7 @@ export default function DashboardPage() {
         });
       });
 
-      // Fila de totales generales (etiqueta combinada A:E, verde claro)
+      // Fila de totales generales (etiqueta combinada A:F, verde claro)
       const totalRow = ws.addRow({
         fecha: 'TOTALES GENERALES',
         cantidad: totalCantidad,
@@ -410,15 +405,15 @@ export default function DashboardPage() {
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
-      ws.mergeCells(`A${totalRow.number}:E${totalRow.number}`);
+      ws.mergeCells(`A${totalRow.number}:F${totalRow.number}`);
       totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
       totalRow.height = 20;
       totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
-      for (let c = 1; c <= 9; c++) {
+      for (let c = 1; c <= 10; c++) {
         totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
       }
 
-      ws.autoFilter = { from: 'A1', to: 'I1' };
+      ws.autoFilter = { from: 'A1', to: 'J1' };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
