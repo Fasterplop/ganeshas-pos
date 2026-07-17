@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Barcode from 'react-barcode';
 import { createClient } from '@/lib/supabase/client';
 import { Heart } from 'lucide-react';
-import { formatVariant } from '@/lib/productVariant';
+import { formatVariant, labelFontPx } from '@/lib/productVariant';
 
 interface LabelProduct {
   id: string;
@@ -303,12 +303,14 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
               const copiesNum = getSafeCopies(product.copies);
               const originalPrice = product.price;
               const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
+              const variant = formatVariant(product.talla, product.color);
+              const fs = labelFontPx(`${product.name}${variant ? ` · ${variant}` : ''}`);
 
               return Array.from({ length: copiesNum }).map((_, i) => (
-                <div 
-                  key={`${product.id}-${i}`} 
-                  className="flex flex-row items-center justify-between bg-white print:break-after-page" 
-                  style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1mm' }}
+                <div
+                  key={`${product.id}-${i}`}
+                  className="flex flex-row items-center justify-between bg-white print:break-after-page"
+                  style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1.2mm 1.5mm 2.2mm 1.5mm' }}
                 >
                   {/* Texto Vertical: Nombre de la tienda */}
                   <div className="flex items-center justify-center h-full pl-1">
@@ -322,10 +324,10 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                     {/* Nombre + Talla · Color en un solo bloque: si el nombre es
                         largo hace wrap hacia abajo (no se corta con "...") y la
                         variante continúa en línea tras un " · ". */}
-                    <p className="text-[18px] font-black text-black w-full text-center leading-tight break-words">
+                    <p className="font-black text-black w-full text-center leading-tight break-words" style={{ fontSize: `${fs.name}px` }}>
                       {product.name.toUpperCase()}
-                      {formatVariant(product.talla, product.color) && (
-                        <span className="text-[13px]"> · {formatVariant(product.talla, product.color)}</span>
+                      {variant && (
+                        <span style={{ fontSize: `${fs.variant}px` }}> · {variant}</span>
                       )}
                     </p>
 
@@ -336,13 +338,13 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                       <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
                     </div>
 
-                    <Barcode 
-                      value={product.sku_barcode} 
-                      width={1.3} 
-                      height={24} 
-                      fontSize={10} 
-                      margin={0} 
-                      displayValue={true} 
+                    <Barcode
+                      value={product.sku_barcode}
+                      width={1.3}
+                      height={20}
+                      fontSize={10}
+                      margin={0}
+                      displayValue={true}
                     />
                   </div>
                 </div>

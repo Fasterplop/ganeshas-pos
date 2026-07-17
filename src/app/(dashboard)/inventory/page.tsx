@@ -9,7 +9,7 @@ import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import ExcelJS from 'exceljs';
-import { variantLabel, formatVariant } from '@/lib/productVariant';
+import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -475,6 +475,9 @@ const handleExportCSV = async () => {
 
   const originalPrice = selectedProduct?.price || 0;
   const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
+  // Etiqueta: variante y tamaño de fuente dinámico (nombre editable = promoName).
+  const labelVariant = formatVariant(selectedProduct?.talla, selectedProduct?.color);
+  const labelFs = labelFontPx(`${promoName}${labelVariant ? ` · ${labelVariant}` : ''}`);
 
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
@@ -793,7 +796,7 @@ const handleExportCSV = async () => {
 
       {/* VISTA DE IMPRESIÓN */}
       {selectedProduct && (
-        <div className="hidden print:flex flex-row items-center justify-between bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1mm' }}>
+        <div className="hidden print:flex flex-row items-center justify-between bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1.2mm 1.5mm 2.2mm 1.5mm' }}>
           <div className="flex items-center justify-center h-full pl-1">
             <p className="text-[8px] font-black text-black tracking-wider uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
               Ganesha Store
@@ -801,10 +804,10 @@ const handleExportCSV = async () => {
           </div>
 
           <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-            <p className="text-[18px] font-black text-black w-full text-center leading-tight break-words">
+            <p className="font-black text-black w-full text-center leading-tight break-words" style={{ fontSize: `${labelFs.name}px` }}>
               {promoName.toUpperCase()}
-              {formatVariant(selectedProduct.talla, selectedProduct.color) && (
-                <span className="text-[13px]"> · {formatVariant(selectedProduct.talla, selectedProduct.color)}</span>
+              {labelVariant && (
+                <span style={{ fontSize: `${labelFs.variant}px` }}> · {labelVariant}</span>
               )}
             </p>
 
@@ -815,7 +818,7 @@ const handleExportCSV = async () => {
               <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
             </div>
 
-            <Barcode value={selectedProduct.sku_barcode} width={1.3} height={24} fontSize={10} margin={0} displayValue={true} />
+            <Barcode value={selectedProduct.sku_barcode} width={1.3} height={20} fontSize={10} margin={0} displayValue={true} />
           </div>
         </div>
       )}

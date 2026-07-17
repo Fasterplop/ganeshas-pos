@@ -27,3 +27,17 @@ export function variantLabel(
 ): string {
   return formatVariant(talla, color) || 'N/A';
 }
+
+// Tamaño de fuente (px) para la etiqueta impresa: cuanto más largo el texto
+// completo (nombre + " · " + talla/color), más chico, para que haga wrap sin
+// desbordar el alto fijo de 29 mm. La variante va proporcionalmente más chica.
+export function labelFontPx(fullText: string): { name: number; variant: number } {
+  const n = fullText.trim().length;
+  let name: number;
+  if (n <= 15) name = 18;
+  else if (n <= 22) name = 16;
+  else if (n <= 30) name = 14;
+  else if (n <= 40) name = 12;
+  else name = 10;
+  return { name, variant: Math.max(Math.round(name * 0.72), 9) };
+}
