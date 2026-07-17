@@ -12,6 +12,8 @@ export interface CartItem {
   name: string;
   price: number;
   quantity: number;
+  talla?: string | null;
+  color?: string | null;
 }
 
 interface POSState {

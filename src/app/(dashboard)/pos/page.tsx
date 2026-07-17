@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 import { notifySaleWhatsApp } from './actions';
+import { formatVariant } from '@/lib/productVariant';
 
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
@@ -251,7 +252,7 @@ export default function POSPage() {
         .maybeSingle();
 
       if (data) {
-        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1 });
+        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null });
         setProductSearch('');
         setSearchResults([]);
       } else {
@@ -266,9 +267,9 @@ export default function POSPage() {
   };
 
   const handleAddFromSearch = (product: any) => {
-    addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1 });
+    addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null });
     setProductSearch('');
-    setSearchResults([]); 
+    setSearchResults([]);
     searchInputRef.current?.focus();
   };
 
@@ -706,6 +707,9 @@ export default function POSPage() {
                     >
                       <div>
                         <p className="text-lg font-semibold text-slate-800">{p.name}</p>
+                        {formatVariant(p.talla, p.color) && (
+                          <p className="text-sm text-slate-500">{formatVariant(p.talla, p.color)}</p>
+                        )}
                         <p className="text-sm text-slate-500">SKU: {p.sku_barcode}</p>
                       </div>
                       <p className="text-lg font-bold text-teal-700">${p.price.toFixed(2)}</p>
@@ -774,6 +778,9 @@ export default function POSPage() {
                     <tr key={item.id} className="hover:bg-slate-50 transition">
                       <td className="p-3 pl-4">
                         <p className="text-lg font-semibold text-slate-800">{item.name}</p>
+                        {formatVariant(item.talla, item.color) && (
+                          <p className="text-sm text-slate-500">{formatVariant(item.talla, item.color)}</p>
+                        )}
                       </td>
                       <td className="p-3">
                         <div className="flex items-center justify-center gap-3">

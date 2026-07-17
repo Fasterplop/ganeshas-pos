@@ -8,6 +8,7 @@ import LoyaltySettingsCard from '@/components/LoyaltySettingsCard';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
+import { formatVariant } from '@/lib/productVariant';
 
 // Nombre legible de un método de pago ('punto_de_venta' -> 'punto de venta')
 const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
@@ -165,21 +166,22 @@ export default function DashboardPage() {
       // ⚡ CORRECCIÓN: Solicitamos custom_name y unit_price para los productos rápidos
       const { data: saleItems } = await supabase
         .from('sale_items')
-        .select('product_id, quantity, custom_name, unit_price, products(name, price), sales!inner(store_id)')
+        .select('product_id, quantity, custom_name, unit_price, products(name, price, talla, color), sales!inner(store_id)')
         .eq('sales.store_id', currentStore.id);
 
       if (saleItems) {
-        const productCounts: Record<string, { id: string, name: string, price: number, qty: number }> = {};
-        
+        const productCounts: Record<string, { id: string, name: string, variant: string, price: number, qty: number }> = {};
+
         saleItems.forEach((item: any) => {
           // Si no hay product_id, usamos el custom_name como ID temporal
-          const pId = item.product_id || `quick-${item.custom_name}`; 
-          
+          const pId = item.product_id || `quick-${item.custom_name}`;
+
           const productName = item.custom_name || item.products?.name || 'Desconocido';
           const price = item.unit_price ?? item.products?.price ?? 0;
+          const variant = formatVariant(item.products?.talla, item.products?.color);
 
           if (!productCounts[pId]) {
-            productCounts[pId] = { id: pId, name: productName, price: price, qty: 0 };
+            productCounts[pId] = { id: pId, name: productName, variant, price: price, qty: 0 };
           }
           productCounts[pId].qty += item.quantity;
         });
@@ -262,7 +264,7 @@ export default function DashboardPage() {
             quantity,
             unit_price,
             custom_name,
-            products (name)
+            products (name, talla, color)
           )
         `)
         .eq('store_id', currentStore.id) 
@@ -310,7 +312,7 @@ export default function DashboardPage() {
             quantity,
             unit_price,
             custom_name,
-            products (name)
+            products (name, talla, color)
           )
         `)
         .eq('store_id', currentStore.id)
@@ -372,7 +374,8 @@ export default function DashboardPage() {
         const itemCount = saleItemCount(sale);
         const productos = sale.sale_items?.map((item: any) => {
           const nm = item.custom_name || item.products?.name || 'Desconocido';
-          return `${item.quantity}x ${nm}`;
+          const variant = formatVariant(item.products?.talla, item.products?.color);
+          return `${item.quantity}x ${nm}${variant ? ` (${variant})` : ''}`;
         }).join('\n') || '';
 
         const amountUSD = Number(sale.total_amount) || 0;
@@ -592,7 +595,7 @@ export default function DashboardPage() {
                       <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
                       <div className="flex-1 min-w-0">
                         <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
-                        <p className="text-xs text-slate-500">{product.qty} unidades</p>
+                        <p className="text-xs text-slate-500">{product.qty} unidades{product.variant ? ` · ${product.variant}` : ''}</p>
                       </div>
                       <div className="text-right shrink-0">
                         <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>
@@ -719,6 +722,9 @@ export default function DashboardPage() {
                           {sale.sale_items?.map((item: any, idx: number) => (
                             <li key={idx} className="truncate max-w-[200px]">
                               <span className="font-medium text-slate-700">{item.quantity}x</span> {item.custom_name || item.products?.name || 'Desconocido'}
+                              {formatVariant(item.products?.talla, item.products?.color) && (
+                                <span className="text-slate-400 ml-1">· {formatVariant(item.products?.talla, item.products?.color)}</span>
+                              )}
                               <span className="text-slate-400 ml-1">(${item.unit_price})</span>
                             </li>
                           ))}
@@ -805,7 +811,7 @@ export default function DashboardPage() {
                    <div className="w-10 h-10 bg-white shadow-sm border border-slate-100 rounded-lg flex items-center justify-center text-lg shrink-0">📦</div>
                    <div className="flex-1 min-w-0">
                      <p className="font-bold text-slate-800 text-sm truncate">{product.name}</p>
-                     <p className="text-xs text-slate-500">{product.qty} unidades vendidas</p>
+                     <p className="text-xs text-slate-500">{product.qty} unidades vendidas{product.variant ? ` · ${product.variant}` : ''}</p>
                    </div>
                    <div className="text-right shrink-0">
                      <p className="font-bold text-teal-700 text-sm">${product.price.toFixed(2)}</p>

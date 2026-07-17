@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import Barcode from 'react-barcode'; 
+import Barcode from 'react-barcode';
 import { createClient } from '@/lib/supabase/client';
 import { Heart } from 'lucide-react';
+import { formatVariant } from '@/lib/productVariant';
 
 interface LabelProduct {
   id: string;
@@ -11,6 +12,8 @@ interface LabelProduct {
   sku_barcode: string;
   price: number;
   copies: number | string;
+  talla: string | null;
+  color: string | null;
 }
 
 export default function LabelsPage() {
@@ -60,7 +63,9 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
         name: product.name,
         sku_barcode: product.sku_barcode,
         price: product.price,
-        copies: 1
+        copies: 1,
+        talla: product.talla ?? null,
+        color: product.color ?? null
       }]);
     }
     setProductSearch('');
@@ -186,6 +191,9 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                       >
                         <div>
                           <p className="font-semibold text-slate-800">{p.name}</p>
+                          {formatVariant(p.talla, p.color) && (
+                            <p className="text-xs text-slate-500">{formatVariant(p.talla, p.color)}</p>
+                          )}
                           <p className="text-xs text-slate-500">SKU: {p.sku_barcode}</p>
                         </div>
                         <p className="font-bold text-teal-700">${p.price.toFixed(2)}</p>
@@ -218,6 +226,9 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                         <tr key={product.id} className="border-b border-slate-100 hover:bg-slate-50 transition">
                           <td className="p-3">
                             <p className="font-medium text-slate-800">{product.name}</p>
+                            {formatVariant(product.talla, product.color) && (
+                              <p className="text-sm text-slate-500">{formatVariant(product.talla, product.color)}</p>
+                            )}
                             <p className="text-sm text-slate-500">SKU: {product.sku_barcode}</p>
                           </td>
                           <td className="p-3">
@@ -312,7 +323,14 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                     <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
                       {product.name.toUpperCase()}
                     </p>
-                    
+
+                    {/* Talla/Color sutil (solo si aplica) */}
+                    {formatVariant(product.talla, product.color) && (
+                      <p className="text-[10px] text-black truncate w-full text-center leading-none mt-0.5">
+                        {formatVariant(product.talla, product.color)}
+                      </p>
+                    )}
+
                     <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
                       {discountPercent > 0 && (
                         <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>

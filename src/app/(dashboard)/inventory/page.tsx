@@ -9,6 +9,7 @@ import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import ExcelJS from 'exceljs';
+import { variantLabel, formatVariant } from '@/lib/productVariant';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -19,6 +20,8 @@ const productSchema = z.object({
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
   stock: z.number({ message: 'Debe ser un número válido' }),
   owner_store_id: z.string().min(1, { message: 'Selecciona una tienda' }),
+  talla: z.string().optional(),
+  color: z.string().optional(),
 });
 
 type ProductFormValues = z.infer<typeof productSchema>;
@@ -31,6 +34,8 @@ interface Product {
   price: number;
   stock: number;
   owner_store_id: string | null;
+  talla: string | null;
+  color: string | null;
 }
 
 // Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
@@ -141,7 +146,7 @@ export default function InventoryPage() {
 
     const { data: globalProducts } = await supabase
       .from('products')
-      .select('id, sku_barcode, name, category, price, owner_store_id')
+      .select('id, sku_barcode, name, category, price, owner_store_id, talla, color')
       .eq('is_active', true)
       .eq('owner_store_id', storeId)
       .order('name');
@@ -201,6 +206,8 @@ export default function InventoryPage() {
       price: 0,
       stock: 1, // stock inicial por defecto
       owner_store_id: viewStoreId || currentStore?.id || '', // default: la tienda que se está viendo
+      talla: '',
+      color: '',
     });
     setIsModalOpen(true);
   };
@@ -252,7 +259,9 @@ export default function InventoryPage() {
           sku_barcode: finalSku,
           name: data.name,
           category: data.category,
-          price: data.price
+          price: data.price,
+          talla: data.talla?.trim() ? data.talla.trim() : null,
+          color: data.color?.trim() ? data.color.trim() : null
         })
         .eq('id', editingProduct.id);
 
@@ -286,7 +295,9 @@ export default function InventoryPage() {
           category: data.category,
           price: data.price,
           is_active: true,
-          owner_store_id: targetStoreId
+          owner_store_id: targetStoreId,
+          talla: data.talla?.trim() ? data.talla.trim() : null,
+          color: data.color?.trim() ? data.color.trim() : null
         }])
         .select('id')
         .single();
@@ -353,6 +364,8 @@ export default function InventoryPage() {
       price: product.price,
       stock: product.stock,
       owner_store_id: product.owner_store_id ?? currentStore?.id ?? '',
+      talla: product.talla ?? '',
+      color: product.color ?? '',
     });
     setIsModalOpen(true);
   };
@@ -361,7 +374,7 @@ export default function InventoryPage() {
     setIsModalOpen(false);
     setEditingProduct(null);
     setFormError(null);
-    reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0, owner_store_id: currentStore?.id ?? '' });
+    reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0, owner_store_id: currentStore?.id ?? '', talla: '', color: '' });
   };
 
   const LOW_STOCK_THRESHOLD = 5; // ajústalo a tu realidad
@@ -377,6 +390,7 @@ const handleExportCSV = async () => {
   ws.columns = [
     { header: 'SKU',                          key: 'sku',      width: 18 },
     { header: 'Nombre',                       key: 'nombre',   width: 36 },
+    { header: 'Talla/Color',                  key: 'variante', width: 18 },
     { header: 'Categoría',                    key: 'categoria', width: 16 },
     { header: 'Precio',                       key: 'precio',   width: 14, style: { numFmt: '"$"#,##0.00' } },
     { header: `Stock (${effectiveStore?.name ?? currentStore.name})`, key: 'stock', width: 18 },
@@ -405,6 +419,7 @@ const handleExportCSV = async () => {
     const row = ws.addRow({
       sku: p.sku_barcode,
       nombre: p.name,
+      variante: variantLabel(p.talla, p.color),
       categoria: p.category,
       precio,           // número real → Excel formatea
       stock,
@@ -431,7 +446,7 @@ const handleExportCSV = async () => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
   });
 
-  ws.autoFilter = { from: 'A1', to: 'F1' };
+  ws.autoFilter = { from: 'A1', to: 'G1' };
 
   // --- Descarga ---
   const buffer = await workbook.xlsx.writeBuffer();
@@ -533,6 +548,7 @@ const handleExportCSV = async () => {
                 <tr className="bg-slate-700 text-white text-sm">
                   <th className="p-3 rounded-tl-lg">Código</th>
                   <th className="p-3">Nombre</th>
+                  <th className="p-3">Talla/Color</th>
                   <th className="p-3">Categoría</th>
                   <th className="p-3 text-right">Precio</th>
                   <th className="p-3 text-right">Stock Local</th>
@@ -541,9 +557,9 @@ const handleExportCSV = async () => {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={6} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
+                  <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
                 ) : filteredProducts.length === 0 ? (
-                  <tr><td colSpan={6} className="p-8 text-center text-slate-500">No hay productos en esta tienda.</td></tr>
+                  <tr><td colSpan={7} className="p-8 text-center text-slate-500">No hay productos en esta tienda.</td></tr>
                 ) : (
                   filteredProducts.map((product) => (
                     <tr 
@@ -553,6 +569,7 @@ const handleExportCSV = async () => {
                     >
                       <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
                       <td className="p-3 font-medium text-slate-800">{product.name}</td>
+                      <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
                       <td className="p-3">
                         <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
                       </td>
@@ -610,6 +627,9 @@ const handleExportCSV = async () => {
             <div className="space-y-4 animate-in fade-in">
               <div className="mb-4">
                 <p className="text-base font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
+                {formatVariant(selectedProduct.talla, selectedProduct.color) && (
+                  <p className="text-sm text-slate-500">{formatVariant(selectedProduct.talla, selectedProduct.color)}</p>
+                )}
                 <p className="text-sm text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
                 <p className="text-[11px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
               </div>
@@ -735,6 +755,18 @@ const handleExportCSV = async () => {
               </div>
             </div>
 
+            {/* Talla y Color: opcionales. Se muestran juntos como "Talla · Color". */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Talla <span className="text-slate-400 font-normal">(opcional)</span></label>
+                <input type="text" readOnly={editStockOnly} {...register('talla')} placeholder="Ej: S, M, 10, 38" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Color <span className="text-slate-400 font-normal">(opcional)</span></label>
+                <input type="text" readOnly={editStockOnly} {...register('color')} placeholder="Ej: Beige, Negro" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+              </div>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Stock {editingProduct ? `para ${effectiveStore?.name ?? currentStore.name}` : `inicial (${formStore?.name ?? currentStore.name})`}
@@ -772,6 +804,12 @@ const handleExportCSV = async () => {
             <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
               {promoName.toUpperCase()}
             </p>
+
+            {formatVariant(selectedProduct.talla, selectedProduct.color) && (
+              <p className="text-[10px] text-black truncate w-full text-center leading-none mt-0.5">
+                {formatVariant(selectedProduct.talla, selectedProduct.color)}
+              </p>
+            )}
 
             <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
               {discountPercent > 0 && (
