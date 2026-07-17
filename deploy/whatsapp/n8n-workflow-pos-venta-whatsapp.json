@@ -1,0 +1,128 @@
+{
+  "name": "POS venta → WhatsApp utility",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pos-sale",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Webhook venta POS",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "pos-sale",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REEMPLAZAR_AL_IMPORTAR",
+          "name": "POS webhook secret (x-pos-secret)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza el teléfono venezolano al formato que exige Meta (58XXXXXXXXXX).\n// customers.phone es texto libre: puede venir '0414-123.45.67', '+58 414 1234567', etc.\nconst input = $input.first().json;\nconst body = input.body ?? input; // el Webhook de n8n envuelve el POST en .body\nconst raw = String(body.phone ?? '');\nlet digits = raw.replace(/\\D/g, '');\n\nif (digits.startsWith('00')) digits = digits.slice(2);            // 0058414xxxxxxx\nif (digits.startsWith('0')) digits = '58' + digits.slice(1);       // 0414xxxxxxx\nif (digits.length === 10 && digits.startsWith('4')) digits = '58' + digits; // 414xxxxxxx\n\n// Móvil venezolano válido: 58 + 4XX + 7 dígitos = 12 dígitos\nconst valid = /^584\\d{9}$/.test(digits);\n\nreturn [{ json: {\n  saleId: body.saleId ?? null,\n  documentId: body.documentId ?? null,\n  pointsEarned: String(body.pointsEarned ?? '0'),\n  pointsTotal: String(body.pointsTotal ?? '0'),\n  to: digits,\n  valid,\n} }];"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Normalizar teléfono VE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "¿Teléfono válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v23.0/4055818171385297/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"template\",\n  \"template\": {\n    \"name\": \"confirmacion_compra_puntos2\",\n    \"language\": { \"code\": \"es\" },\n    \"components\": [\n      {\n        \"type\": \"body\",\n        \"parameters\": [\n          { \"type\": \"text\", \"text\": \"{{ $json.pointsEarned }}\" },\n          { \"type\": \"text\", \"text\": \"{{ $json.pointsTotal }}\" }\n        ]\n      }\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Enviar plantilla WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, -80],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REEMPLAZAR_AL_IMPORTAR",
+          "name": "Meta WhatsApp token (Authorization)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook venta POS": {
+      "main": [
+        [
+          {
+            "node": "Normalizar teléfono VE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar teléfono VE": {
+      "main": [
+        [
+          {
+            "node": "¿Teléfono válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Teléfono válido?": {
+      "main": [
+        [
+          {
+            "node": "Enviar plantilla WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -111,6 +111,26 @@ Sistema de impresión masiva integrado directamente en el navegador:
 
 ---
 
+## 📲 Notificación WhatsApp post-venta (Cloud API de Meta + n8n)
+
+Al finalizar una venta con cliente asociado que tenga teléfono **y consentimiento registrado**, el POS envía automáticamente un WhatsApp con los puntos ganados y el acumulado global (plantilla `confirmacion_compra_puntos2`, idioma `es`).
+
+**Arquitectura — regla de oro: solo n8n habla con Meta.** El POS nunca tiene el token de WhatsApp ni llama a `graph.facebook.com`:
+1. `handleCheckout` (POS) llama al Server Action `notifySaleWhatsApp` (`src/app/(dashboard)/pos/actions.ts`) **sin await** (fire-and-forget: la venta jamás falla ni se demora por la mensajería).
+2. El action (service role, para saltar la RLS por tienda) valida el opt-in, resuelve el primer teléfono no nulo del cliente entre sucursales y la suma global de `reward_points`, y hace POST al webhook local de n8n (`N8N_SALE_WEBHOOK_URL`, header `x-pos-secret` = `N8N_WEBHOOK_SECRET`). Si esas env no están definidas, es un no-op.
+3. n8n (Docker, mismo VPS) normaliza el teléfono venezolano a `58XXXXXXXXXX` y envía la plantilla vía Graph API con el token del **Usuario del Sistema** de Meta (guardado únicamente como credencial de n8n).
+
+### ⚠️ Categoría MARKETING → consentimiento obligatorio
+La plantilla incluye botón de Instagram y quick reply "Cancelar promociones", por lo que Meta la clasifica como **marketing** (no utility). Consecuencia: **solo se le puede escribir a quien dio opt-in explícito**. Por eso:
+* `customers.wa_marketing_opt_in` / `wa_opt_out_at` (`db/whatsapp_marketing_optin.sql`): el consentimiento es de la **persona**, no de la sucursal — se evalúa sobre todas las filas del mismo `document_id`. Default `false`: los clientes preexistentes no reciben nada hasta aceptar en caja.
+* **Checkbox en el checkout** del POS. El cajero solo puede **otorgar** el consentimiento; una baja pedida por el cliente nunca se revierte desde la caja (la UI muestra "🔕 Este cliente pidió no recibir promociones").
+* **Baja funcional**: el workflow `meta-eventos` de n8n recibe el evento de Meta cuando el cliente toca "Cancelar promociones" (o responde BAJA/STOP) y ejecuta el RPC `wa_opt_out_by_phone`, que cruza el teléfono por sus últimos 10 dígitos (`customers.phone` es texto libre y Meta envía `584141234567`). Un botón de baja que no funciona degrada el *quality rating* y Meta termina pausando la plantilla.
+* `get_global_points` se extendió de forma aditiva para devolver también `wa_opt_in` / `wa_opt_out`, y así la caja muestra el estado real del cliente sin una consulta extra.
+
+Runbook completo de despliegue (VPS, nginx, Meta, workflows, troubleshooting): `deploy/whatsapp/README.md`. Diseño de la sección de campañas de marketing (no construida): `docs/whatsapp-fase2-marketing.md`.
+
+---
+
 ## ⏭️ Fase 2 (Próximos Pasos)
 * **Customer App (Ecosistema Multiplataforma):** Expansión del sistema mediante el desarrollo de una aplicación dedicada para clientes, disponible tanto en versión **Web App** como en formato nativo para **App Store (iOS)** y **Google Play (Android)**.
 

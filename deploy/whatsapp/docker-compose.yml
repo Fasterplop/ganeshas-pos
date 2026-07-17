@@ -1,0 +1,23 @@
+# n8n self-hosted para la automatización de WhatsApp (Cloud API de Meta).
+# Corre en el MISMO VPS que el POS. El puerto queda atado a 127.0.0.1: solo
+# nginx (HTTPS) y el propio POS (localhost) pueden alcanzarlo.
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - N8N_HOST=n8n.ganeshastores.com
+      - N8N_PROTOCOL=https
+      # URL pública que n8n muestra/usa para sus webhooks (Meta la usará en Fase 2)
+      - WEBHOOK_URL=https://n8n.ganeshastores.com/
+      - GENERIC_TIMEZONE=America/Caracas
+      - TZ=America/Caracas
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

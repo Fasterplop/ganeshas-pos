@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
+import { notifySaleWhatsApp } from './actions';
 
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
@@ -33,6 +34,12 @@ export default function POSPage() {
   const [docNumber, setDocNumber] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  // Consentimiento para promociones por WhatsApp (la plantilla es MARKETING en
+  // Meta: sin opt-in explícito no se le puede escribir al cliente).
+  const [waOptIn, setWaOptIn] = useState(false);
+  // El cliente pidió la baja ("Cancelar promociones"): no se le vuelve a
+  // escribir nunca, y el cajero no puede re-suscribirlo desde la caja.
+  const [waOptedOut, setWaOptedOut] = useState(false);
   
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
@@ -85,6 +92,8 @@ export default function POSPage() {
     setRedeemBlocks(0);
     setCustomerPoints(null);
     setCustomerLookupName(null);
+    setWaOptIn(false);
+    setWaOptedOut(false);
     redeemTouchedRef.current = false;
   }, [currentStore?.id, clearCart]);
 
@@ -128,9 +137,14 @@ export default function POSPage() {
       if (data) {
         setCustomerPoints(data.points ?? 0);
         setCustomerLookupName(data.full_name ?? null);
+        // Refleja el consentimiento ya registrado (en cualquier sucursal).
+        setWaOptIn(data.wa_opt_in === true);
+        setWaOptedOut(data.wa_opt_out === true);
       } else {
         setCustomerPoints(null);
         setCustomerLookupName(null);
+        setWaOptIn(false);
+        setWaOptedOut(false);
       }
     }, 400);
     return () => {
@@ -339,6 +353,12 @@ export default function POSPage() {
           const updates: any = {};
           if (cleanName !== '' && existingCustomer.full_name !== cleanName) updates.full_name = cleanName;
           if (cleanPhone !== '' && existingCustomer.phone !== cleanPhone) updates.phone = cleanPhone;
+          // El consentimiento solo se puede OTORGAR desde la caja. Una baja
+          // pedida por el cliente ("Cancelar promociones") jamás se revierte
+          // acá: quitar el tilde no lo re-suscribe ni lo da de baja.
+          if (waOptIn && !waOptedOut && existingCustomer.wa_marketing_opt_in !== true) {
+            updates.wa_marketing_opt_in = true;
+          }
 
           if (Object.keys(updates).length > 0) {
             const { error: updateError } = await supabase
@@ -361,7 +381,8 @@ export default function POSPage() {
             full_name: cleanName !== '' ? cleanName : `Cliente ${finalCustomerId}`,
             phone: cleanPhone !== '' ? cleanPhone : null,
             total_spent: 0,
-            reward_points: 0
+            reward_points: 0,
+            wa_marketing_opt_in: waOptIn
           });
 
           if (insertError) {
@@ -486,12 +507,20 @@ export default function POSPage() {
 
          await supabase
            .from('customers')
-           .update({ 
+           .update({
              total_spent: previousSpent + totalUSD,
              reward_points: previousPoints + pointsEarned
            })
            .eq('document_id', finalCustomerId)
            .eq('store_id', currentStore.id);
+
+         // WhatsApp de agradecimiento vía n8n (fire-and-forget, sin await:
+         // la venta cierra igual aunque n8n o Meta estén caídos).
+         notifySaleWhatsApp({
+           saleId: saleData.id,
+           documentId: finalCustomerId,
+           pointsEarned,
+         }).catch(() => {});
       }
 
       showNotification('¡Venta registrada con éxito!', 'success');
@@ -509,6 +538,8 @@ export default function POSPage() {
       setRedeemBlocks(0);
       setCustomerPoints(null);
       setCustomerLookupName(null);
+      setWaOptIn(false);
+      setWaOptedOut(false);
       redeemTouchedRef.current = false;
       
       setTimeout(() => {
@@ -611,6 +642,31 @@ export default function POSPage() {
                   placeholder="👤 Nombre Completo..."
                   className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
+              </div>
+
+              {/* Consentimiento WhatsApp: obligatorio para poder enviarle el
+                  mensaje de puntos (la plantilla es de categoría MARKETING). */}
+              <div className="mt-3">
+                {waOptedOut ? (
+                  <p className="text-base text-slate-500 bg-slate-100 border border-slate-200 rounded-lg px-3 py-2.5">
+                    🔕 Este cliente pidió no recibir promociones. No se le enviará WhatsApp.
+                  </p>
+                ) : (
+                  <label className="flex items-start gap-3 cursor-pointer bg-white border border-slate-300 rounded-lg px-3 py-2.5 hover:bg-slate-50 transition">
+                    <input
+                      type="checkbox"
+                      checked={waOptIn}
+                      onChange={(e) => setWaOptIn(e.target.checked)}
+                      className="mt-1 w-5 h-5 accent-teal-600 shrink-0"
+                    />
+                    <span className="text-base text-slate-700 leading-snug">
+                      El cliente <strong>acepta recibir</strong> sus puntos y promociones por WhatsApp
+                      <span className="block text-sm text-slate-400">
+                        Preguntale antes de marcar. Sin esto no se le envía ningún mensaje.
+                      </span>
+                    </span>
+                  </label>
+                )}
               </div>
             </div>
 
