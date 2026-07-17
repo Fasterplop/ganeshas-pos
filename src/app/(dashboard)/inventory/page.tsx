@@ -801,15 +801,12 @@ const handleExportCSV = async () => {
           </div>
 
           <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-            <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
+            <p className="text-[18px] font-black text-black w-full text-center leading-tight break-words">
               {promoName.toUpperCase()}
+              {formatVariant(selectedProduct.talla, selectedProduct.color) && (
+                <span className="text-[13px]"> · {formatVariant(selectedProduct.talla, selectedProduct.color)}</span>
+              )}
             </p>
-
-            {formatVariant(selectedProduct.talla, selectedProduct.color) && (
-              <p className="text-[10px] text-black truncate w-full text-center leading-none mt-0.5">
-                {formatVariant(selectedProduct.talla, selectedProduct.color)}
-              </p>
-            )}
 
             <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
               {discountPercent > 0 && (

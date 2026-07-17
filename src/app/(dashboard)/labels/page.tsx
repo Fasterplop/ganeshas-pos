@@ -319,17 +319,15 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
 
                   {/* Contenido Principal */}
                   <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-                    {/* Texto superior: Nombre del producto */}
-                    <p className="text-[18px] font-black text-black truncate w-full text-center leading-none">
+                    {/* Nombre + Talla · Color en un solo bloque: si el nombre es
+                        largo hace wrap hacia abajo (no se corta con "...") y la
+                        variante continúa en línea tras un " · ". */}
+                    <p className="text-[18px] font-black text-black w-full text-center leading-tight break-words">
                       {product.name.toUpperCase()}
+                      {formatVariant(product.talla, product.color) && (
+                        <span className="text-[13px]"> · {formatVariant(product.talla, product.color)}</span>
+                      )}
                     </p>
-
-                    {/* Talla/Color sutil (solo si aplica) */}
-                    {formatVariant(product.talla, product.color) && (
-                      <p className="text-[10px] text-black truncate w-full text-center leading-none mt-0.5">
-                        {formatVariant(product.talla, product.color)}
-                      </p>
-                    )}
 
                     <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
                       {discountPercent > 0 && (
