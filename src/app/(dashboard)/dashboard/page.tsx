@@ -69,9 +69,12 @@ export default function DashboardPage() {
   const [salesHistory, setSalesHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [exporting, setExporting] = useState(false);
+  // El historial arranca en el DÍA ACTUAL (calculado en zona horaria de Caracas
+  // para no correrse un día si se usa de noche — toISOString() usa UTC).
+  const todayCaracas = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Caracas' });
   const [historyDateRange, setHistoryDateRange] = useState({
-    start: defaultStart.toISOString().split('T')[0],
-    end: defaultEnd.toISOString().split('T')[0],
+    start: todayCaracas,
+    end: todayCaracas,
   });
 
   const parseSupabaseDate = (dateStr: string) => {
