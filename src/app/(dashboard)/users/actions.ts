@@ -58,18 +58,39 @@ export async function getUsersAction() {
   if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
 
   try {
-    // Traemos también assigned_store_id y el permiso especial de reposición
-    const { data: profiles, error: profileError } = await supabaseAdmin
+    // Traemos también assigned_store_id y el alcance de reposición (global/local).
+    // Si la columna can_restock_local aún no existe (migración sin aplicar),
+    // degradamos a la consulta anterior para no romper la vista de usuarios.
+    // can_restock_local es opcional en el tipo para admitir ambas consultas.
+    type ProfileRow = {
+      id: string;
+      full_name: string;
+      role: string;
+      is_active: boolean | null;
+      assigned_store_id: string | null;
+      can_restock_all: boolean | null;
+      can_restock_local?: boolean | null;
+    };
+
+    const primary = await supabaseAdmin
       .from('profiles')
-      .select('id, full_name, role, is_active, assigned_store_id, can_restock_all')
+      .select('id, full_name, role, is_active, assigned_store_id, can_restock_all, can_restock_local')
       .order('full_name', { ascending: true });
-      
-    if (profileError) throw profileError;
+
+    let profiles: ProfileRow[] | null = primary.data;
+    if (primary.error) {
+      const fallback = await supabaseAdmin
+        .from('profiles')
+        .select('id, full_name, role, is_active, assigned_store_id, can_restock_all')
+        .order('full_name', { ascending: true });
+      if (fallback.error) throw fallback.error;
+      profiles = fallback.data;
+    }
 
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers();
     if (authError) throw authError;
 
-    const users = profiles.map(profile => {
+    const users = (profiles ?? []).map(profile => {
       const authUser = authData.users.find((u: any) => u.id === profile.id);
       return {
         id: profile.id,
@@ -78,7 +99,8 @@ export async function getUsersAction() {
         is_active: profile.is_active ?? true,
         email: authUser?.email || 'Sin correo',
         assigned_store_id: profile.assigned_store_id, // <-- NUEVO CAMPO
-        can_restock_all: profile.can_restock_all ?? false, // permiso especial de reposición
+        can_restock_all: profile.can_restock_all ?? false, // reponer en TODAS las tiendas
+        can_restock_local: profile.can_restock_local ?? false, // reponer solo en su tienda
       };
     });
 
@@ -88,13 +110,21 @@ export async function getUsersAction() {
   }
 }
 
-export async function setRestockPermissionAction(userId: string, value: boolean) {
+// Alcance de reposición de un cajero: 'none' (sin reposición), 'local' (solo su
+// tienda asignada) o 'global' (todas las tiendas). Guarda las dos banderas de
+// forma consistente para que el POS y el RPC restock_stock las interpreten igual.
+type RestockScope = 'none' | 'local' | 'global';
+
+export async function setRestockScopeAction(userId: string, scope: RestockScope) {
   if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
 
   try {
     const { error } = await supabaseAdmin
       .from('profiles')
-      .update({ can_restock_all: value })
+      .update({
+        can_restock_all: scope === 'global',
+        can_restock_local: scope === 'local',
+      })
       .eq('id', userId);
 
     if (error) return { success: false, error: error.message };

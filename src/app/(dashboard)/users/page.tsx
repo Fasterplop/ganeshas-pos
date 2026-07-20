@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
-import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockPermissionAction } from './actions';
+import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
 
 // 1. Agregamos assigned_store_id como obligatorio en el esquema
@@ -14,10 +14,49 @@ const userSchema = z.object({
   full_name: z.string().min(3, { message: 'El nombre debe tener al menos 3 letras' }),
   email: z.string().email({ message: 'Ingresa un correo válido' }),
   password: z.string().min(6, { message: 'Mínimo 6 caracteres' }),
-  assigned_store_id: z.string().min(1, { message: 'Debes asignar una sucursal' }), 
+  assigned_store_id: z.string().min(1, { message: 'Debes asignar una sucursal' }),
 });
 
 type UserFormValues = z.infer<typeof userSchema>;
+
+// Alcance de reposición del cajero.
+type RestockScope = 'none' | 'local' | 'global';
+const SCOPE_ORDER: RestockScope[] = ['none', 'local', 'global'];
+const SCOPE_LABEL: Record<RestockScope, string> = { none: 'Sin', local: 'Su tienda', global: 'Todas' };
+const SCOPE_DESC: Record<RestockScope, string> = {
+  none: 'no podrá reponer stock',
+  local: 'podrá reponer stock solo en su tienda asignada',
+  global: 'podrá reponer stock en todas las tiendas',
+};
+// Deriva el alcance a partir de las banderas del perfil (global tiene prioridad).
+const scopeOf = (u: { can_restock_all?: boolean; can_restock_local?: boolean }): RestockScope =>
+  u.can_restock_all ? 'global' : u.can_restock_local ? 'local' : 'none';
+
+// Selector segmentado (Sin / Su tienda / Todas) del alcance de reposición.
+function RestockScopeControl({ scope, onChange }: { scope: RestockScope; onChange: (s: RestockScope) => void; }) {
+  return (
+    <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[10px] font-bold uppercase tracking-wide">
+      {SCOPE_ORDER.map((o, i) => {
+        const active = scope === o;
+        const activeCls = active
+          ? (o === 'global' ? 'bg-amber-100 text-amber-700'
+            : o === 'local' ? 'bg-teal-100 text-teal-700'
+            : 'bg-slate-200 text-slate-700')
+          : 'bg-white text-slate-400 hover:bg-slate-50';
+        return (
+          <button
+            key={o}
+            type="button"
+            onClick={() => onChange(o)}
+            className={`px-2.5 py-1.5 transition cursor-pointer ${activeCls} ${i > 0 ? 'border-l border-slate-200' : ''}`}
+          >
+            {SCOPE_LABEL[o]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function UsersPage() {
   const router = useRouter();
@@ -94,11 +133,11 @@ export default function UsersPage() {
     }
   };
 
-  // Permiso especial: reponer (subir) stock en TODAS las tiendas.
-  const handleToggleRestock = async (userId: string, userName: string, current: boolean) => {
-    const accion = current ? 'quitar' : 'dar';
-    if (window.confirm(`¿${accion.charAt(0).toUpperCase() + accion.slice(1)} a ${userName} el permiso de reponer stock en todas las tiendas?`)) {
-      const result = await setRestockPermissionAction(userId, !current);
+  // Alcance de reposición: sin reposición / solo su tienda / todas las tiendas.
+  const handleSetScope = async (userId: string, userName: string, currentScope: RestockScope, next: RestockScope) => {
+    if (next === currentScope) return;
+    if (window.confirm(`${userName} ${SCOPE_DESC[next]}. ¿Continuar?`)) {
+      const result = await setRestockScopeAction(userId, next);
       if (result.success) {
         await fetchUsers();
       } else {
@@ -237,18 +276,12 @@ export default function UsersPage() {
                 </div>
 
                 {user.role === 'cashier' && (
-                  <div className="flex justify-between items-center pt-3 border-t border-slate-100">
-                    <span className="text-xs font-semibold text-slate-500">Reposición global</span>
-                    <button
-                      onClick={() => handleToggleRestock(user.id, user.full_name, user.can_restock_all)}
-                      className={`px-3 py-1.5 rounded-lg transition border text-[11px] font-bold uppercase tracking-wide ${
-                        user.can_restock_all
-                          ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
-                          : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      {user.can_restock_all ? '✓ Activado' : 'Desactivado'}
-                    </button>
+                  <div className="flex justify-between items-center gap-2 pt-3 border-t border-slate-100">
+                    <span className="text-xs font-semibold text-slate-500">Reposición</span>
+                    <RestockScopeControl
+                      scope={scopeOf(user)}
+                      onChange={(next) => handleSetScope(user.id, user.full_name, scopeOf(user), next)}
+                    />
                   </div>
                 )}
               </div>
@@ -263,7 +296,7 @@ export default function UsersPage() {
                   <th className="px-6 py-4">Usuario</th>
                   <th className="px-6 py-4">Sucursal</th>
                   <th className="px-6 py-4">Rol</th>
-                  <th className="px-6 py-4 text-center">Reposición global</th>
+                  <th className="px-6 py-4 text-center">Reposición</th>
                   <th className="px-6 py-4">Estado</th>
                   <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
@@ -287,21 +320,16 @@ export default function UsersPage() {
                         {user.role === 'owner' ? 'Dueño' : 'Cajero'}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-6 py-4">
                       {user.role === 'cashier' ? (
-                        <button
-                          onClick={() => handleToggleRestock(user.id, user.full_name, user.can_restock_all)}
-                          title="Permite subir stock en TODAS las tiendas"
-                          className={`px-3 py-1.5 rounded-full transition border text-[11px] font-bold uppercase tracking-wide ${
-                            user.can_restock_all
-                              ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
-                              : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          {user.can_restock_all ? '✓ Activado' : 'Desactivado'}
-                        </button>
+                        <div className="flex justify-center" title="Sin reposición · Solo su tienda asignada · Todas las tiendas">
+                          <RestockScopeControl
+                            scope={scopeOf(user)}
+                            onChange={(next) => handleSetScope(user.id, user.full_name, scopeOf(user), next)}
+                          />
+                        </div>
                       ) : (
-                        <span className="text-xs text-slate-400 italic">—</span>
+                        <span className="block text-center text-xs text-slate-400 italic">—</span>
                       )}
                     </td>
                     <td className="px-6 py-4">

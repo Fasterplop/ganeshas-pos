@@ -14,7 +14,7 @@ import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -54,6 +54,81 @@ function defaultCategoryForStore(storeName: string): 'juguetes' | 'ropa' | 'zapa
   return 'juguetes';
 }
 
+// --- Semáforo de stock ---------------------------------------------------
+// "Stock bajo" = 2 o menos (pero con existencias): el color ámbar y el filtro
+// usan el mismo umbral (1..2). Los agotados (=< 0) tienen su propio color rojo
+// y su propio filtro. Verde para stock normal (> 2).
+const LOW_STOCK_MAX = 2;
+type StockTier = 'out' | 'low' | 'ok';
+function stockTier(stock: number): StockTier {
+  if (stock <= 0) return 'out';             // rojo  → agotado / negativo
+  if (stock <= LOW_STOCK_MAX) return 'low'; // ámbar → bajo (1..2)
+  return 'ok';                              // verde → normal (> 2)
+}
+const isOut = (stock: number) => stock <= 0;                           // Agotados
+const isLow = (stock: number) => stock > 0 && stock <= LOW_STOCK_MAX;  // Stock bajo (1..2)
+
+const TIER_BADGE: Record<StockTier, string> = {
+  out: 'bg-red-50 text-red-600',
+  low: 'bg-amber-50 text-amber-600',
+  ok: 'bg-emerald-50 text-emerald-600',
+};
+
+// Única columna ordenable de la tabla (Stock Local).
+type SortKey = 'stock';
+
+const PAGE_SIZE = 50; // paginación: 50 productos por página
+
+// Tarjeta de resumen (Productos / Unidades / Costo) y filtros clickeables
+// (Stock bajo / Agotados). Cuando trae onClick actúa como botón-filtro.
+function StatCard({
+  label, value, icon, sub, tone = 'default', active = false, onClick,
+}: {
+  label: string;
+  value: string | number;
+  icon: string;
+  sub?: React.ReactNode;
+  tone?: 'default' | 'amber' | 'red';
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const clickable = !!onClick;
+  const activeRing =
+    tone === 'red' ? 'border-red-300 bg-red-50 ring-2 ring-red-200'
+    : tone === 'amber' ? 'border-amber-300 bg-amber-50 ring-2 ring-amber-200'
+    : 'border-teal-300 bg-teal-50 ring-2 ring-teal-200';
+  const iconWrap =
+    tone === 'amber' ? 'bg-amber-100 text-amber-600'
+    : tone === 'red' ? 'bg-red-100 text-red-500'
+    : 'bg-teal-50 text-teal-600';
+  const valueColor =
+    tone === 'amber' ? 'text-amber-600'
+    : tone === 'red' ? 'text-red-600'
+    : 'text-slate-800';
+  const className = `relative text-left bg-white rounded-xl border p-4 flex items-center gap-3 transition
+    ${active ? activeRing : 'border-slate-200'}
+    ${clickable ? 'hover:border-slate-300 hover:shadow-sm cursor-pointer' : 'cursor-default'}`;
+  const inner = (
+    <>
+      <span className={`shrink-0 w-11 h-11 rounded-full flex items-center justify-center text-lg ${iconWrap}`}>{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-xs font-medium text-slate-500 truncate">{label}</span>
+        <span className={`block text-2xl font-bold leading-tight ${valueColor}`}>{value}</span>
+        {sub}
+      </span>
+      {active && (
+        <span className={`absolute top-2 right-2 w-5 h-5 rounded-full text-white text-xs flex items-center justify-center ${tone === 'red' ? 'bg-red-500' : 'bg-amber-500'}`}>✓</span>
+      )}
+    </>
+  );
+  // Clickeable → botón-filtro; informativa → div (evita el "atenuado" de un botón disabled).
+  return clickable ? (
+    <button type="button" onClick={onClick} className={className}>{inner}</button>
+  ) : (
+    <div className={className}>{inner}</div>
+  );
+}
+
 export default function InventoryPage() {
   const { currentStore } = usePOSStore();
   const supabase = createClient();
@@ -61,16 +136,23 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const [canRestockAll, setCanRestockAll] = useState(false); // permiso especial de reposición
-  
+  const [canRestockAll, setCanRestockAll] = useState(false);   // reponer en TODAS las tiendas
+  const [canRestockLocal, setCanRestockLocal] = useState(false); // reponer solo en su tienda asignada
+
   const [searchTerm, setSearchTerm] = useState('');
-  
+
+  // Orden de columnas, filtro por semáforo de stock y paginación.
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [page, setPage] = useState(1);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  
+
   const [formError, setFormError] = useState<string | null>(null);
-  
+
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
 
@@ -89,20 +171,29 @@ export default function InventoryPage() {
   // Capacidades según rol y permiso especial:
   const isOwner = userRole === 'owner';
   const isCashier = userRole === 'cashier';
-  const isSpecial = isCashier && canRestockAll;      // cajero "reponedor"
   const isOwnStore = !!currentStore && viewStoreId === currentStore.id;
 
-  // Añadir productos: owner (su tienda) o cajero REPONEDOR (cualquier tienda).
-  // El cajero SIN permiso no puede añadir.
-  const canAdd = (isOwner && isOwnStore) || isSpecial;
+  // Alcance de reposición del cajero:
+  //   global → repone/añade en cualquier tienda.
+  //   local  → repone/añade SOLO en su tienda asignada (== currentStore).
+  const isGlobalRestocker = isCashier && canRestockAll;
+  const isLocalRestocker = isCashier && canRestockLocal && !canRestockAll;
+  const isRestocker = isGlobalRestocker || isLocalRestocker; // cajero reponedor (cualquier alcance)
+  // El reponedor local solo puede operar cuando está viendo su tienda asignada.
+  const canRestockHere = isGlobalRestocker || (isLocalRestocker && isOwnStore);
+
+  // Añadir productos: owner (su tienda) o reponedor (según su alcance).
+  // El cajero SIN reposición no puede añadir.
+  const canAdd = (isOwner && isOwnStore) || canRestockHere;
   // Borrar: solo owner en su propia tienda.
   const canDelete = isOwner && isOwnStore;
-  // Abrir el editor: owner (su tienda) o reponedor (cualquier tienda).
-  const canEditRow = (isOwner && isOwnStore) || isSpecial;
-  // Solo lectura: no puede gestionar nada aquí (cajero sin permiso, u owner en otra tienda).
+  // Abrir el editor (reponer stock): owner (su tienda) o reponedor (según alcance).
+  const canEditRow = (isOwner && isOwnStore) || canRestockHere;
+  // Solo lectura: no puede gestionar nada aquí (cajero sin reposición, reponedor
+  // local viendo otra tienda, u owner en otra tienda).
   const readOnly = !canAdd && !canEditRow;
   // Al EDITAR, el reponedor solo puede tocar el stock (al AÑADIR usa el formulario completo).
-  const editStockOnly = isSpecial && !!editingProduct;
+  const editStockOnly = isRestocker && !!editingProduct;
 
   // Tienda seleccionada en el formulario de alta (para el aviso y el prefijo del SKU).
   const watchedOwnerStoreId = watch('owner_store_id');
@@ -112,22 +203,32 @@ export default function InventoryPage() {
   async function loadStores() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      // Intentamos leer el permiso especial; si la columna aún no existe (SQL sin
-      // aplicar), caemos a leer solo el rol para no romper el resto de la vista.
+      // Intentamos leer los permisos de reposición; si alguna columna aún no
+      // existe (SQL sin aplicar), degradamos sin romper el resto de la vista.
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('role, can_restock_all')
+        .select('role, can_restock_all, can_restock_local')
         .eq('id', user.id)
         .single();
 
       if (profile) {
         setUserRole(profile.role);
         setCanRestockAll(profile.can_restock_all ?? false);
+        setCanRestockLocal(profile.can_restock_local ?? false);
       } else if (error) {
-        const { data: basic } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-        if (basic) {
-          setUserRole(basic.role);
-          setCanRestockAll(false);
+        // Migración de can_restock_local sin aplicar: probamos con la global.
+        const { data: mid } = await supabase.from('profiles').select('role, can_restock_all').eq('id', user.id).single();
+        if (mid) {
+          setUserRole(mid.role);
+          setCanRestockAll(mid.can_restock_all ?? false);
+          setCanRestockLocal(false);
+        } else {
+          const { data: basic } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+          if (basic) {
+            setUserRole(basic.role);
+            setCanRestockAll(false);
+            setCanRestockLocal(false);
+          }
         }
       }
     }
@@ -184,6 +285,11 @@ export default function InventoryPage() {
   useEffect(() => {
     if (viewStoreId) fetchProducts(viewStoreId);
   }, [viewStoreId]);
+
+  // Cualquier cambio de búsqueda/filtro/orden/tienda vuelve a la primera página.
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm, stockFilter, sortKey, sortDir, viewStoreId]);
 
   // Al seleccionar un producto: el nombre de promoción arranca con el nombre
   // del producto y el descuento se reinicia (opcional, 0 = sin descuento).
@@ -309,10 +415,10 @@ export default function InventoryPage() {
       }
 
       // El trigger de la BD ya creó las filas de stock en 0 para todas las tiendas.
-      // Cargamos el stock inicial en la tienda dueña. El cajero reponedor puede
-      // crear en otra tienda, así que su stock inicial va por el RPC (cruza tiendas).
+      // Cargamos el stock inicial en la tienda dueña. El cajero reponedor carga
+      // su stock inicial vía el RPC (que valida su alcance: global o local).
       if (data.stock > 0) {
-        if (isSpecial) {
+        if (isRestocker) {
           const { error } = await supabase.rpc('restock_stock', {
             p_product_id: newProduct.id,
             p_store_id: targetStoreId,
@@ -337,7 +443,7 @@ export default function InventoryPage() {
   };
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); 
+    e.stopPropagation();
     if (window.confirm('¿Estás seguro de que deseas eliminar este producto de TODAS las sucursales?')) {
       const { error } = await supabase
         .from('products')
@@ -354,13 +460,13 @@ export default function InventoryPage() {
   };
 
   const handleEdit = (e: React.MouseEvent, product: Product) => {
-    e.stopPropagation(); 
+    e.stopPropagation();
     setEditingProduct(product);
     setFormError(null);
     reset({
       sku_barcode: product.sku_barcode,
       name: product.name,
-      category: product.category as any,
+      category: product.category as ProductFormValues['category'],
       price: product.price,
       stock: product.stock,
       owner_store_id: product.owner_store_id ?? currentStore?.id ?? '',
@@ -468,10 +574,62 @@ const handleExportCSV = async () => {
     window.print();
   };
 
-  const filteredProducts = products.filter(p =>
+  // --- Resumen (sobre TODO el inventario de la tienda, ignora búsqueda/filtro) ---
+  const totalProducts = products.length;
+  const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
+  const totalCost = products.reduce((sum, p) => sum + (p.price || 0) * (p.stock || 0), 0);
+  const lowCount = products.filter(p => isLow(p.stock)).length;
+  const outCount = products.filter(p => isOut(p.stock)).length;
+
+  // Pipeline de la tabla: búsqueda → filtro de semáforo → orden → paginación.
+  const searched = products.filter(p =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.sku_barcode.toLowerCase().includes(searchTerm.toLowerCase())
   );
+  const statusFiltered = searched.filter(p => {
+    if (stockFilter === 'low') return isLow(p.stock);
+    if (stockFilter === 'out') return isOut(p.stock);
+    return true;
+  });
+  // Orden solo por Stock Local (única columna ordenable).
+  const sortedProducts = sortKey === 'stock'
+    ? [...statusFiltered].sort((a, b) => (sortDir === 'asc' ? a.stock - b.stock : b.stock - a.stock))
+    : statusFiltered;
+
+  const totalPages = Math.max(1, Math.ceil(sortedProducts.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedProducts = sortedProducts.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+  // Indicador de orden: ↕ tenue en toda columna ordenable (señala que es clickeable),
+  // y ▲/▼ sólido en la columna activa según la dirección.
+  const sortIcon = (key: SortKey) => {
+    const active = sortKey === key;
+    return (
+      <span className={`text-[10px] ${active ? 'opacity-100' : 'opacity-40'}`}>
+        {active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+      </span>
+    );
+  };
+  const toggleStockFilter = (f: 'low' | 'out') => setStockFilter(prev => (prev === f ? 'all' : f));
+
+  // Título/subtítulo del panel de la tabla según el filtro activo.
+  const panelTitle = stockFilter === 'low' ? 'Productos con stock bajo'
+    : stockFilter === 'out' ? 'Productos agotados'
+    : 'Productos';
+  const panelSubtitle = stockFilter === 'low'
+    ? `${lowCount} ${lowCount === 1 ? 'producto necesita' : 'productos necesitan'} reposición`
+    : stockFilter === 'out'
+    ? `${outCount} ${outCount === 1 ? 'producto sin stock' : 'productos sin stock'}`
+    : `${totalProducts} ${totalProducts === 1 ? 'producto' : 'productos'} en inventario`;
+  const filterChipLabel = stockFilter === 'low' ? 'Stock: 2 o menos' : 'Agotados';
 
   const originalPrice = selectedProduct?.price || 0;
   const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
@@ -485,201 +643,300 @@ const handleExportCSV = async () => {
 
   return (
     <>
-      <div className="print:hidden flex flex-col md:flex-row gap-6 h-full font-sans">
-        
-        {/* Tabla de Productos */}
-        <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-            
-            <div className="flex flex-col w-full md:w-auto">
-              <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
-              {isCashier ? (
-                /* Filtro de VISTA (solo cajeros). Cambia qué inventario se ve;
-                   no cambia la tienda asignada del cajero. */
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <span className="text-slate-500 text-sm">Ver inventario de:</span>
-                  <select
-                    value={viewStoreId || currentStore.id}
-                    onChange={(e) => setViewStoreId(e.target.value)}
-                    className="text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
-                  >
-                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                  {readOnly && (
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                      Solo lectura
-                    </span>
-                  )}
-                  {isSpecial && (
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
-                      Reponedor
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <p className="text-slate-500 text-sm">Mostrando stock para: <strong className="text-teal-700">{currentStore.name}</strong></p>
-              )}
-            </div>
+      <div className="print:hidden flex flex-col gap-6 h-full font-sans">
 
-            <div className="relative w-full md:w-80">
-              <input 
-                type="text" 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="🔍 Buscar código o nombre..." 
-                className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
-              />
-            </div>
+        {/* Encabezado: título, tienda y acciones */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div className="flex flex-col">
+            <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
+            {isCashier ? (
+              /* Filtro de VISTA (solo cajeros). Cambia qué inventario se ve;
+                 no cambia la tienda asignada del cajero. */
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-slate-500 text-sm">Ver inventario de:</span>
+                <select
+                  value={viewStoreId || currentStore.id}
+                  onChange={(e) => setViewStoreId(e.target.value)}
+                  className="text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                >
+                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                {readOnly && (
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                    Solo lectura
+                  </span>
+                )}
+                {isGlobalRestocker && (
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
+                    Reponedor
+                  </span>
+                )}
+                {isLocalRestocker && (
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
+                    Reponedor · su tienda
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p className="text-slate-500 text-sm">Mostrando stock para: <strong className="text-teal-700">{currentStore.name}</strong></p>
+            )}
+          </div>
 
-            <div className="flex gap-2 w-full md:w-auto">
+          <div className="flex gap-2 w-full md:w-auto">
+            {/* Exportar Excel: solo el owner. */}
+            {isOwner && (
               <button onClick={handleExportCSV} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer font-medium">
                 Exportar Excel
               </button>
-              
-              {/* Añadir: owner y cajero normal, solo en su propia tienda (no en vista de otra). */}
-              {canAdd && (
-                <button onClick={handleOpenAddModal} className="flex-1 md:flex-none px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm cursor-pointer font-medium">
-                  + Añadir Producto
-                </button>
-              )}
-            </div>
-          </div>
+            )}
 
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-left border-collapse min-w-[600px]">
-              <thead>
-                <tr className="bg-slate-700 text-white text-sm">
-                  <th className="p-3 rounded-tl-lg">Código</th>
-                  <th className="p-3">Nombre</th>
-                  <th className="p-3">Talla/Color</th>
-                  <th className="p-3">Categoría</th>
-                  <th className="p-3 text-right">Precio</th>
-                  <th className="p-3 text-right">Stock Local</th>
-                  <th className="p-3 text-center rounded-tr-lg">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
-                ) : filteredProducts.length === 0 ? (
-                  <tr><td colSpan={7} className="p-8 text-center text-slate-500">No hay productos en esta tienda.</td></tr>
-                ) : (
-                  filteredProducts.map((product) => (
-                    <tr 
-                      key={product.id} 
-                      onClick={() => setSelectedProduct(product)}
-                      className={`border-b border-slate-100 cursor-pointer transition ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'hover:bg-slate-50'}`}
-                    >
-                      <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
-                      <td className="p-3 font-medium text-slate-800">{product.name}</td>
-                      <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
-                      <td className="p-3">
-                        <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
-                      </td>
-                      <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
-                      <td className="p-3 text-right font-bold text-emerald-600">
-                        {product.stock > 0 ? product.stock : <span className="text-red-500">{product.stock}</span>}
-                      </td>
-
-                      <td className="p-3 text-center">
-                        {canEditRow ? (
-                          <>
-                            {/* Editar / Reponer stock. El cajero especial solo repone stock. */}
-                            <button
-                              onClick={(e) => handleEdit(e, product)}
-                              className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
-                              title={isSpecial ? 'Reponer stock' : 'Editar'}
-                            >
-                              {isSpecial ? '📦' : '✏️'}
-                            </button>
-                            {/* Eliminar: solo owner en su tienda. */}
-                            {canDelete && (
-                              <button
-                                onClick={(e) => handleDelete(e, product.id)}
-                                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
-                                title="Desactivar Globalmente"
-                              >
-                                🗑️
-                              </button>
-                            )}
-                          </>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            {/* Añadir: owner y cajero normal, solo en su propia tienda (no en vista de otra). */}
+            {canAdd && (
+              <button onClick={handleOpenAddModal} className="flex-1 md:flex-none px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition whitespace-nowrap shadow-sm cursor-pointer font-medium">
+                + Añadir Producto
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Panel Descuento Rápido */}
-        <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <span className="bg-blue-100 p-2 rounded-full">🏷️</span>
-            <h3 className="font-bold text-slate-800">Descuento Rápido</h3>
-          </div>
-          
-          {!selectedProduct ? (
-            <div className="text-center text-slate-500 text-sm py-8 border-2 border-dashed border-slate-200 rounded-lg">
-              Selecciona un producto de la tabla para generar su etiqueta.
-            </div>
-          ) : (
-            <div className="space-y-4 animate-in fade-in">
-              <div className="mb-4">
-                <p className="text-base font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
-                {formatVariant(selectedProduct.talla, selectedProduct.color) && (
-                  <p className="text-sm text-slate-500">{formatVariant(selectedProduct.talla, selectedProduct.color)}</p>
-                )}
-                <p className="text-sm text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
-                <p className="text-[11px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
+        {/* Tarjetas de resumen + filtros clickeables */}
+        <div className={`grid gap-4 grid-cols-2 sm:grid-cols-3 ${isOwner ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+          <StatCard icon="🛍️" label="Productos" value={loading ? '—' : totalProducts} />
+          <StatCard icon="📦" label="Unidades en stock" value={loading ? '—' : totalUnits} />
+          {/* Costo del inventario: solo visible para el owner. */}
+          {isOwner && (
+            <StatCard
+              icon="💰"
+              label="Costo del inventario"
+              value={loading ? '—' : `$${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              sub={<span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">🔒 Solo propietario</span>}
+            />
+          )}
+          {/* Stock bajo: 2 o menos con existencias (1 o 2 unidades). Filtro clickeable. */}
+          <StatCard
+            icon="⚠️"
+            label="Stock bajo"
+            value={loading ? '—' : lowCount}
+            tone="amber"
+            active={stockFilter === 'low'}
+            onClick={() => toggleStockFilter('low')}
+          />
+          {/* Agotados: sin stock o negativo. Filtro clickeable. */}
+          <StatCard
+            icon="🚫"
+            label="Agotados"
+            value={loading ? '—' : outCount}
+            tone="red"
+            active={stockFilter === 'out'}
+            onClick={() => toggleStockFilter('out')}
+          />
+        </div>
+
+        {/* Contenido: tabla + descuento rápido */}
+        <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-0">
+
+          {/* Tabla de Productos */}
+          <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+
+            {/* Barra: título del panel + búsqueda (izquierda) + chip de filtro (derecha) */}
+            <div className="p-6 pb-4 flex flex-col lg:flex-row lg:items-center gap-4 border-b border-slate-100">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-slate-800">{panelTitle}</h2>
+                <p className="text-sm text-slate-500">{panelSubtitle}</p>
               </div>
-              <div>
-                <label className="text-sm font-semibold text-slate-500">Nombre de Promoción</label>
+              <div className="relative w-full lg:w-72">
                 <input
                   type="text"
-                  value={promoName}
-                  onChange={(e) => setPromoName(e.target.value)}
-                  className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="🔍 Buscar código o nombre..."
+                  className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
-              <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">Precio Original</label>
+              {stockFilter !== 'all' && (
+                <div className="flex items-center gap-2 shrink-0 lg:ml-auto">
+                  <span className={`inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border ${stockFilter === 'out' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                    {filterChipLabel}
+                    <button onClick={() => setStockFilter('all')} className="hover:opacity-70 cursor-pointer" title="Quitar filtro">✕</button>
+                  </span>
+                  <button onClick={() => setStockFilter('all')} className="text-sm font-medium text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-1.5 hover:bg-slate-50 transition cursor-pointer whitespace-nowrap">
+                    Quitar filtro
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-auto px-6">
+              <table className="w-full text-left border-collapse min-w-[600px]">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-slate-700 text-white text-sm">
+                    <th className="p-3 rounded-tl-lg">Código</th>
+                    <th className="p-3">Nombre</th>
+                    <th className="p-3">Talla/Color</th>
+                    <th className="p-3">Categoría</th>
+                    <th className="p-3 text-right">Precio</th>
+                    <th className="p-3 text-right cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('stock')}>
+                      <span className="inline-flex items-center gap-1 justify-end">Stock Local {sortIcon('stock')}</span>
+                    </th>
+                    <th className="p-3 text-center rounded-tr-lg">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
+                  ) : sortedProducts.length === 0 ? (
+                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
+                  ) : (
+                    paginatedProducts.map((product) => {
+                      const tier = stockTier(product.stock);
+                      return (
+                        <tr
+                          key={product.id}
+                          onClick={() => setSelectedProduct(product)}
+                          className={`border-b border-slate-100 cursor-pointer transition ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'hover:bg-slate-50'}`}
+                        >
+                          <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
+                          <td className="p-3 font-medium text-slate-800">{product.name}</td>
+                          <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
+                          <td className="p-3">
+                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
+                          </td>
+                          <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
+                          <td className="p-3">
+                            <div className="flex justify-end">
+                              <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+                                {product.stock}
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="p-3 text-center">
+                            {canEditRow ? (
+                              <>
+                                {/* Editar / Reponer stock. El cajero reponedor solo repone stock. */}
+                                <button
+                                  onClick={(e) => handleEdit(e, product)}
+                                  className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
+                                  title={isRestocker ? 'Reponer stock' : 'Editar'}
+                                >
+                                  {isRestocker ? '📦' : '✏️'}
+                                </button>
+                                {/* Eliminar: solo owner en su tienda. */}
+                                {canDelete && (
+                                  <button
+                                    onClick={(e) => handleDelete(e, product.id)}
+                                    className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                                    title="Desactivar Globalmente"
+                                  >
+                                    🗑️
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pie: conteo + paginación (los controles aparecen con más de 50 productos) */}
+            {!loading && sortedProducts.length > 0 && (
+              <div className="px-6 py-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-slate-500">
+                <span>Mostrando {paginatedProducts.length} de {sortedProducts.length} productos</span>
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPage(currentPage - 1)}
+                      disabled={currentPage === 1}
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      ‹ Anterior
+                    </button>
+                    <span className="font-medium text-slate-600">Página {currentPage} de {totalPages}</span>
+                    <button
+                      onClick={() => setPage(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      Siguiente ›
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Panel Descuento Rápido */}
+          <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <span className="bg-blue-100 p-2 rounded-full">🏷️</span>
+              <h3 className="font-bold text-slate-800">Descuento Rápido</h3>
+            </div>
+
+            {!selectedProduct ? (
+              <div className="text-center text-slate-500 text-sm py-8 border-2 border-dashed border-slate-200 rounded-lg">
+                Selecciona un producto de la tabla para generar su etiqueta.
+              </div>
+            ) : (
+              <div className="space-y-4 animate-in fade-in">
+                <div className="mb-4">
+                  <p className="text-base font-bold text-slate-800 leading-tight">{selectedProduct.name}</p>
+                  {formatVariant(selectedProduct.talla, selectedProduct.color) && (
+                    <p className="text-sm text-slate-500">{formatVariant(selectedProduct.talla, selectedProduct.color)}</p>
+                  )}
+                  <p className="text-sm text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
+                  <p className="text-[11px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-slate-500">Nombre de Promoción</label>
                   <input
                     type="text"
-                    disabled
-                    value={`$ ${originalPrice.toFixed(2)}`}
-                    className="w-full p-2 border border-slate-200 bg-slate-50 text-slate-500 rounded-md mt-1"
-                  />
-                </div>
-                <div className="flex-1">
-                  <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">% Descuento</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={discountPercent}
-                    onChange={(e) => setDiscountPercent(Number(e.target.value))}
+                    value={promoName}
+                    onChange={(e) => setPromoName(e.target.value)}
                     className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
                 </div>
+                <div className="flex gap-4">
+                  <div className="flex-1">
+                    <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">Precio Original</label>
+                    <input
+                      type="text"
+                      disabled
+                      value={`$ ${originalPrice.toFixed(2)}`}
+                      className="w-full p-2 border border-slate-200 bg-slate-50 text-slate-500 rounded-md mt-1"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-sm font-semibold text-slate-500 whitespace-nowrap">% Descuento</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={discountPercent}
+                      onChange={(e) => setDiscountPercent(Number(e.target.value))}
+                      className="w-full p-2 border border-slate-300 bg-white text-slate-800 rounded-md mt-1 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 -mt-2">El descuento es opcional. Con 0% se imprime el precio normal.</p>
+                <div className="bg-blue-50 p-4 rounded-lg mt-4 flex justify-between items-center border border-blue-100">
+                  <span className="text-sm font-medium text-blue-900">Precio Final</span>
+                  <span className="text-2xl font-bold text-[#0f5c5c]">${finalPrice.toFixed(2)}</span>
+                </div>
+                <button
+                  onClick={handlePrint}
+                  className="w-full mt-6 bg-[#0f5c5c] text-white py-3 rounded-lg font-medium hover:bg-[#0a4545] transition flex justify-center items-center gap-2 cursor-pointer"
+                >
+                  🖨️ Imprimir Etiqueta
+                </button>
               </div>
-              <p className="text-xs text-slate-400 -mt-2">El descuento es opcional. Con 0% se imprime el precio normal.</p>
-              <div className="bg-blue-50 p-4 rounded-lg mt-4 flex justify-between items-center border border-blue-100">
-                <span className="text-sm font-medium text-blue-900">Precio Final</span>
-                <span className="text-2xl font-bold text-[#0f5c5c]">${finalPrice.toFixed(2)}</span>
-              </div>
-              <button 
-                onClick={handlePrint}
-                className="w-full mt-6 bg-[#0f5c5c] text-white py-3 rounded-lg font-medium hover:bg-[#0a4545] transition flex justify-center items-center gap-2 cursor-pointer"
-              >
-                🖨️ Imprimir Etiqueta
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
@@ -731,8 +988,10 @@ const handleExportCSV = async () => {
             {!editingProduct && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Tienda a la que pertenece</label>
-                <select {...register('owner_store_id')} className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none">
-                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {/* El reponedor LOCAL solo puede crear productos en su tienda asignada:
+                    se bloquea con una única opción (sin `disabled`, para no perder el valor en RHF). */}
+                <select {...register('owner_store_id')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${isLocalRestocker ? 'bg-slate-100 text-slate-500 pointer-events-none' : 'bg-white'}`}>
+                  {(isLocalRestocker ? stores.filter(s => s.id === currentStore.id) : stores).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
                 {errors.owner_store_id && <p className="text-red-500 text-xs mt-1">{errors.owner_store_id.message}</p>}
               </div>
@@ -747,6 +1006,7 @@ const handleExportCSV = async () => {
                   <option value="zapato">Zapato</option>
                   <option value="perfume">Perfume</option>
                   <option value="accesorios">Accesorios</option>
+                  <option value="lentes">Lentes</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
