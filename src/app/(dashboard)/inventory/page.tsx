@@ -36,6 +36,8 @@ interface Product {
   owner_store_id: string | null;
   talla: string | null;
   color: string | null;
+  created_at: string | null;       // alta del producto (null = anterior a la migración)
+  label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
 }
 
 // Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
@@ -55,24 +57,36 @@ function defaultCategoryForStore(storeName: string): 'juguetes' | 'ropa' | 'zapa
 }
 
 // --- Semáforo de stock ---------------------------------------------------
-// "Stock bajo" = 2 o menos (pero con existencias): el color ámbar y el filtro
-// usan el mismo umbral (1..2). Los agotados (=< 0) tienen su propio color rojo
-// y su propio filtro. Verde para stock normal (> 2).
-const LOW_STOCK_MAX = 2;
-type StockTier = 'out' | 'low' | 'ok';
-function stockTier(stock: number): StockTier {
-  if (stock <= 0) return 'out';             // rojo  → agotado / negativo
-  if (stock <= LOW_STOCK_MAX) return 'low'; // ámbar → bajo (1..2)
-  return 'ok';                              // verde → normal (> 2)
+// "Stock bajo" = con existencias pero por debajo del umbral de SU TIENDA:
+// juguetería rota más lento, así que ahí es 1 o menos; en el resto (ropa) es
+// 2 o menos. El color ámbar y el filtro usan el mismo umbral. Los agotados
+// (=< 0) tienen su propio color rojo y su propio filtro; verde por encima.
+function lowStockMaxFor(storeName?: string | null): number {
+  return (storeName ?? '').toLowerCase().includes('juguet') ? 1 : 2;
 }
-const isOut = (stock: number) => stock <= 0;                           // Agotados
-const isLow = (stock: number) => stock > 0 && stock <= LOW_STOCK_MAX;  // Stock bajo (1..2)
+type StockTier = 'out' | 'low' | 'ok';
+function stockTier(stock: number, lowMax: number): StockTier {
+  if (stock <= 0) return 'out';      // rojo  → agotado / negativo
+  if (stock <= lowMax) return 'low'; // ámbar → bajo
+  return 'ok';                       // verde → normal
+}
+const isOut = (stock: number) => stock <= 0;                              // Agotados
+const isLow = (stock: number, lowMax: number) => stock > 0 && stock <= lowMax; // Stock bajo
 
 const TIER_BADGE: Record<StockTier, string> = {
   out: 'bg-red-50 text-red-600',
   low: 'bg-amber-50 text-amber-600',
   ok: 'bg-emerald-50 text-emerald-600',
 };
+
+// "Nuevo": producto dado de alta hace menos de 1 día al que todavía NO se le
+// imprimió la etiqueta. Al imprimirla (se registra el clic) el badge desaparece.
+const NEW_PRODUCT_MS = 24 * 60 * 60 * 1000;
+function isNewProduct(p: Product): boolean {
+  if (p.label_printed_at) return false; // ya se imprimió su etiqueta
+  if (!p.created_at) return false;      // productos anteriores a la migración
+  return Date.now() - new Date(p.created_at).getTime() < NEW_PRODUCT_MS;
+}
 
 // Única columna ordenable de la tabla (Stock Local).
 type SortKey = 'stock';
@@ -105,15 +119,15 @@ function StatCard({
     tone === 'amber' ? 'text-amber-600'
     : tone === 'red' ? 'text-red-600'
     : 'text-slate-800';
-  const className = `relative text-left bg-white rounded-xl border p-4 flex items-center gap-3 transition
+  const className = `relative text-left bg-white rounded-xl border p-3 md:p-4 flex items-center gap-2 md:gap-3 transition
     ${active ? activeRing : 'border-slate-200'}
     ${clickable ? 'hover:border-slate-300 hover:shadow-sm cursor-pointer' : 'cursor-default'}`;
   const inner = (
     <>
-      <span className={`shrink-0 w-11 h-11 rounded-full flex items-center justify-center text-lg ${iconWrap}`}>{icon}</span>
+      <span className={`shrink-0 w-9 h-9 md:w-11 md:h-11 rounded-full flex items-center justify-center text-base md:text-lg ${iconWrap}`}>{icon}</span>
       <span className="min-w-0">
-        <span className="block text-xs font-medium text-slate-500 truncate">{label}</span>
-        <span className={`block text-2xl font-bold leading-tight ${valueColor}`}>{value}</span>
+        <span className="block text-[11px] md:text-xs font-medium text-slate-500 truncate">{label}</span>
+        <span className={`block text-lg md:text-2xl font-bold leading-tight truncate ${valueColor}`}>{value}</span>
         {sub}
       </span>
       {active && (
@@ -245,12 +259,27 @@ export default function InventoryPage() {
   async function fetchProducts(storeId: string) {
     setLoading(true);
 
-    const { data: globalProducts } = await supabase
+    // created_at/label_printed_at alimentan el badge "Nuevo". Si esas columnas
+    // aún no existen (migración sin aplicar), degradamos a la consulta anterior
+    // para no dejar el inventario vacío.
+    const BASE_COLS = 'id, sku_barcode, name, category, price, owner_store_id, talla, color';
+    const primary = await supabase
       .from('products')
-      .select('id, sku_barcode, name, category, price, owner_store_id, talla, color')
+      .select(`${BASE_COLS}, created_at, label_printed_at`)
       .eq('is_active', true)
       .eq('owner_store_id', storeId)
       .order('name');
+
+    let globalProducts: Record<string, unknown>[] | null = primary.data;
+    if (primary.error) {
+      const fallback = await supabase
+        .from('products')
+        .select(BASE_COLS)
+        .eq('is_active', true)
+        .eq('owner_store_id', storeId)
+        .order('name');
+      globalProducts = fallback.data;
+    }
 
     const { data: storeStock } = await supabase
       .from('store_stock')
@@ -260,7 +289,22 @@ export default function InventoryPage() {
     if (globalProducts) {
       const stockMap: Record<string, number> = {};
       if (storeStock) storeStock.forEach(s => { stockMap[s.product_id] = s.stock; });
-      const mergedProducts: Product[] = globalProducts.map(p => ({ ...p, stock: stockMap[p.id] ?? 0 }));
+      const mergedProducts: Product[] = globalProducts.map(p => {
+        const row = p as Partial<Product> & { id: string };
+        return {
+          id: row.id,
+          sku_barcode: row.sku_barcode ?? '',
+          name: row.name ?? '',
+          category: row.category ?? '',
+          price: row.price ?? 0,
+          owner_store_id: row.owner_store_id ?? null,
+          talla: row.talla ?? null,
+          color: row.color ?? null,
+          created_at: row.created_at ?? null,
+          label_printed_at: row.label_printed_at ?? null,
+          stock: stockMap[row.id] ?? 0,
+        };
+      });
       setProducts(mergedProducts);
     } else {
       setProducts([]);
@@ -569,16 +613,38 @@ const handleExportCSV = async () => {
   URL.revokeObjectURL(url);
 };
 
-  const handlePrint = () => {
+  // Imprimir etiqueta: además de abrir el diálogo, registra el clic en la BD
+  // (products.label_printed_at). Con eso el producto deja de ser "Nuevo".
+  const handlePrint = async () => {
     if (!selectedProduct) return alert('Selecciona un producto primero');
+
+    const { id, label_printed_at } = selectedProduct;
+    const firstPrint = !label_printed_at;
+
+    if (firstPrint) {
+      // Optimista: el badge "Nuevo" desaparece de inmediato.
+      const printedAt = new Date().toISOString();
+      setProducts(prev => prev.map(p => (p.id === id ? { ...p, label_printed_at: printedAt } : p)));
+      setSelectedProduct(prev => (prev && prev.id === id ? { ...prev, label_printed_at: printedAt } : prev));
+    }
+
     window.print();
+
+    if (firstPrint) {
+      const { error } = await supabase.rpc('mark_label_printed', { p_product_id: id });
+      // Si falla (p. ej. SQL sin aplicar), el próximo refresco remuestra el badge.
+      if (error) console.error('No se pudo registrar la impresión de etiqueta:', error);
+    }
   };
+
+  // Umbral de "stock bajo" de la tienda que se está viendo (juguetería: 1; resto: 2).
+  const lowStockMax = lowStockMaxFor(effectiveStore?.name ?? currentStore?.name);
 
   // --- Resumen (sobre TODO el inventario de la tienda, ignora búsqueda/filtro) ---
   const totalProducts = products.length;
   const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
   const totalCost = products.reduce((sum, p) => sum + (p.price || 0) * (p.stock || 0), 0);
-  const lowCount = products.filter(p => isLow(p.stock)).length;
+  const lowCount = products.filter(p => isLow(p.stock, lowStockMax)).length;
   const outCount = products.filter(p => isOut(p.stock)).length;
 
   // Pipeline de la tabla: búsqueda → filtro de semáforo → orden → paginación.
@@ -587,7 +653,7 @@ const handleExportCSV = async () => {
     p.sku_barcode.toLowerCase().includes(searchTerm.toLowerCase())
   );
   const statusFiltered = searched.filter(p => {
-    if (stockFilter === 'low') return isLow(p.stock);
+    if (stockFilter === 'low') return isLow(p.stock, lowStockMax);
     if (stockFilter === 'out') return isOut(p.stock);
     return true;
   });
@@ -629,7 +695,7 @@ const handleExportCSV = async () => {
     : stockFilter === 'out'
     ? `${outCount} ${outCount === 1 ? 'producto sin stock' : 'productos sin stock'}`
     : `${totalProducts} ${totalProducts === 1 ? 'producto' : 'productos'} en inventario`;
-  const filterChipLabel = stockFilter === 'low' ? 'Stock: 2 o menos' : 'Agotados';
+  const filterChipLabel = stockFilter === 'low' ? `Stock: ${lowStockMax} o menos` : 'Agotados';
 
   const originalPrice = selectedProduct?.price || 0;
   const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
@@ -643,7 +709,9 @@ const handleExportCSV = async () => {
 
   return (
     <>
-      <div className="print:hidden flex flex-col gap-6 h-full font-sans">
+      {/* En móvil/tablet (< lg) el contenido fluye y scrollea el <main>; en PC
+          ocupa el alto completo con scroll interno de la tabla (sin cambios). */}
+      <div className="print:hidden flex flex-col gap-4 md:gap-6 lg:h-full font-sans">
 
         {/* Encabezado: título, tienda y acciones */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -700,7 +768,7 @@ const handleExportCSV = async () => {
         </div>
 
         {/* Tarjetas de resumen + filtros clickeables */}
-        <div className={`grid gap-4 grid-cols-2 sm:grid-cols-3 ${isOwner ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+        <div className={`grid gap-3 md:gap-4 grid-cols-2 sm:grid-cols-3 ${isOwner ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
           <StatCard icon="🛍️" label="Productos" value={loading ? '—' : totalProducts} />
           <StatCard icon="📦" label="Unidades en stock" value={loading ? '—' : totalUnits} />
           {/* Costo del inventario: solo visible para el owner. */}
@@ -712,7 +780,7 @@ const handleExportCSV = async () => {
               sub={<span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">🔒 Solo propietario</span>}
             />
           )}
-          {/* Stock bajo: 2 o menos con existencias (1 o 2 unidades). Filtro clickeable. */}
+          {/* Stock bajo: con existencias pero <= umbral de la tienda (juguetería 1, resto 2). */}
           <StatCard
             icon="⚠️"
             label="Stock bajo"
@@ -732,17 +800,17 @@ const handleExportCSV = async () => {
           />
         </div>
 
-        {/* Contenido: tabla + descuento rápido */}
-        <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-0">
+        {/* Contenido: tabla + descuento rápido (lado a lado solo en PC) */}
+        <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
 
           {/* Tabla de Productos */}
           <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
 
             {/* Barra: título del panel + búsqueda (izquierda) + chip de filtro (derecha) */}
-            <div className="p-6 pb-4 flex flex-col lg:flex-row lg:items-center gap-4 border-b border-slate-100">
+            <div className="p-4 md:p-6 md:pb-4 flex flex-col lg:flex-row lg:items-center gap-3 md:gap-4 border-b border-slate-100">
               <div className="min-w-0">
-                <h2 className="text-lg font-bold text-slate-800">{panelTitle}</h2>
-                <p className="text-sm text-slate-500">{panelSubtitle}</p>
+                <h2 className="text-base md:text-lg font-bold text-slate-800">{panelTitle}</h2>
+                <p className="text-xs md:text-sm text-slate-500">{panelSubtitle}</p>
               </div>
               <div className="relative w-full lg:w-72">
                 <input
@@ -753,6 +821,13 @@ const handleExportCSV = async () => {
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
+              {/* En móvil/tablet no hay encabezados de tabla: el orden por stock va aquí. */}
+              <button
+                onClick={() => toggleSort('stock')}
+                className="lg:hidden inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
+              >
+                Ordenar por stock {sortIcon('stock')}
+              </button>
               {stockFilter !== 'all' && (
                 <div className="flex items-center gap-2 shrink-0 lg:ml-auto">
                   <span className={`inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border ${stockFilter === 'out' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
@@ -766,7 +841,82 @@ const handleExportCSV = async () => {
               )}
             </div>
 
-            <div className="flex-1 overflow-auto px-6">
+            {/* MÓVIL/TABLET: lista de tarjetas (la tabla de 7 columnas no cabe). */}
+            <div className="lg:hidden p-3 space-y-3 bg-slate-50/50">
+              {loading ? (
+                <p className="p-6 text-center text-sm text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</p>
+              ) : sortedProducts.length === 0 ? (
+                <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
+              ) : (
+                paginatedProducts.map((product) => {
+                  const tier = stockTier(product.stock, lowStockMax);
+                  const variant = variantLabel(product.talla, product.color);
+                  const selected = selectedProduct?.id === product.id;
+                  return (
+                    <div
+                      key={product.id}
+                      onClick={() => setSelectedProduct(product)}
+                      className={`bg-white border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${selected ? 'border-teal-400 ring-2 ring-teal-100' : 'border-slate-200'}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-bold text-slate-800 text-sm leading-snug">{product.name}</h3>
+                            {isNewProduct(product) && (
+                              <span className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
+                                Nuevo
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] font-mono text-slate-500 mt-0.5">{product.sku_barcode}</p>
+                        </div>
+                        <div className="shrink-0 text-center">
+                          <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+                            {product.stock}
+                          </span>
+                          <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{product.category}</span>
+                          {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
+                          <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
+                        </div>
+                        <div className="shrink-0 flex items-center">
+                          {canEditRow ? (
+                            <>
+                              <button
+                                onClick={(e) => handleEdit(e, product)}
+                                className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-2 cursor-pointer"
+                                title={isRestocker ? 'Reponer stock' : 'Editar'}
+                              >
+                                {isRestocker ? '📦' : '✏️'}
+                              </button>
+                              {canDelete && (
+                                <button
+                                  onClick={(e) => handleDelete(e, product.id)}
+                                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 ml-1 cursor-pointer"
+                                  title="Desactivar Globalmente"
+                                >
+                                  🗑️
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-slate-300 text-sm">—</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* PC: tabla completa (sin cambios) */}
+            <div className="hidden lg:block flex-1 overflow-auto px-6">
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-slate-700 text-white text-sm">
@@ -788,7 +938,7 @@ const handleExportCSV = async () => {
                     <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
                     paginatedProducts.map((product) => {
-                      const tier = stockTier(product.stock);
+                      const tier = stockTier(product.stock, lowStockMax);
                       return (
                         <tr
                           key={product.id}
@@ -796,7 +946,19 @@ const handleExportCSV = async () => {
                           className={`border-b border-slate-100 cursor-pointer transition ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'hover:bg-slate-50'}`}
                         >
                           <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
-                          <td className="p-3 font-medium text-slate-800">{product.name}</td>
+                          <td className="p-3 font-medium text-slate-800">
+                            <span className="inline-flex items-center gap-2">
+                              {product.name}
+                              {isNewProduct(product) && (
+                                <span
+                                  title={product.created_at ? `Agregado: ${new Date(product.created_at).toLocaleString('es-VE')}` : undefined}
+                                  className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full"
+                                >
+                                  Nuevo
+                                </span>
+                              )}
+                            </span>
+                          </td>
                           <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
                           <td className="p-3">
                             <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
@@ -846,7 +1008,7 @@ const handleExportCSV = async () => {
 
             {/* Pie: conteo + paginación (los controles aparecen con más de 50 productos) */}
             {!loading && sortedProducts.length > 0 && (
-              <div className="px-6 py-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-slate-500">
+              <div className="px-4 md:px-6 py-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs md:text-sm text-slate-500">
                 <span>Mostrando {paginatedProducts.length} de {sortedProducts.length} productos</span>
                 {totalPages > 1 && (
                   <div className="flex items-center gap-2">
@@ -872,15 +1034,15 @@ const handleExportCSV = async () => {
           </div>
 
           {/* Panel Descuento Rápido */}
-          <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-            <div className="flex items-center gap-2 mb-6">
+          <div className="w-full lg:w-80 shrink-0 bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6">
+            <div className="flex items-center gap-2 mb-4 md:mb-6">
               <span className="bg-blue-100 p-2 rounded-full">🏷️</span>
               <h3 className="font-bold text-slate-800">Descuento Rápido</h3>
             </div>
 
             {!selectedProduct ? (
               <div className="text-center text-slate-500 text-sm py-8 border-2 border-dashed border-slate-200 rounded-lg">
-                Selecciona un producto de la tabla para generar su etiqueta.
+                Selecciona un producto de la lista para generar su etiqueta.
               </div>
             ) : (
               <div className="space-y-4 animate-in fade-in">
