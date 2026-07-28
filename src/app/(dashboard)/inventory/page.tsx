@@ -10,11 +10,16 @@ import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
+// Escáner con la cámara del teléfono: DESACTIVADO por ahora. Para reactivarlo,
+// descomentar este import, el estado `skuScannerOpen`, el botón 📷 del campo
+// Código de Barras y el <BarcodeScannerModal> tras el </Modal>; además volver a
+// destructurar `setValue` de useForm (lo usa el onScan).
+// import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -39,6 +44,19 @@ interface Product {
   created_at: string | null;       // alta del producto (null = anterior a la migración)
   label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
 }
+
+// Nombre visible de cada categoría. Los valores del enum de la BD van en
+// snake_case; sin entrada aquí se muestra el valor tal cual (con `capitalize`).
+const CATEGORY_LABELS: Record<string, string> = {
+  juguetes: 'Juguetes',
+  ropa: 'Ropa',
+  zapato: 'Zapato',
+  perfume: 'Perfume',
+  accesorios: 'Accesorios',
+  lentes: 'Lentes',
+  uniforme_escolar: 'Uniforme Escolar',
+};
+const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
 
 // Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
 function storePrefix(storeName: string): string {
@@ -88,8 +106,8 @@ function isNewProduct(p: Product): boolean {
   return Date.now() - new Date(p.created_at).getTime() < NEW_PRODUCT_MS;
 }
 
-// Única columna ordenable de la tabla (Stock Local).
-type SortKey = 'stock';
+// Columnas ordenables de la tabla (Stock Local y Categoría).
+type SortKey = 'stock' | 'category';
 
 const PAGE_SIZE = 50; // paginación: 50 productos por página
 
@@ -160,6 +178,10 @@ export default function InventoryPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
   const [page, setPage] = useState(1);
+
+  // Escáner con la cámara del teléfono para el campo Código de Barras del
+  // formulario (desactivado; ver nota junto al import).
+  // const [skuScannerOpen, setSkuScannerOpen] = useState(false);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -570,7 +592,7 @@ const handleExportCSV = async () => {
       sku: p.sku_barcode,
       nombre: p.name,
       variante: variantLabel(p.talla, p.color),
-      categoria: p.category,
+      categoria: categoryLabel(p.category),
       precio,           // número real → Excel formatea
       stock,
       valor,
@@ -657,9 +679,14 @@ const handleExportCSV = async () => {
     if (stockFilter === 'out') return isOut(p.stock);
     return true;
   });
-  // Orden solo por Stock Local (única columna ordenable).
+  // Orden por Stock Local o por Categoría (alfabético por nombre visible).
   const sortedProducts = sortKey === 'stock'
     ? [...statusFiltered].sort((a, b) => (sortDir === 'asc' ? a.stock - b.stock : b.stock - a.stock))
+    : sortKey === 'category'
+    ? [...statusFiltered].sort((a, b) => {
+        const cmp = categoryLabel(a.category).localeCompare(categoryLabel(b.category), 'es');
+        return sortDir === 'asc' ? cmp : -cmp;
+      })
     : statusFiltered;
 
   const totalPages = Math.max(1, Math.ceil(sortedProducts.length / PAGE_SIZE));
@@ -821,13 +848,21 @@ const handleExportCSV = async () => {
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
-              {/* En móvil/tablet no hay encabezados de tabla: el orden por stock va aquí. */}
-              <button
-                onClick={() => toggleSort('stock')}
-                className="lg:hidden inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
-              >
-                Ordenar por stock {sortIcon('stock')}
-              </button>
+              {/* En móvil/tablet no hay encabezados de tabla: el orden va aquí. */}
+              <div className="lg:hidden flex gap-2">
+                <button
+                  onClick={() => toggleSort('stock')}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Ordenar por stock {sortIcon('stock')}
+                </button>
+                <button
+                  onClick={() => toggleSort('category')}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Ordenar por categoría {sortIcon('category')}
+                </button>
+              </div>
               {stockFilter !== 'all' && (
                 <div className="flex items-center gap-2 shrink-0 lg:ml-auto">
                   <span className={`inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border ${stockFilter === 'out' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
@@ -880,7 +915,7 @@ const handleExportCSV = async () => {
 
                       <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
-                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{product.category}</span>
+                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(product.category)}</span>
                           {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
                           <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
                         </div>
@@ -923,7 +958,9 @@ const handleExportCSV = async () => {
                     <th className="p-3 rounded-tl-lg">Código</th>
                     <th className="p-3">Nombre</th>
                     <th className="p-3">Talla/Color</th>
-                    <th className="p-3">Categoría</th>
+                    <th className="p-3 cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('category')}>
+                      <span className="inline-flex items-center gap-1">Categoría {sortIcon('category')}</span>
+                    </th>
                     <th className="p-3 text-right">Precio</th>
                     <th className="p-3 text-right cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('stock')}>
                       <span className="inline-flex items-center gap-1 justify-end">Stock Local {sortIcon('stock')}</span>
@@ -961,7 +998,7 @@ const handleExportCSV = async () => {
                           </td>
                           <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
                           <td className="p-3">
-                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
+                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(product.category)}</span>
                           </td>
                           <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
                           <td className="p-3">
@@ -1130,14 +1167,29 @@ const handleExportCSV = async () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Código de Barras (Escanea o deja vacío)
               </label>
-              <input
-                type="text"
-                autoFocus={!editStockOnly}
-                readOnly={editStockOnly}
-                {...register('sku_barcode')}
-                placeholder="Escanea el código aquí..."
-                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  autoFocus={!editStockOnly}
+                  readOnly={editStockOnly}
+                  {...register('sku_barcode')}
+                  placeholder="Escanea el código aquí..."
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed"
+                />
+                {/* Escanear con la cámara (solo móvil/tablet): DESACTIVADO.
+                    Para reactivar, descomentar junto con lo indicado en el import:
+                {!editStockOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setSkuScannerOpen(true)}
+                    className="lg:hidden shrink-0 px-3 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-xl hover:bg-teal-100 transition"
+                    title="Escanear con la cámara"
+                  >
+                    📷
+                  </button>
+                )}
+                */}
+              </div>
             </div>
 
             <div>
@@ -1169,6 +1221,7 @@ const handleExportCSV = async () => {
                   <option value="perfume">Perfume</option>
                   <option value="accesorios">Accesorios</option>
                   <option value="lentes">Lentes</option>
+                  <option value="uniforme_escolar">Uniforme Escolar</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
@@ -1214,6 +1267,16 @@ const handleExportCSV = async () => {
             </div>
           </form>
         </Modal>
+
+        {/* Escáner con cámara (móvil): DESACTIVADO. Para reactivar, descomentar
+            junto con lo indicado en el import:
+        <BarcodeScannerModal
+          isOpen={skuScannerOpen}
+          onClose={() => setSkuScannerOpen(false)}
+          onScan={(code) => setValue('sku_barcode', code, { shouldDirty: true })}
+          title="Escanear código del producto"
+        />
+        */}
       </div>
 
       {/* VISTA DE IMPRESIÓN */}

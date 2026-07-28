@@ -62,7 +62,8 @@ export default async function DashboardLayout({
 
       {/* 3. EL GUARD ENVUELVE EL CONTENIDO PRINCIPAL */}
       <StoreGuard userProfile={profile} stores={stores}>
-        <main className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible relative">
+        {/* En móvil el padding se reduce para aprovechar el ancho de pantalla. */}
+        <main className="flex-1 overflow-y-auto p-4 md:p-8 print:p-0 print:overflow-visible relative">
           {children}
         </main>
       </StoreGuard>

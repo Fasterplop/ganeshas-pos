@@ -5,6 +5,10 @@ import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 import { notifySaleWhatsApp } from './actions';
 import { formatVariant } from '@/lib/productVariant';
+// Escáner con la cámara del teléfono: DESACTIVADO por ahora. Para reactivarlo,
+// descomentar este import, el estado `scannerOpen`, el handler `handleCameraScan`,
+// el botón 📷 junto al buscador y el <BarcodeScannerModal> al final del JSX.
+// import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
@@ -57,6 +61,9 @@ export default function POSPage() {
 
   const [productSearch, setProductSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+
+  // Escáner con la cámara del teléfono (desactivado; ver nota junto al import).
+  // const [scannerOpen, setScannerOpen] = useState(false);
 
   // NUEVOS ESTADOS PARA PRODUCTO RÁPIDO
   const [showQuickAdd, setShowQuickAdd] = useState(false);
@@ -237,22 +244,32 @@ export default function POSPage() {
     }
   };
 
+  // Busca un producto por código EXACTO y lo añade al carrito. Camino común
+  // del lector físico (Enter en el input) y del escáner con cámara.
+  const addByBarcode = async (barcode: string) => {
+    const { data } = await supabase
+      .from('products')
+      .select('*')
+      .eq('sku_barcode', barcode)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (data) {
+      addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null });
+    }
+    return data;
+  };
+
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       const barcode = productSearch.trim();
-      
+
       if (!barcode) return;
 
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('sku_barcode', barcode)
-        .eq('is_active', true)
-        .maybeSingle();
+      const product = await addByBarcode(barcode);
 
-      if (data) {
-        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null });
+      if (product) {
         setProductSearch('');
         setSearchResults([]);
       } else {
@@ -265,6 +282,16 @@ export default function POSPage() {
       }, 10);
     }
   };
+
+  // Lectura desde la cámara: mismo camino que el lector físico. El texto
+  // devuelto se muestra como feedback dentro del visor (modo continuo).
+  // (Desactivado; ver nota junto al import.)
+  // const handleCameraScan = async (code: string) => {
+  //   const product = await addByBarcode(code);
+  //   return product
+  //     ? `✓ ${product.name} añadido al carrito`
+  //     : `✗ No encontrado: ${code}`;
+  // };
 
   const handleAddFromSearch = (product: any) => {
     addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null });
@@ -580,13 +607,24 @@ export default function POSPage() {
 
       {/* Notificación de ERROR: toast en la esquina */}
       {notification && notification.type === 'error' && (
-        <div className="fixed top-6 right-6 z-[100] animate-fade-in-down">
+        <div className="fixed top-6 left-4 right-4 sm:left-auto sm:right-6 z-[100] animate-fade-in-down">
           <div className="flex items-center gap-3 px-6 py-4 rounded-xl shadow-lg border bg-red-50 border-red-200 text-red-800">
             <span className="text-2xl">⚠️</span>
             <p className="font-medium">{notification.message}</p>
           </div>
         </div>
       )}
+
+      {/* Escáner con cámara (móvil): DESACTIVADO. Para reactivar, descomentar
+          junto con lo indicado en el import:
+      <BarcodeScannerModal
+        isOpen={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScan={handleCameraScan}
+        continuous
+        title="Escanear productos"
+      />
+      */}
 
       {/* Indicador de Tienda Activa en el POS */}
       <div className="mb-2 flex items-center justify-between shrink-0">
@@ -600,8 +638,10 @@ export default function POSPage() {
         
         {/* Columna Izquierda: Búsqueda y Carrito */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden min-h-[600px] lg:min-h-0">
-          <div className="p-4 border-b border-slate-200 space-y-4 bg-slate-50 shrink-0">
-            <div>
+          {/* En móvil la búsqueda va PRIMERO (es la acción principal en caja) y
+              los datos del cliente debajo; en PC se mantiene el orden original. */}
+          <div className="p-4 border-b border-slate-200 flex flex-col gap-4 bg-slate-50 shrink-0">
+            <div className="order-3 lg:order-1">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                 <div className="flex">
@@ -671,14 +711,16 @@ export default function POSPage() {
               </div>
             </div>
 
-            <hr className="border-slate-200" />
+            <hr className="border-slate-200 order-2" />
 
             {/* SECCIÓN DE BÚSQUEDA Y PRODUCTO RÁPIDO */}
-            <div className="relative">
-              <div className="flex gap-2">
-                <input 
+            <div className="relative order-1 lg:order-3">
+              {/* En móvil la fila envuelve: el input ocupa su propia línea y los
+                  botones pasan abajo (antes el overflow-hidden los recortaba). */}
+              <div className="flex flex-wrap sm:flex-nowrap gap-2">
+                <input
                   ref={searchInputRef}
-                  type="text" 
+                  type="text"
                   value={productSearch}
                   onChange={handleSearchChange}
                   onKeyDown={handleKeyDown}
@@ -686,11 +728,22 @@ export default function POSPage() {
                   placeholder="🛒 Busca por nombre o escanea código de barras..."
                   className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
                 />
-                <button 
+                {/* Escanear con la cámara (solo móvil/tablet): DESACTIVADO.
+                    Para reactivar, descomentar junto con lo indicado en el import:
+                <button
+                  type="button"
+                  onClick={() => setScannerOpen(true)}
+                  className="lg:hidden shrink-0 px-4 py-2 rounded-lg font-bold transition border-2 bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100 text-xl"
+                  title="Escanear con la cámara"
+                >
+                  📷
+                </button>
+                */}
+                <button
                   onClick={() => setShowQuickAdd(!showQuickAdd)}
-                  className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
-                    showQuickAdd 
-                      ? 'bg-slate-200 text-slate-700 border-slate-300' 
+                  className={`flex-1 sm:flex-none justify-center px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
+                    showQuickAdd
+                      ? 'bg-slate-200 text-slate-700 border-slate-300'
                       : 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
                   }`}
                 >
@@ -722,18 +775,19 @@ export default function POSPage() {
               {showQuickAdd && (
                 <div className="absolute z-10 w-full bg-white border-2 border-teal-500 shadow-xl rounded-lg mt-1 p-4 animate-fade-in-down">
                   <h4 className="text-sm font-bold text-teal-700 mb-3 uppercase tracking-wide">Añadir Producto Manual</h4>
-                  <div className="flex gap-3">
-                    <input 
-                      type="text" 
+                  {/* En móvil los campos se apilan; en ≥sm quedan en una fila como antes. */}
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <input
+                      type="text"
                       value={quickName}
                       onChange={(e) => setQuickName(e.target.value)}
                       placeholder="Nombre del producto..."
                       className="flex-1 px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
                     />
-                    <div className="relative w-32">
+                    <div className="relative w-full sm:w-32">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
-                      <input 
-                        type="number" 
+                      <input
+                        type="number"
                         step="0.01"
                         min="0"
                         value={quickPrice}
@@ -742,7 +796,7 @@ export default function POSPage() {
                         className="w-full pl-7 pr-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
                       />
                     </div>
-                    <button 
+                    <button
                       onClick={handleAddQuickProduct}
                       className="bg-[#0f5c5c] hover:bg-[#0a4545] text-white px-4 py-2 rounded-lg font-medium transition"
                     >
@@ -756,12 +810,14 @@ export default function POSPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto overflow-x-auto">
-            <table className="w-full text-left min-w-[450px]">
+            {/* En móvil la tabla se compacta (sin columna Precio, botones más
+                pequeños) para caber sin scroll horizontal; en ≥sm no cambia. */}
+            <table className="w-full text-left sm:min-w-[450px]">
               <thead className="bg-slate-600 text-white text-base sticky top-0 z-0">
                 <tr>
                   <th className="p-3 pl-4">Producto</th>
                   <th className="p-3 text-center">Cant.</th>
-                  <th className="p-3 text-right">Precio</th>
+                  <th className="hidden sm:table-cell p-3 text-right">Precio</th>
                   <th className="p-3 text-right pr-4">Subtotal</th>
                 </tr>
               </thead>
@@ -777,30 +833,32 @@ export default function POSPage() {
                   cart.map(item => (
                     <tr key={item.id} className="hover:bg-slate-50 transition">
                       <td className="p-3 pl-4">
-                        <p className="text-lg font-semibold text-slate-800">{item.name}</p>
+                        <p className="text-base sm:text-lg font-semibold text-slate-800">{item.name}</p>
                         {formatVariant(item.talla, item.color) && (
                           <p className="text-sm text-slate-500">{formatVariant(item.talla, item.color)}</p>
                         )}
+                        {/* Precio unitario: en móvil va aquí (la columna Precio está oculta). */}
+                        <p className="sm:hidden text-sm text-slate-500">${item.price.toFixed(2)} c/u</p>
                       </td>
                       <td className="p-3">
-                        <div className="flex items-center justify-center gap-3">
+                        <div className="flex items-center justify-center gap-1.5 sm:gap-3">
                           <button
                             onClick={() => handleDecreaseQuantity(item)}
-                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold text-xl shrink-0"
+                            className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold text-xl shrink-0"
                           >
                             −
                           </button>
-                          <span className="w-8 text-center text-xl font-bold text-slate-800">{item.quantity}</span>
+                          <span className="w-6 sm:w-8 text-center text-lg sm:text-xl font-bold text-slate-800">{item.quantity}</span>
                           <button
                             onClick={() => addToCart({ ...item, quantity: 1 })}
-                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
+                            className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
                           >
                             +
                           </button>
                         </div>
                       </td>
-                      <td className="p-3 text-right text-lg text-slate-600">${item.price.toFixed(2)}</td>
-                      <td className="p-3 text-right pr-4 text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
+                      <td className="hidden sm:table-cell p-3 text-right text-lg text-slate-600">${item.price.toFixed(2)}</td>
+                      <td className="p-3 text-right pr-4 text-base sm:text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
                     </tr>
                   ))
                 )}

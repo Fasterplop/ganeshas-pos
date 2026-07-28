@@ -5,6 +5,10 @@ import Barcode from 'react-barcode';
 import { createClient } from '@/lib/supabase/client';
 import { Heart } from 'lucide-react';
 import { formatVariant, labelFontPx } from '@/lib/productVariant';
+// Escáner con la cámara del teléfono: DESACTIVADO por ahora. Para reactivarlo,
+// descomentar este import, el estado `scannerOpen`, el handler `handleCameraScan`,
+// el botón 📷 junto al buscador y el <BarcodeScannerModal> al final del JSX.
+// import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 
 interface LabelProduct {
   id: string;
@@ -29,6 +33,9 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
   const [productSearch, setProductSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
 
+  // Escáner con la cámara del teléfono (desactivado; ver nota junto al import).
+  // const [scannerOpen, setScannerOpen] = useState(false);
+
   // Estado para la lista de productos a imprimir
   const [selectedProducts, setSelectedProducts] = useState<LabelProduct[]>([]);
 
@@ -52,6 +59,23 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
       setSearchResults([]);
     }
   };
+
+  // Lectura desde la cámara: busca por código EXACTO y lo suma a la lista de
+  // impresión (mismo efecto que elegirlo en el dropdown del buscador).
+  // (Desactivado; ver nota junto al import.)
+  // const handleCameraScan = async (code: string) => {
+  //   const { data } = await supabase
+  //     .from('products')
+  //     .select('*')
+  //     .eq('sku_barcode', code.trim())
+  //     .maybeSingle();
+  //
+  //   if (data) {
+  //     handleAddFromSearch(data);
+  //     return `✓ ${data.name} añadido a impresión`;
+  //   }
+  //   return `✗ No encontrado: ${code}`;
+  // };
 
   const handleAddFromSearch = (product: any) => {
     const exists = selectedProducts.find(p => p.id === product.id);
@@ -174,13 +198,26 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
               
               {/* BUSCADOR CON DROPDOWN (Estilo POS) */}
               <div className="relative mb-6">
-                <input 
-                  type="text" 
-                  value={productSearch}
-                  onChange={handleSearchChange}
-                  placeholder="🔍 Buscar por nombre o código de barras para añadir a impresión..." 
-                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={productSearch}
+                    onChange={handleSearchChange}
+                    placeholder="🔍 Buscar por nombre o código de barras para añadir a impresión..."
+                    className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                  />
+                  {/* Escanear con la cámara (solo móvil/tablet): DESACTIVADO.
+                      Para reactivar, descomentar junto con lo indicado en el import:
+                  <button
+                    type="button"
+                    onClick={() => setScannerOpen(true)}
+                    className="lg:hidden shrink-0 px-4 py-2 rounded-lg font-bold transition border-2 bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100 text-xl"
+                    title="Escanear con la cámara"
+                  >
+                    📷
+                  </button>
+                  */}
+                </div>
                 {searchResults.length > 0 && (
                   <ul className="absolute z-10 w-full bg-white border border-slate-200 shadow-xl rounded-lg mt-1 max-h-60 overflow-y-auto">
                     {searchResults.map(p => (
@@ -532,6 +569,19 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
     }
   `}} />
 )}
+
+      {/* Escáner con cámara (móvil): DESACTIVADO. Para reactivar, descomentar
+          junto con lo indicado en el import:
+      <div className="print:hidden">
+        <BarcodeScannerModal
+          isOpen={scannerOpen}
+          onClose={() => setScannerOpen(false)}
+          onScan={handleCameraScan}
+          continuous
+          title="Escanear para imprimir"
+        />
+      </div>
+      */}
 
     </div>
   );
