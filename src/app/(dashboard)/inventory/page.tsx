@@ -8,13 +8,14 @@ import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
+import { SlidersHorizontal } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -39,6 +40,19 @@ interface Product {
   created_at: string | null;       // alta del producto (null = anterior a la migración)
   label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
 }
+
+// Nombre visible de cada categoría. Los valores del enum de la BD van en
+// snake_case; sin entrada aquí se muestra el valor tal cual (con `capitalize`).
+const CATEGORY_LABELS: Record<string, string> = {
+  juguetes: 'Juguetes',
+  ropa: 'Ropa',
+  zapato: 'Zapato',
+  perfume: 'Perfume',
+  accesorios: 'Accesorios',
+  lentes: 'Lentes',
+  uniforme_escolar: 'Uniformes Escolares',
+};
+const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
 
 // Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
 function storePrefix(storeName: string): string {
@@ -160,6 +174,10 @@ export default function InventoryPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
   const [page, setPage] = useState(1);
+
+  // Filtro por categoría: se elige desde el botón "Filtros" junto al buscador.
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -333,7 +351,14 @@ export default function InventoryPage() {
   // Cualquier cambio de búsqueda/filtro/orden/tienda vuelve a la primera página.
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, stockFilter, sortKey, sortDir, viewStoreId]);
+  }, [searchTerm, stockFilter, categoryFilter, sortKey, sortDir, viewStoreId]);
+
+  // Al cambiar de tienda, el filtro de categoría vuelve a "Todas" (cada tienda
+  // tiene su propio surtido de categorías).
+  useEffect(() => {
+    setCategoryFilter('all');
+    setFiltersOpen(false);
+  }, [viewStoreId]);
 
   // Al seleccionar un producto: el nombre de promoción arranca con el nombre
   // del producto y el descuento se reinicia (opcional, 0 = sin descuento).
@@ -570,7 +595,7 @@ const handleExportCSV = async () => {
       sku: p.sku_barcode,
       nombre: p.name,
       variante: variantLabel(p.talla, p.color),
-      categoria: p.category,
+      categoria: categoryLabel(p.category),
       precio,           // número real → Excel formatea
       stock,
       valor,
@@ -647,10 +672,16 @@ const handleExportCSV = async () => {
   const lowCount = products.filter(p => isLow(p.stock, lowStockMax)).length;
   const outCount = products.filter(p => isOut(p.stock)).length;
 
-  // Pipeline de la tabla: búsqueda → filtro de semáforo → orden → paginación.
+  // Categorías presentes en el inventario de la tienda (opciones del botón Filtros).
+  const availableCategories = [...new Set(products.map(p => p.category))]
+    .filter(Boolean)
+    .sort((a, b) => categoryLabel(a).localeCompare(categoryLabel(b), 'es'));
+
+  // Pipeline de la tabla: búsqueda → categoría → filtro de semáforo → orden → paginación.
   const searched = products.filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.sku_barcode.toLowerCase().includes(searchTerm.toLowerCase())
+    (p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.sku_barcode.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    (categoryFilter === 'all' || p.category === categoryFilter)
   );
   const statusFiltered = searched.filter(p => {
     if (stockFilter === 'low') return isLow(p.stock, lowStockMax);
@@ -821,6 +852,59 @@ const handleExportCSV = async () => {
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
               </div>
+
+              {/* Botón Filtros: despliega las categorías para filtrar la tabla. */}
+              <div className="relative w-full lg:w-auto shrink-0">
+                <button
+                  onClick={() => setFiltersOpen(o => !o)}
+                  className={`w-full lg:w-auto inline-flex items-center justify-center gap-2 text-sm font-semibold border rounded-lg px-4 py-2 transition cursor-pointer ${
+                    categoryFilter !== 'all'
+                      ? 'text-teal-700 bg-teal-50 border-teal-300'
+                      : 'text-slate-600 bg-white border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-4 h-4" />
+                  Filtros
+                  {categoryFilter !== 'all' && (
+                    <span className="max-w-[10rem] truncate text-xs font-bold bg-teal-600 text-white px-2 py-0.5 rounded-full">
+                      {categoryLabel(categoryFilter)}
+                    </span>
+                  )}
+                </button>
+
+                {filtersOpen && (
+                  <>
+                    {/* Capa invisible: cierra el panel al hacer clic fuera. */}
+                    <div className="fixed inset-0 z-20" onClick={() => setFiltersOpen(false)} />
+                    <div className="absolute left-0 top-full mt-2 z-30 w-full lg:w-60 bg-white border border-slate-200 rounded-xl shadow-xl p-2 animate-in fade-in">
+                      <p className="px-3 pt-1.5 pb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Categoría
+                      </p>
+                      <button
+                        onClick={() => { setCategoryFilter('all'); setFiltersOpen(false); }}
+                        className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-lg transition cursor-pointer ${
+                          categoryFilter === 'all' ? 'bg-teal-50 text-teal-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        Todas las categorías
+                        {categoryFilter === 'all' && <span className="text-teal-600 font-bold">✓</span>}
+                      </button>
+                      {availableCategories.map(c => (
+                        <button
+                          key={c}
+                          onClick={() => { setCategoryFilter(prev => (prev === c ? 'all' : c)); setFiltersOpen(false); }}
+                          className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-lg transition cursor-pointer ${
+                            categoryFilter === c ? 'bg-teal-50 text-teal-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          {categoryLabel(c)}
+                          {categoryFilter === c && <span className="text-teal-600 font-bold">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
               {/* En móvil/tablet no hay encabezados de tabla: el orden por stock va aquí. */}
               <button
                 onClick={() => toggleSort('stock')}
@@ -846,7 +930,7 @@ const handleExportCSV = async () => {
               {loading ? (
                 <p className="p-6 text-center text-sm text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</p>
               ) : sortedProducts.length === 0 ? (
-                <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
+                <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
               ) : (
                 paginatedProducts.map((product) => {
                   const tier = stockTier(product.stock, lowStockMax);
@@ -880,7 +964,7 @@ const handleExportCSV = async () => {
 
                       <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
-                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{product.category}</span>
+                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(product.category)}</span>
                           {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
                           <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
                         </div>
@@ -935,7 +1019,7 @@ const handleExportCSV = async () => {
                   {loading ? (
                     <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
                   ) : sortedProducts.length === 0 ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
+                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
                     paginatedProducts.map((product) => {
                       const tier = stockTier(product.stock, lowStockMax);
@@ -961,7 +1045,7 @@ const handleExportCSV = async () => {
                           </td>
                           <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
                           <td className="p-3">
-                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{product.category}</span>
+                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(product.category)}</span>
                           </td>
                           <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
                           <td className="p-3">
@@ -1169,6 +1253,7 @@ const handleExportCSV = async () => {
                   <option value="perfume">Perfume</option>
                   <option value="accesorios">Accesorios</option>
                   <option value="lentes">Lentes</option>
+                  <option value="uniforme_escolar">Uniformes Escolares</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
