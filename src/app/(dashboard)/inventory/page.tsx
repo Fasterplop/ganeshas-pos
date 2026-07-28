@@ -853,57 +853,40 @@ const handleExportCSV = async () => {
                 />
               </div>
 
-              {/* Botón Filtros: despliega las categorías para filtrar la tabla. */}
-              <div className="relative w-full lg:w-auto shrink-0">
+              {/* Botón Filtros: muestra/oculta los chips de categoría EN LÍNEA
+                  (la categoría activa va en negro; clic de nuevo la limpia). */}
+              <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
                 <button
                   onClick={() => setFiltersOpen(o => !o)}
-                  className={`w-full lg:w-auto inline-flex items-center justify-center gap-2 text-sm font-semibold border rounded-lg px-4 py-2 transition cursor-pointer ${
-                    categoryFilter !== 'all'
-                      ? 'text-teal-700 bg-teal-50 border-teal-300'
+                  className={`inline-flex items-center gap-2 text-sm font-semibold border rounded-lg px-4 py-2 transition cursor-pointer ${
+                    filtersOpen || categoryFilter !== 'all'
+                      ? 'text-teal-700 bg-teal-50 border-teal-400'
                       : 'text-slate-600 bg-white border-slate-300 hover:bg-slate-50'
                   }`}
                 >
                   <SlidersHorizontal className="w-4 h-4" />
                   Filtros
-                  {categoryFilter !== 'all' && (
+                  {/* Con los chips ocultos, el botón recuerda el filtro activo. */}
+                  {!filtersOpen && categoryFilter !== 'all' && (
                     <span className="max-w-[10rem] truncate text-xs font-bold bg-teal-600 text-white px-2 py-0.5 rounded-full">
                       {categoryLabel(categoryFilter)}
                     </span>
                   )}
                 </button>
 
-                {filtersOpen && (
-                  <>
-                    {/* Capa invisible: cierra el panel al hacer clic fuera. */}
-                    <div className="fixed inset-0 z-20" onClick={() => setFiltersOpen(false)} />
-                    <div className="absolute left-0 top-full mt-2 z-30 w-full lg:w-60 bg-white border border-slate-200 rounded-xl shadow-xl p-2 animate-in fade-in">
-                      <p className="px-3 pt-1.5 pb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                        Categoría
-                      </p>
-                      <button
-                        onClick={() => { setCategoryFilter('all'); setFiltersOpen(false); }}
-                        className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-lg transition cursor-pointer ${
-                          categoryFilter === 'all' ? 'bg-teal-50 text-teal-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        Todas las categorías
-                        {categoryFilter === 'all' && <span className="text-teal-600 font-bold">✓</span>}
-                      </button>
-                      {availableCategories.map(c => (
-                        <button
-                          key={c}
-                          onClick={() => { setCategoryFilter(prev => (prev === c ? 'all' : c)); setFiltersOpen(false); }}
-                          className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-lg transition cursor-pointer ${
-                            categoryFilter === c ? 'bg-teal-50 text-teal-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'
-                          }`}
-                        >
-                          {categoryLabel(c)}
-                          {categoryFilter === c && <span className="text-teal-600 font-bold">✓</span>}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+                {filtersOpen && availableCategories.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => setCategoryFilter(prev => (prev === c ? 'all' : c))}
+                    className={`text-sm font-semibold rounded-lg px-4 py-2 border transition cursor-pointer animate-in fade-in ${
+                      categoryFilter === c
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    {categoryLabel(c)}
+                  </button>
+                ))}
               </div>
               {/* En móvil/tablet no hay encabezados de tabla: el orden por stock va aquí. */}
               <button
