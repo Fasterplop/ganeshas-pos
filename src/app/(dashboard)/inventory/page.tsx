@@ -102,8 +102,8 @@ function isNewProduct(p: Product): boolean {
   return Date.now() - new Date(p.created_at).getTime() < NEW_PRODUCT_MS;
 }
 
-// Única columna ordenable de la tabla (Stock Local).
-type SortKey = 'stock';
+// Columnas ordenables de la tabla (Stock Local y Talla/Color).
+type SortKey = 'stock' | 'variant';
 
 const PAGE_SIZE = 50; // paginación: 50 productos por página
 
@@ -688,9 +688,19 @@ const handleExportCSV = async () => {
     if (stockFilter === 'out') return isOut(p.stock);
     return true;
   });
-  // Orden solo por Stock Local (única columna ordenable).
+  // Orden por Stock Local o por Talla/Color. En talla/color se compara el texto
+  // visible ("Talla · Color") con colación numérica (8 < 10) y los productos
+  // SIN variante ("N/A") van siempre al final, en ambas direcciones.
   const sortedProducts = sortKey === 'stock'
     ? [...statusFiltered].sort((a, b) => (sortDir === 'asc' ? a.stock - b.stock : b.stock - a.stock))
+    : sortKey === 'variant'
+    ? [...statusFiltered].sort((a, b) => {
+        const va = variantLabel(a.talla, a.color);
+        const vb = variantLabel(b.talla, b.color);
+        if ((va === 'N/A') !== (vb === 'N/A')) return va === 'N/A' ? 1 : -1;
+        const cmp = va.localeCompare(vb, 'es', { numeric: true, sensitivity: 'base' });
+        return sortDir === 'asc' ? cmp : -cmp;
+      })
     : statusFiltered;
 
   const totalPages = Math.max(1, Math.ceil(sortedProducts.length / PAGE_SIZE));
@@ -888,13 +898,21 @@ const handleExportCSV = async () => {
                   </button>
                 ))}
               </div>
-              {/* En móvil/tablet no hay encabezados de tabla: el orden por stock va aquí. */}
-              <button
-                onClick={() => toggleSort('stock')}
-                className="lg:hidden inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
-              >
-                Ordenar por stock {sortIcon('stock')}
-              </button>
+              {/* En móvil/tablet no hay encabezados de tabla: el orden va aquí. */}
+              <div className="lg:hidden flex gap-2">
+                <button
+                  onClick={() => toggleSort('stock')}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Ordenar por stock {sortIcon('stock')}
+                </button>
+                <button
+                  onClick={() => toggleSort('variant')}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Ordenar por talla/color {sortIcon('variant')}
+                </button>
+              </div>
               {stockFilter !== 'all' && (
                 <div className="flex items-center gap-2 shrink-0 lg:ml-auto">
                   <span className={`inline-flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border ${stockFilter === 'out' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
@@ -989,7 +1007,9 @@ const handleExportCSV = async () => {
                   <tr className="bg-slate-700 text-white text-sm">
                     <th className="p-3 rounded-tl-lg">Código</th>
                     <th className="p-3">Nombre</th>
-                    <th className="p-3">Talla/Color</th>
+                    <th className="p-3 cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('variant')}>
+                      <span className="inline-flex items-center gap-1">Talla/Color {sortIcon('variant')}</span>
+                    </th>
                     <th className="p-3">Categoría</th>
                     <th className="p-3 text-right">Precio</th>
                     <th className="p-3 text-right cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('stock')}>
