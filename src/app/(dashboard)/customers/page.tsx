@@ -272,10 +272,10 @@ export default function CustomersPage() {
       </div>
 
       {/* Tabla Principal */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-1">
-        <div className="overflow-x-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0 overflow-auto">
           <table className="w-full text-left border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-slate-700 text-white text-sm">
                 <th className="p-4">Cédula / Documento</th>
                 <th className="p-4">Nombre Completo</th>
