@@ -274,41 +274,47 @@ export default function InventoryPage() {
 
   // Inventario (productos + stock) de UNA tienda: los productos cuya tienda dueña
   // es esa, con el stock de esa tienda (puede ser negativo si hubo sobreventa).
+  //
+  // OJO: Supabase corta cada respuesta en 1000 filas. Con más de 1000 productos,
+  // leer store_stock completo (o products sin paginar) deja fuera las filas más
+  // nuevas, que se mostrarían con stock 0 ("Agotados") aunque tengan stock. Por
+  // eso: el stock de la tienda va EMBEBIDO en la consulta de productos (una fila
+  // por producto) y se pagina con .range() hasta traerlo todo.
   async function fetchProducts(storeId: string) {
     setLoading(true);
 
-    // created_at/label_printed_at alimentan el badge "Nuevo". Si esas columnas
-    // aún no existen (migración sin aplicar), degradamos a la consulta anterior
-    // para no dejar el inventario vacío.
+    const PAGE = 1000;
     const BASE_COLS = 'id, sku_barcode, name, category, price, owner_store_id, talla, color';
-    const primary = await supabase
-      .from('products')
-      .select(`${BASE_COLS}, created_at, label_printed_at`)
-      .eq('is_active', true)
-      .eq('owner_store_id', storeId)
-      .order('name');
-
-    let globalProducts: Record<string, unknown>[] | null = primary.data;
-    if (primary.error) {
-      const fallback = await supabase
+    const fetchPage = (cols: string, from: number) =>
+      supabase
         .from('products')
-        .select(BASE_COLS)
+        .select(`${cols}, store_stock(stock)` as '*')
         .eq('is_active', true)
         .eq('owner_store_id', storeId)
-        .order('name');
-      globalProducts = fallback.data;
+        .eq('store_stock.store_id', storeId)
+        .order('name')
+        .order('id') // desempate estable para que la paginación no duplique/salte filas
+        .range(from, from + PAGE - 1);
+
+    // created_at/label_printed_at alimentan el badge "Nuevo". Si esas columnas
+    // aún no existen (migración sin aplicar), degradamos a la consulta base
+    // para no dejar el inventario vacío.
+    let globalProducts: Record<string, unknown>[] | null = null;
+    for (const cols of [`${BASE_COLS}, created_at, label_printed_at`, BASE_COLS]) {
+      const rows: Record<string, unknown>[] = [];
+      let failed = false;
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await fetchPage(cols, from);
+        if (error) { failed = true; break; }
+        rows.push(...(data ?? []));
+        if (!data || data.length < PAGE) break;
+      }
+      if (!failed) { globalProducts = rows; break; }
     }
 
-    const { data: storeStock } = await supabase
-      .from('store_stock')
-      .select('product_id, stock')
-      .eq('store_id', storeId);
-
     if (globalProducts) {
-      const stockMap: Record<string, number> = {};
-      if (storeStock) storeStock.forEach(s => { stockMap[s.product_id] = s.stock; });
       const mergedProducts: Product[] = globalProducts.map(p => {
-        const row = p as Partial<Product> & { id: string };
+        const row = p as Partial<Product> & { id: string; store_stock?: { stock: number }[] };
         return {
           id: row.id,
           sku_barcode: row.sku_barcode ?? '',
@@ -320,7 +326,7 @@ export default function InventoryPage() {
           color: row.color ?? null,
           created_at: row.created_at ?? null,
           label_printed_at: row.label_printed_at ?? null,
-          stock: stockMap[row.id] ?? 0,
+          stock: row.store_stock?.[0]?.stock ?? 0,
         };
       });
       setProducts(mergedProducts);
@@ -483,9 +489,10 @@ export default function InventoryPage() {
         return;
       }
 
-      // El trigger de la BD ya creó las filas de stock en 0 para todas las tiendas.
-      // Cargamos el stock inicial en la tienda dueña. El cajero reponedor carga
-      // su stock inicial vía el RPC (que valida su alcance: global o local).
+      // Stock inicial en la tienda dueña. Upsert: crea la fila de store_stock si
+      // el trigger de la BD no existe (un UPDATE a una fila inexistente no da
+      // error y dejaría el producto en 0 / "Agotados"). El cajero reponedor
+      // carga vía el RPC (que valida su alcance: global o local).
       if (data.stock > 0) {
         if (isRestocker) {
           const { error } = await supabase.rpc('restock_stock', {
@@ -493,15 +500,17 @@ export default function InventoryPage() {
             p_store_id: targetStoreId,
             p_new_stock: data.stock,
           });
-          if (error) console.error("Error al cargar el stock inicial (reponedor):", error);
+          if (error) alert('Producto creado, pero no se pudo cargar el stock inicial: ' + error.message);
         } else {
-          const { error: stockUpdateError } = await supabase
+          const { error: stockError } = await supabase
             .from('store_stock')
-            .update({ stock: data.stock })
-            .eq('product_id', newProduct.id)
-            .eq('store_id', targetStoreId);
-          if (stockUpdateError) {
-            console.error("Error al actualizar el stock inicial en la tienda dueña:", stockUpdateError);
+            .upsert({
+              product_id: newProduct.id,
+              store_id: targetStoreId,
+              stock: data.stock
+            }, { onConflict: 'product_id, store_id' });
+          if (stockError) {
+            alert('Producto creado, pero no se pudo cargar el stock inicial: ' + stockError.message);
           }
         }
       }
