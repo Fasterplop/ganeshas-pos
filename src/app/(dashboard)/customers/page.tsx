@@ -28,6 +28,27 @@ interface Customer {
   sales?: { created_at: string }[];
 }
 
+// Tarjeta pequeña de resumen (mismo estilo que las de /inventory).
+function StatCard({
+  icon, label, value, iconWrap = 'bg-teal-50 text-teal-600', valueColor = 'text-slate-800',
+}: {
+  icon: string;
+  label: string;
+  value: string | number;
+  iconWrap?: string;
+  valueColor?: string;
+}) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-3 md:p-4 flex items-center gap-2 md:gap-3">
+      <span className={`shrink-0 w-9 h-9 md:w-11 md:h-11 rounded-full flex items-center justify-center text-base md:text-lg ${iconWrap}`}>{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-[11px] md:text-xs font-medium text-slate-500 truncate">{label}</span>
+        <span className={`block text-lg md:text-2xl font-bold leading-tight truncate ${valueColor}`}>{value}</span>
+      </span>
+    </div>
+  );
+}
+
 export default function CustomersPage() {
   const { currentStore } = usePOSStore(); // <-- 2. Obtenemos la tienda activa
   const supabase = createClient();
@@ -67,16 +88,30 @@ export default function CustomersPage() {
     if (!currentStore) return; // Protección: si no hay contexto aún, no consultamos
 
     setLoading(true);
-    // Sin filtro de tienda: traemos todas las filas y las unificamos en el cliente
-    const { data } = await supabase
-      .from('customers')
-      .select(`
-        *,
-        sales (
-          created_at
-        )
-      `)
-      .order('created_at', { ascending: false });
+    // Sin filtro de tienda: traemos todas las filas y las unificamos en el cliente.
+    // OJO: Supabase corta cada respuesta en 1000 filas, así que paginamos con
+    // .range() hasta traer todos los clientes (si no, el total saldría truncado).
+    const PAGE = 1000;
+    const rows: any[] = [];
+    let failed = false;
+    for (let from = 0; ; from += PAGE) {
+      const { data: pageData, error } = await supabase
+        .from('customers')
+        .select(`
+          *,
+          sales (
+            created_at
+          )
+        `)
+        .order('created_at', { ascending: false })
+        .order('document_id') // desempate estable para que la paginación no duplique/salte filas
+        .order('store_id')
+        .range(from, from + PAGE - 1);
+      if (error) { failed = true; break; }
+      rows.push(...(pageData ?? []));
+      if (!pageData || pageData.length < PAGE) break;
+    }
+    const data = failed ? null : rows;
 
     if (data) {
       // Unificar filas duplicadas (misma cédula en varias sucursales) en un cliente global:
@@ -241,6 +276,14 @@ export default function CustomersPage() {
   const totalGastadoReal = customerSales.reduce((acc, sale) => acc + Number(sale.total_amount), 0);
   const promedioCompra = totalCompras > 0 ? (totalGastadoReal / totalCompras) : 0;
 
+  // Métricas de las tarjetas de resumen (mes calendario actual):
+  //  - Nuevos: registrados este mes (created_at global = el más antiguo entre sucursales)
+  //  - Activos: con al menos una compra este mes (en cualquier sucursal)
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const totalClientes = customers.length;
+  const nuevosEsteMes = customers.filter(c => new Date(c.created_at) >= monthStart).length;
+  const activosEsteMes = customers.filter(c => c.sales?.some(s => new Date(s.created_at) >= monthStart)).length;
+
   // Pantalla de espera si el StoreGuard aún no ha inyectado la tienda
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
@@ -249,7 +292,7 @@ export default function CustomersPage() {
   return (
     <div className="h-full flex flex-col font-sans">
       {/* Encabezado */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Gestión de Clientes</h1>
           <p className="text-slate-500 text-sm">Base de datos <strong className="text-teal-700">global</strong> de clientes (todas las sucursales)</p>
@@ -269,6 +312,19 @@ export default function CustomersPage() {
             + Añadir Cliente
           </button>
         </div>
+      </div>
+
+      {/* Tarjetas de resumen (mismo estilo que /inventory) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 md:gap-4 mb-6">
+        <StatCard icon="👥" label="Total clientes" value={loading ? '—' : totalClientes} />
+        <StatCard
+          icon="✨"
+          label="Nuevos este mes"
+          value={loading ? '—' : `+${nuevosEsteMes}`}
+          iconWrap="bg-emerald-50 text-emerald-600"
+          valueColor="text-emerald-600"
+        />
+        <StatCard icon="🛒" label="Activos este mes" value={loading ? '—' : activosEsteMes} />
       </div>
 
       {/* Tabla Principal */}
