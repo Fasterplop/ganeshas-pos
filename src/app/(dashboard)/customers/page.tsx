@@ -39,11 +39,11 @@ function StatCard({
   valueColor?: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-3 md:p-4 flex items-center gap-2 md:gap-3">
-      <span className={`shrink-0 w-9 h-9 md:w-11 md:h-11 rounded-full flex items-center justify-center text-base md:text-lg ${iconWrap}`}>{icon}</span>
-      <span className="min-w-0">
-        <span className="block text-[11px] md:text-xs font-medium text-slate-500 truncate">{label}</span>
-        <span className={`block text-lg md:text-2xl font-bold leading-tight truncate ${valueColor}`}>{value}</span>
+    <div className="bg-white rounded-xl border border-slate-200 p-2.5 md:p-4 flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-2 md:gap-3">
+      <span className={`shrink-0 w-8 h-8 sm:w-9 sm:h-9 md:w-11 md:h-11 rounded-full flex items-center justify-center text-sm sm:text-base md:text-lg ${iconWrap}`}>{icon}</span>
+      <span className="min-w-0 w-full">
+        <span className="block text-[10px] sm:text-[11px] md:text-xs font-medium text-slate-500 truncate">{label}</span>
+        <span className={`block text-base sm:text-lg md:text-2xl font-bold leading-tight truncate ${valueColor}`}>{value}</span>
       </span>
     </div>
   );
@@ -315,7 +315,7 @@ export default function CustomersPage() {
       </div>
 
       {/* Tarjetas de resumen (mismo estilo que /inventory) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 md:gap-4 mb-6">
+      <div className="grid grid-cols-3 gap-2 sm:gap-3 md:gap-4 mb-6">
         <StatCard icon="👥" label="Total clientes" value={loading ? '—' : totalClientes} />
         <StatCard
           icon="✨"

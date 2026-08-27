@@ -15,7 +15,7 @@ import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar', 'bolso', 'navaja_suiza'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -51,6 +51,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   accesorios: 'Accesorios',
   lentes: 'Lentes',
   uniforme_escolar: 'Uniformes Escolares',
+  bolso: 'Bolso',
+  navaja_suiza: 'Navaja Suiza',
 };
 const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
 
@@ -1266,6 +1268,8 @@ const handleExportCSV = async () => {
                   <option value="accesorios">Accesorios</option>
                   <option value="lentes">Lentes</option>
                   <option value="uniforme_escolar">Uniformes Escolares</option>
+                  <option value="bolso">Bolso</option>
+                  <option value="navaja_suiza">Navaja Suiza</option>
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
