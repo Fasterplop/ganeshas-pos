@@ -25,6 +25,10 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string }[] = [
   { value: 'cashea', label: '🛍️ Cashea' },
 ];
 
+// Recargo por uso de Cashea (cubre comisiones del servicio). Se cobra sobre
+// el monto que efectivamente va en Cashea, encima del total de la venta.
+const CASHEA_SURCHARGE_RATE = 0.05;
+
 export default function POSPage() {
   const supabase = createClient();
   // 1. Extraemos currentStore del estado global
@@ -45,6 +49,8 @@ export default function POSPage() {
   
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
+  // Recargo 5% Cashea: activo por default, el cajero puede desmarcarlo.
+  const [casheaSurchargeEnabled, setCasheaSurchargeEnabled] = useState(true);
 
   // PAGO DIVIDIDO (hasta 2 métodos en una misma venta)
   const [splitPayment, setSplitPayment] = useState(false);
@@ -84,6 +90,7 @@ export default function POSPage() {
     setCustomerPhone('');
     setPaymentMethod(null);
     setPaymentRef('');
+    setCasheaSurchargeEnabled(true);
     setSplitPayment(false);
     setPaymentMethod2(null);
     setSplitAmount1('');
@@ -181,12 +188,32 @@ export default function POSPage() {
   const redemptionDiscount = redeemBlocks * loyaltyCfg.discount_per_block_usd;
   const pointsToConsume = redeemBlocks * loyaltyCfg.points_per_block;
 
-  const totalUSD = Math.max(0, totalAfterManual - redemptionDiscount);
+  // Total de la venta ANTES del recargo Cashea (lo que valen los artículos,
+  // ya con descuento manual y canje de puntos aplicados).
+  const baseTotalUSD = Math.max(0, totalAfterManual - redemptionDiscount);
+
+  // --- Pago dividido: el método 1 lleva el monto ingresado (sobre el total
+  // base, sin recargo); el método 2 el resto. ---
+  const splitAmount1Num = isNaN(Number(splitAmount1)) ? 0 : Number(splitAmount1);
+  const splitAmount2BaseNum = Math.max(0, Number((baseTotalUSD - splitAmount1Num).toFixed(2)));
+
+  // --- Recargo 5% Cashea: se cobra sobre el monto que va en Cashea (el total
+  // completo en pago simple, o solo su parte en pago dividido). ---
+  const casheaInvolved = paymentMethod === 'cashea' || (splitPayment && paymentMethod2 === 'cashea');
+  const casheaBaseAmount = splitPayment
+    ? (paymentMethod === 'cashea' ? splitAmount1Num : paymentMethod2 === 'cashea' ? splitAmount2BaseNum : 0)
+    : (paymentMethod === 'cashea' ? baseTotalUSD : 0);
+  const casheaSurchargeAmount = (casheaInvolved && casheaSurchargeEnabled)
+    ? Number((casheaBaseAmount * CASHEA_SURCHARGE_RATE).toFixed(2))
+    : 0;
+
+  // Total final a cobrar (ya incluye el recargo Cashea, si aplica).
+  const totalUSD = baseTotalUSD + casheaSurchargeAmount;
   const totalVES = totalUSD * bcvRate;
 
-  // --- Pago dividido: el método 1 lleva el monto ingresado; el método 2 el resto ---
-  const splitAmount1Num = isNaN(Number(splitAmount1)) ? 0 : Number(splitAmount1);
-  const splitAmount2Num = Math.max(0, Number((totalUSD - splitAmount1Num).toFixed(2)));
+  // Montos finales por método (con el recargo sumado al que corresponda a Cashea).
+  const splitAmount1Final = splitAmount1Num + (paymentMethod === 'cashea' ? casheaSurchargeAmount : 0);
+  const splitAmount2Num = splitAmount2BaseNum + (paymentMethod2 === 'cashea' ? casheaSurchargeAmount : 0);
 
   const toggleSplitPayment = () => {
     setSplitPayment((prev) => {
@@ -312,10 +339,10 @@ export default function POSPage() {
 
     // Validación del pago dividido
     if (splitPayment) {
-      if (totalUSD <= 0) return showNotification('No se puede dividir un total de $0.00', 'error');
+      if (baseTotalUSD <= 0) return showNotification('No se puede dividir un total de $0.00', 'error');
       if (!paymentMethod2) return showNotification('Selecciona el segundo método de pago', 'error');
       if (paymentMethod2 === paymentMethod) return showNotification('Los dos métodos de pago deben ser distintos', 'error');
-      if (splitAmount1Num <= 0 || splitAmount1Num >= totalUSD) {
+      if (splitAmount1Num <= 0 || splitAmount1Num >= baseTotalUSD) {
         return showNotification('El monto del método 1 debe ser mayor a $0 y menor al total', 'error');
       }
     }
@@ -426,10 +453,11 @@ export default function POSPage() {
           payment_method: paymentMethod,
           payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim(),
           payment_method_2: splitPayment ? paymentMethod2 : null,
-          payment_amount_1: splitPayment ? splitAmount1Num : null,
+          payment_amount_1: splitPayment ? splitAmount1Final : null,
           payment_amount_2: splitPayment ? splitAmount2Num : null,
           redemption_discount_usd: redemptionDiscount,
-          redemption_points: pointsToConsume
+          redemption_points: pointsToConsume,
+          cashea_surcharge_usd: casheaSurchargeAmount
         })
         .select()
         .single();
@@ -532,6 +560,7 @@ export default function POSPage() {
       setCustomerPhone('');
       setPaymentRef('');
       setPaymentMethod(null);
+      setCasheaSurchargeEnabled(true);
       setSplitPayment(false);
       setPaymentMethod2(null);
       setSplitAmount1('');
@@ -834,6 +863,11 @@ export default function POSPage() {
                 Ahorro: ${(discountAmount + redemptionDiscount).toFixed(2)}
               </p>
             )}
+            {casheaSurchargeAmount > 0 && (
+              <p className="text-amber-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
+                Incl. recargo Cashea: +${casheaSurchargeAmount.toFixed(2)}
+              </p>
+            )}
             <p className="text-teal-200 text-base">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
           </div>
 
@@ -1046,11 +1080,32 @@ export default function POSPage() {
                   </div>
                 </div>
 
-                <p className={`text-sm font-medium ${splitAmount1Num > totalUSD ? 'text-red-500' : 'text-slate-500'}`}>
-                  {splitAmount1Num > totalUSD
+                <p className={`text-sm font-medium ${splitAmount1Num > baseTotalUSD ? 'text-red-500' : 'text-slate-500'}`}>
+                  {splitAmount1Num > baseTotalUSD
                     ? 'El monto del método 1 supera el total.'
                     : `El método 2 cubre el resto ($${splitAmount2Num.toFixed(2)}) · Total $${totalUSD.toFixed(2)}`}
                 </p>
+              </div>
+            )}
+
+            {casheaInvolved && (
+              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg animate-fade-in-down">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={casheaSurchargeEnabled}
+                    onChange={(e) => setCasheaSurchargeEnabled(e.target.checked)}
+                    className="mt-1 w-5 h-5 accent-amber-500 shrink-0"
+                  />
+                  <span className="text-base text-slate-700 leading-snug">
+                    Aplicar recargo del <strong>5%</strong> por uso de Cashea
+                    {casheaSurchargeAmount > 0 && (
+                      <span className="block text-sm font-semibold text-amber-600">
+                        +${casheaSurchargeAmount.toFixed(2)} sobre ${casheaBaseAmount.toFixed(2)}
+                      </span>
+                    )}
+                  </span>
+                </label>
               </div>
             )}
 
@@ -1074,6 +1129,12 @@ export default function POSPage() {
             >
               {isLoading ? 'Procesando...' : '🧾 Finalizar Venta'}
             </button>
+
+            {casheaInvolved && (
+              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 shrink-0">
+                ℹ️ El recargo del 5% por uso de Cashea se aplica para cubrir comisiones del servicio.
+              </div>
+            )}
           </div>
         </div>
       </div>

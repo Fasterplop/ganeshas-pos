@@ -296,6 +296,7 @@ export default function DashboardPage() {
           created_at,
           total_amount,
           redemption_discount_usd,
+          cashea_surcharge_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -344,6 +345,7 @@ export default function DashboardPage() {
           created_at,
           total_amount,
           redemption_discount_usd,
+          cashea_surcharge_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -384,6 +386,7 @@ export default function DashboardPage() {
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
         { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Recargo Cashea USD',    key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
@@ -405,6 +408,7 @@ export default function DashboardPage() {
       let totalSumaUSD = 0;
       let totalSumaVES = 0;
       let totalDescuento = 0;
+      let totalRecargo = 0;
       let totalCantidad = 0;
 
       rows.forEach((sale: any) => {
@@ -425,9 +429,11 @@ export default function DashboardPage() {
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
         const descuentoUSD = Number(sale.redemption_discount_usd) || 0;
+        const recargoUSD = Number(sale.cashea_surcharge_usd) || 0;
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
         totalDescuento += descuentoUSD;
+        totalRecargo += recargoUSD;
         totalCantidad += itemCount;
 
         ws.addRow({
@@ -439,6 +445,7 @@ export default function DashboardPage() {
           referencia: sale.payment_ref || 'N/A',
           cantidad: itemCount,
           descuento: descuentoUSD,
+          recargo: recargoUSD,
           usd: amountUSD,
           bs: amountVES,
         });
@@ -450,6 +457,7 @@ export default function DashboardPage() {
         fecha: 'TOTALES GENERALES',
         cantidad: totalCantidad,
         descuento: totalDescuento,
+        recargo: totalRecargo,
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
@@ -457,11 +465,11 @@ export default function DashboardPage() {
       totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
       totalRow.height = 20;
       totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
-      for (let c = 1; c <= 10; c++) {
+      for (let c = 1; c <= 11; c++) {
         totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
       }
 
-      ws.autoFilter = { from: 'A1', to: 'J1' };
+      ws.autoFilter = { from: 'A1', to: 'K1' };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -886,6 +894,11 @@ export default function DashboardPage() {
   {Number(sale.redemption_discount_usd) > 0 && (
     <p className="text-[11px] text-teal-600 font-semibold mt-0.5">
       ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}
+    </p>
+  )}
+  {Number(sale.cashea_surcharge_usd) > 0 && (
+    <p className="text-[11px] text-amber-600 font-semibold mt-0.5">
+      🛍️ Recargo Cashea: +${Number(sale.cashea_surcharge_usd).toFixed(2)}
     </p>
   )}
 
