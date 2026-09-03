@@ -296,7 +296,7 @@ export default function DashboardPage() {
           created_at,
           total_amount,
           redemption_discount_usd,
-          cashea_surcharge_usd,
+          punto_de_venta_surcharge_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -345,7 +345,7 @@ export default function DashboardPage() {
           created_at,
           total_amount,
           redemption_discount_usd,
-          cashea_surcharge_usd,
+          punto_de_venta_surcharge_usd,
           bcv_rate,
           payment_method,
           payment_ref,
@@ -386,7 +386,7 @@ export default function DashboardPage() {
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
         { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
-        { header: 'Recargo Cashea USD',    key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Recargo PDV USD',       key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
@@ -429,7 +429,7 @@ export default function DashboardPage() {
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
         const descuentoUSD = Number(sale.redemption_discount_usd) || 0;
-        const recargoUSD = Number(sale.cashea_surcharge_usd) || 0;
+        const recargoUSD = Number(sale.punto_de_venta_surcharge_usd) || 0;
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
         totalDescuento += descuentoUSD;
@@ -896,9 +896,9 @@ export default function DashboardPage() {
       ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}
     </p>
   )}
-  {Number(sale.cashea_surcharge_usd) > 0 && (
-    <p className="text-[11px] text-amber-600 font-semibold mt-0.5">
-      🛍️ Recargo Cashea: +${Number(sale.cashea_surcharge_usd).toFixed(2)}
+  {Number(sale.punto_de_venta_surcharge_usd) > 0 && (
+    <p className="text-[11px] text-sky-600 font-semibold mt-0.5">
+      💳 Recargo Punto de Venta: +${Number(sale.punto_de_venta_surcharge_usd).toFixed(2)}
     </p>
   )}
 

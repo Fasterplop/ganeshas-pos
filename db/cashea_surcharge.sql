@@ -1,4 +1,9 @@
 -- ============================================================================
+-- ⚠️ CORREGIDO: el recargo NO era para Cashea, era para Punto de Venta.
+-- La columna cashea_surcharge_usd creada acá fue renombrada en
+-- db/rename_cashea_surcharge_to_punto_de_venta.sql — aplicar esa migración
+-- también. Se deja este archivo tal cual (ya se ejecutó en producción).
+-- ============================================================================
 -- Recargo del 5% por uso de Cashea (cobrado sobre el monto que va en Cashea,
 -- activo por default en el POS pero el cajero puede desmarcarlo).
 -- Guarda el monto en USD ya cobrado (0 si no aplicó) para que el historial,

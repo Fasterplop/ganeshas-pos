@@ -25,9 +25,10 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string }[] = [
   { value: 'cashea', label: '🛍️ Cashea' },
 ];
 
-// Recargo por uso de Cashea (cubre comisiones del servicio). Se cobra sobre
-// el monto que efectivamente va en Cashea, encima del total de la venta.
-const CASHEA_SURCHARGE_RATE = 0.05;
+// Recargo por pago con Punto de Venta (cubre comisiones del servicio). Se
+// cobra sobre el monto que efectivamente va en Punto de Venta, encima del
+// total de la venta.
+const PDV_SURCHARGE_RATE = 0.05;
 
 export default function POSPage() {
   const supabase = createClient();
@@ -49,8 +50,8 @@ export default function POSPage() {
   
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
-  // Recargo 5% Cashea: activo por default, el cajero puede desmarcarlo.
-  const [casheaSurchargeEnabled, setCasheaSurchargeEnabled] = useState(true);
+  // Recargo 5% Punto de Venta: activo por default, el cajero puede desmarcarlo.
+  const [pdvSurchargeEnabled, setPdvSurchargeEnabled] = useState(true);
 
   // PAGO DIVIDIDO (hasta 2 métodos en una misma venta)
   const [splitPayment, setSplitPayment] = useState(false);
@@ -90,7 +91,7 @@ export default function POSPage() {
     setCustomerPhone('');
     setPaymentMethod(null);
     setPaymentRef('');
-    setCasheaSurchargeEnabled(true);
+    setPdvSurchargeEnabled(true);
     setSplitPayment(false);
     setPaymentMethod2(null);
     setSplitAmount1('');
@@ -188,8 +189,8 @@ export default function POSPage() {
   const redemptionDiscount = redeemBlocks * loyaltyCfg.discount_per_block_usd;
   const pointsToConsume = redeemBlocks * loyaltyCfg.points_per_block;
 
-  // Total de la venta ANTES del recargo Cashea (lo que valen los artículos,
-  // ya con descuento manual y canje de puntos aplicados).
+  // Total de la venta ANTES del recargo de Punto de Venta (lo que valen los
+  // artículos, ya con descuento manual y canje de puntos aplicados).
   const baseTotalUSD = Math.max(0, totalAfterManual - redemptionDiscount);
 
   // --- Pago dividido: el método 1 lleva el monto ingresado (sobre el total
@@ -197,23 +198,23 @@ export default function POSPage() {
   const splitAmount1Num = isNaN(Number(splitAmount1)) ? 0 : Number(splitAmount1);
   const splitAmount2BaseNum = Math.max(0, Number((baseTotalUSD - splitAmount1Num).toFixed(2)));
 
-  // --- Recargo 5% Cashea: se cobra sobre el monto que va en Cashea (el total
-  // completo en pago simple, o solo su parte en pago dividido). ---
-  const casheaInvolved = paymentMethod === 'cashea' || (splitPayment && paymentMethod2 === 'cashea');
-  const casheaBaseAmount = splitPayment
-    ? (paymentMethod === 'cashea' ? splitAmount1Num : paymentMethod2 === 'cashea' ? splitAmount2BaseNum : 0)
-    : (paymentMethod === 'cashea' ? baseTotalUSD : 0);
-  const casheaSurchargeAmount = (casheaInvolved && casheaSurchargeEnabled)
-    ? Number((casheaBaseAmount * CASHEA_SURCHARGE_RATE).toFixed(2))
+  // --- Recargo 5% Punto de Venta: se cobra sobre el monto que va en Punto de
+  // Venta (el total completo en pago simple, o solo su parte en pago dividido). ---
+  const pdvInvolved = paymentMethod === 'punto_de_venta' || (splitPayment && paymentMethod2 === 'punto_de_venta');
+  const pdvBaseAmount = splitPayment
+    ? (paymentMethod === 'punto_de_venta' ? splitAmount1Num : paymentMethod2 === 'punto_de_venta' ? splitAmount2BaseNum : 0)
+    : (paymentMethod === 'punto_de_venta' ? baseTotalUSD : 0);
+  const pdvSurchargeAmount = (pdvInvolved && pdvSurchargeEnabled)
+    ? Number((pdvBaseAmount * PDV_SURCHARGE_RATE).toFixed(2))
     : 0;
 
-  // Total final a cobrar (ya incluye el recargo Cashea, si aplica).
-  const totalUSD = baseTotalUSD + casheaSurchargeAmount;
+  // Total final a cobrar (ya incluye el recargo de Punto de Venta, si aplica).
+  const totalUSD = baseTotalUSD + pdvSurchargeAmount;
   const totalVES = totalUSD * bcvRate;
 
-  // Montos finales por método (con el recargo sumado al que corresponda a Cashea).
-  const splitAmount1Final = splitAmount1Num + (paymentMethod === 'cashea' ? casheaSurchargeAmount : 0);
-  const splitAmount2Num = splitAmount2BaseNum + (paymentMethod2 === 'cashea' ? casheaSurchargeAmount : 0);
+  // Montos finales por método (con el recargo sumado al que corresponda a Punto de Venta).
+  const splitAmount1Final = splitAmount1Num + (paymentMethod === 'punto_de_venta' ? pdvSurchargeAmount : 0);
+  const splitAmount2Num = splitAmount2BaseNum + (paymentMethod2 === 'punto_de_venta' ? pdvSurchargeAmount : 0);
 
   const toggleSplitPayment = () => {
     setSplitPayment((prev) => {
@@ -457,7 +458,7 @@ export default function POSPage() {
           payment_amount_2: splitPayment ? splitAmount2Num : null,
           redemption_discount_usd: redemptionDiscount,
           redemption_points: pointsToConsume,
-          cashea_surcharge_usd: casheaSurchargeAmount
+          punto_de_venta_surcharge_usd: pdvSurchargeAmount
         })
         .select()
         .single();
@@ -560,7 +561,7 @@ export default function POSPage() {
       setCustomerPhone('');
       setPaymentRef('');
       setPaymentMethod(null);
-      setCasheaSurchargeEnabled(true);
+      setPdvSurchargeEnabled(true);
       setSplitPayment(false);
       setPaymentMethod2(null);
       setSplitAmount1('');
@@ -863,9 +864,9 @@ export default function POSPage() {
                 Ahorro: ${(discountAmount + redemptionDiscount).toFixed(2)}
               </p>
             )}
-            {casheaSurchargeAmount > 0 && (
-              <p className="text-amber-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
-                Incl. recargo Cashea: +${casheaSurchargeAmount.toFixed(2)}
+            {pdvSurchargeAmount > 0 && (
+              <p className="text-sky-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
+                Incl. recargo Punto de Venta: +${pdvSurchargeAmount.toFixed(2)}
               </p>
             )}
             <p className="text-teal-200 text-base">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
@@ -1088,20 +1089,20 @@ export default function POSPage() {
               </div>
             )}
 
-            {casheaInvolved && (
-              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg animate-fade-in-down">
+            {pdvInvolved && (
+              <div className="mb-4 p-3 bg-sky-50 border border-sky-200 rounded-lg animate-fade-in-down">
                 <label className="flex items-start gap-3 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={casheaSurchargeEnabled}
-                    onChange={(e) => setCasheaSurchargeEnabled(e.target.checked)}
-                    className="mt-1 w-5 h-5 accent-amber-500 shrink-0"
+                    checked={pdvSurchargeEnabled}
+                    onChange={(e) => setPdvSurchargeEnabled(e.target.checked)}
+                    className="mt-1 w-5 h-5 accent-sky-600 shrink-0"
                   />
                   <span className="text-base text-slate-700 leading-snug">
-                    Aplicar recargo del <strong>5%</strong> por uso de Cashea
-                    {casheaSurchargeAmount > 0 && (
-                      <span className="block text-sm font-semibold text-amber-600">
-                        +${casheaSurchargeAmount.toFixed(2)} sobre ${casheaBaseAmount.toFixed(2)}
+                    Aplicar recargo del <strong>5%</strong> por Punto de Venta
+                    {pdvSurchargeAmount > 0 && (
+                      <span className="block text-sm font-semibold text-sky-700">
+                        +${pdvSurchargeAmount.toFixed(2)} sobre ${pdvBaseAmount.toFixed(2)}
                       </span>
                     )}
                   </span>
@@ -1130,9 +1131,9 @@ export default function POSPage() {
               {isLoading ? 'Procesando...' : '🧾 Finalizar Venta'}
             </button>
 
-            {casheaInvolved && (
-              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 shrink-0">
-                ℹ️ El recargo del 5% por uso de Cashea se aplica para cubrir comisiones del servicio.
+            {pdvInvolved && (
+              <div className="mt-3 bg-sky-50 border border-sky-200 rounded-xl p-3 text-sm text-sky-800 shrink-0">
+                ℹ️ El recargo del 5% por Punto de Venta se aplica para cubrir comisiones del servicio.
               </div>
             )}
           </div>
