@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Modal from '@/components/Modal';
@@ -23,6 +23,30 @@ const paymentToText = (sale: any) => {
   return `${m1} ($${a1.toFixed(2)}), ${prettyMethod(sale.payment_method_2)} ($${a2.toFixed(2)})`;
 };
 
+// Métodos de pago que se muestran en el desglose de "Ventas de Hoy"
+// (mismos valores del enum que usa el POS). El orden es el de la lista.
+const PAYMENT_METHODS = [
+  { key: 'efectivo',       label: 'Efectivo',       icon: '💵', iconBg: 'bg-emerald-100', bar: 'bg-emerald-600', text: 'text-emerald-700' },
+  { key: 'punto_de_venta', label: 'Punto de Venta', icon: '💳', iconBg: 'bg-blue-100',    bar: 'bg-blue-500',    text: 'text-blue-600' },
+  { key: 'zelle',          label: 'Zelle',          icon: '🔄', iconBg: 'bg-purple-100',  bar: 'bg-purple-500',  text: 'text-purple-600' },
+  { key: 'pago_movil',     label: 'Pago Móvil',     icon: '📱', iconBg: 'bg-indigo-100',  bar: 'bg-indigo-500',  text: 'text-indigo-600' },
+  { key: 'cashea',         label: 'Cashea',         icon: '🛍️', iconBg: 'bg-amber-100',   bar: 'bg-amber-400',   text: 'text-amber-600' },
+];
+
+// Suma el monto de una venta al acumulado por método de pago.
+// Pago simple: todo el total al método. Pago dividido: cada parte a su método.
+const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
+  if (sale.payment_method_2) {
+    const a1 = Number(sale.payment_amount_1) || 0;
+    const a2 = Number(sale.payment_amount_2) || 0;
+    acc[sale.payment_method] = (acc[sale.payment_method] || 0) + a1;
+    acc[sale.payment_method_2] = (acc[sale.payment_method_2] || 0) + a2;
+  } else {
+    const m = sale.payment_method || 'otro';
+    acc[m] = (acc[m] || 0) + (Number(sale.total_amount) || 0);
+  }
+};
+
 // Cantidad total de artículos vendidos en una venta.
 const saleItemCount = (sale: any) =>
   sale.sale_items?.reduce((acc: number, it: any) => acc + (it.quantity || 0), 0) || 0;
@@ -37,6 +61,8 @@ export default function DashboardPage() {
   // Estados para métricas principales
   const [todayUSD, setTodayUSD] = useState(0);
   const [todayVES, setTodayVES] = useState(0);
+  const [todayTx, setTodayTx] = useState(0);
+  const [todayByMethod, setTodayByMethod] = useState<Record<string, number>>({});
   
   const [thisWeekUSD, setThisWeekUSD] = useState(0);
   const [weekGrowth, setWeekGrowth] = useState(0);
@@ -76,6 +102,13 @@ export default function DashboardPage() {
     start: todayCaracas,
     end: todayCaracas,
   });
+  const historyRef = useRef<HTMLDivElement>(null);
+
+  // "Ver todas" de la card Transacciones hoy: filtra el historial al día de hoy y baja hasta él.
+  const goToTodayHistory = () => {
+    setHistoryDateRange({ start: todayCaracas, end: todayCaracas });
+    historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const parseSupabaseDate = (dateStr: string) => {
     if (!dateStr) return new Date();
@@ -123,12 +156,14 @@ export default function DashboardPage() {
       // A. Obtener todas las ventas desde el mes pasado AISLADAS POR TIENDA
       const { data: recentSales } = await supabase
         .from('sales')
-        .select('total_amount, bcv_rate, created_at')
+        .select('total_amount, bcv_rate, created_at, payment_method, payment_method_2, payment_amount_1, payment_amount_2')
         .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
         .gte('created_at', startOfLastMonth.toISOString());
 
       if (recentSales) {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
+        let tTx = 0;
+        const byMethod: Record<string, number> = {};
 
         recentSales.forEach(sale => {
           const saleDate = parseSupabaseDate(sale.created_at);
@@ -137,6 +172,8 @@ export default function DashboardPage() {
           if (saleDate >= startOfToday) {
             tUSD += amount;
             tVES += amount * Number(sale.bcv_rate);
+            tTx += 1;
+            addSaleToBreakdown(byMethod, sale);
           }
           if (saleDate >= startOfThisWeek) tWeek += amount;
           if (saleDate >= startOfLastWeek && saleDate <= endOfLastWeek) lWeek += amount;
@@ -146,13 +183,15 @@ export default function DashboardPage() {
 
         setTodayUSD(tUSD);
         setTodayVES(tVES);
+        setTodayTx(tTx);
+        setTodayByMethod(byMethod);
         setThisWeekUSD(tWeek);
         setThisMonthUSD(tMonth);
         setWeekGrowth(lWeek ? ((tWeek - lWeek) / lWeek) * 100 : 0);
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
       } else {
         // Reset a cero si no hay ventas en la nueva tienda
-        setTodayUSD(0); setTodayVES(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayByMethod({}); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
       }
 
       // B. Mejores Clientes AISLADOS POR TIENDA
@@ -451,6 +490,21 @@ export default function DashboardPage() {
     return <div className="flex h-full items-center justify-center text-slate-500">Cargando analíticas...</div>;
   }
 
+  // Desglose de hoy: con/sin Cashea y por método de pago (porcentajes sobre el total del día).
+  const todayCashea = todayByMethod['cashea'] || 0;
+  const todaySinCashea = Math.max(0, todayUSD - todayCashea);
+  const pctOfToday = (v: number) => (todayUSD > 0 ? Math.min(100, (v / todayUSD) * 100) : 0);
+  const todayBreakdown = [
+    ...PAYMENT_METHODS,
+    // Cualquier método que no esté en la lista (p. ej. valores viejos del enum) se muestra igual.
+    ...Object.keys(todayByMethod)
+      .filter(k => !PAYMENT_METHODS.some(m => m.key === k))
+      .map(k => ({ key: k, label: prettyMethod(k), icon: '💠', iconBg: 'bg-slate-100', bar: 'bg-slate-400', text: 'text-slate-600' })),
+  ].map(m => {
+    const amount = todayByMethod[m.key] || 0;
+    return { ...m, amount, pct: pctOfToday(amount) };
+  });
+
   const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
   const formattedDate = new Date().toLocaleDateString('es-ES', dateOptions);
 
@@ -496,28 +550,89 @@ export default function DashboardPage() {
           {/* COLUMNA IZQUIERDA */}
           <div className="lg:col-span-2 space-y-6 flex flex-col w-full h-full">
             
-            {/* Métricas */}
+            {/* Métricas: "Ventas de Hoy" ocupa 2 columnas y 3 filas; a su derecha
+                se apilan Esta Semana, Este Mes y Transacciones hoy. En móvil todo va en una columna. */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+              <div className="md:col-span-2 md:row-span-3 bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col min-w-0">
                 <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
                 <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Ventas totales <span className="text-slate-300 mx-1">|</span> {todayTx} {todayTx === 1 ? 'transacción' : 'transacciones'}
+                </p>
                 <p className="text-sm font-bold text-teal-700 mt-1 truncate">
                   Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
                 </p>
+
+                {/* Con / sin Cashea */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+                    <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💵</div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-slate-500 truncate">Ventas sin Cashea</p>
+                      <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
+                      <p className="text-xs text-slate-500">{Math.round(pctOfToday(todaySinCashea))}% del total</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+                    <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🛍️</div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
+                      <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
+                      <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCashea))}% del total</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Desglose por método de pago */}
+                <div className="border-t border-slate-100 mt-4 pt-4">
+                  <p className="text-sm font-bold text-slate-800 mb-3">Desglose por método de pago</p>
+                  <div className="space-y-3">
+                    {todayBreakdown.map((m) => (
+                      <div key={m.key} className="flex items-center gap-3 min-w-0">
+                        <div className={`w-9 h-9 rounded-lg ${m.iconBg} flex items-center justify-center text-base shrink-0`}>{m.icon}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 text-sm">
+                            <span className="text-slate-700 capitalize truncate">{m.label}</span>
+                            <span className="flex items-baseline gap-2 shrink-0">
+                              <span className="font-semibold text-slate-800">${m.amount.toFixed(2)}</span>
+                              <span className={`font-bold w-10 text-right ${m.text}`}>{Math.round(m.pct)}%</span>
+                            </span>
+                          </div>
+                          <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
+                            <div className={`h-full rounded-full ${m.bar} transition-all`} style={{ width: `${m.pct}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]">
                 <p className="text-slate-500 font-medium mb-1">Esta Semana</p>
                 <h2 className="text-3xl font-bold text-slate-800">${thisWeekUSD.toFixed(2)}</h2>
                 <p className={`text-sm font-medium mt-1 truncate ${weekGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                   {weekGrowth >= 0 ? '↗' : '↘'} {Math.abs(weekGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs sem pasada</span>
                 </p>
               </div>
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]">
                 <p className="text-slate-500 font-medium mb-1">Este Mes</p>
                 <h2 className="text-3xl font-bold text-slate-800">${thisMonthUSD.toFixed(2)}</h2>
                 <p className={`text-sm font-medium mt-1 truncate ${monthGrowth >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                   {monthGrowth >= 0 ? '↗' : '↘'} {Math.abs(monthGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs mes pasado</span>
                 </p>
+              </div>
+              {/* Transacciones hoy */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]">
+                <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl mb-3">🛍️</div>
+                <h2 className="text-3xl font-bold text-slate-800">{todayTx}</h2>
+                <p className="text-slate-500 font-medium mt-1">Transacciones hoy</p>
+                <button
+                  type="button"
+                  onClick={goToTodayHistory}
+                  className="text-sm font-semibold text-teal-600 hover:text-teal-800 transition mt-2 text-left w-fit"
+                >
+                  Ver todas
+                </button>
               </div>
             </div>
 
@@ -650,7 +765,7 @@ export default function DashboardPage() {
 
 
       {/* --- SECCIÓN INFERIOR: HISTORIAL DE TRANSACCIONES --- */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col w-full min-h-[400px]">
+      <div ref={historyRef} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col w-full min-h-[400px] scroll-mt-6">
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 w-full">
           <h3 className="text-lg font-bold text-slate-800 shrink-0">Historial de Transacciones</h3>
           
