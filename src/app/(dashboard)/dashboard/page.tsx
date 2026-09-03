@@ -505,6 +505,80 @@ export default function DashboardPage() {
     return { ...m, amount, pct: pctOfToday(amount) };
   });
 
+  // Cards compartidas por la vista del dueño y la del cajero.
+  // gridClass: clases de posición dentro de la grilla que las contiene.
+  const renderTodaySalesCard = (title: string, gridClass = '') => (
+    <div className={`${gridClass} bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col min-w-0`}>
+      <p className="text-slate-500 font-medium mb-1">{title}</p>
+      <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
+      <p className="text-sm text-slate-500 mt-1">
+        Ventas totales <span className="text-slate-300 mx-1">|</span> {todayTx} {todayTx === 1 ? 'transacción' : 'transacciones'}
+      </p>
+      <p className="text-sm font-bold text-teal-700 mt-1 truncate">
+        Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
+      </p>
+
+      {/* Con / sin Cashea */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+        <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+          <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💵</div>
+          <div className="min-w-0">
+            <p className="text-xs text-slate-500 truncate">Ventas sin Cashea</p>
+            <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
+            <p className="text-xs text-slate-500">{Math.round(pctOfToday(todaySinCashea))}% del total</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+          <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🛍️</div>
+          <div className="min-w-0">
+            <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
+            <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
+            <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCashea))}% del total</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Desglose por método de pago */}
+      <div className="border-t border-slate-100 mt-4 pt-4">
+        <p className="text-sm font-bold text-slate-800 mb-3">Desglose por método de pago</p>
+        <div className="space-y-3">
+          {todayBreakdown.map((m) => (
+            <div key={m.key} className="flex items-center gap-3 min-w-0">
+              <div className={`w-9 h-9 rounded-lg ${m.iconBg} flex items-center justify-center text-base shrink-0`}>{m.icon}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-slate-700 capitalize truncate">{m.label}</span>
+                  <span className="flex items-baseline gap-2 shrink-0">
+                    <span className="font-semibold text-slate-800">${m.amount.toFixed(2)}</span>
+                    <span className={`font-bold w-10 text-right ${m.text}`}>{Math.round(m.pct)}%</span>
+                  </span>
+                </div>
+                <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
+                  <div className={`h-full rounded-full ${m.bar} transition-all`} style={{ width: `${m.pct}%` }} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderTodayTxCard = (gridClass = '') => (
+    <div className={`${gridClass} bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]`}>
+      <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl mb-3">🛍️</div>
+      <h2 className="text-3xl font-bold text-slate-800">{todayTx}</h2>
+      <p className="text-slate-500 font-medium mt-1">Transacciones hoy</p>
+      <button
+        type="button"
+        onClick={goToTodayHistory}
+        className="text-sm font-semibold text-teal-600 hover:text-teal-800 transition mt-2 text-left w-fit"
+      >
+        Ver todas
+      </button>
+    </div>
+  );
+
   const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
   const formattedDate = new Date().toLocaleDateString('es-ES', dateOptions);
 
@@ -531,13 +605,8 @@ export default function DashboardPage() {
           ========================================================= */}
       {role === 'cashier' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full shrink-0">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center h-[140px]">
-            <p className="text-slate-500 font-medium mb-1">Tus Ventas de Hoy</p>
-            <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
-            <p className="text-sm font-bold text-teal-700 mt-1 truncate">
-              Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
-            </p>
-          </div>
+          {renderTodaySalesCard('Tus Ventas de Hoy', 'md:col-span-2')}
+          {renderTodayTxCard('md:self-start')}
         </div>
       )}
 
@@ -553,60 +622,7 @@ export default function DashboardPage() {
             {/* Métricas: "Ventas de Hoy" ocupa 2 columnas y 3 filas; a su derecha
                 se apilan Esta Semana, Este Mes y Transacciones hoy. En móvil todo va en una columna. */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
-              <div className="md:col-span-2 md:row-span-3 bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col min-w-0">
-                <p className="text-slate-500 font-medium mb-1">Ventas de Hoy</p>
-                <h2 className="text-3xl font-bold text-slate-800">${todayUSD.toFixed(2)}</h2>
-                <p className="text-sm text-slate-500 mt-1">
-                  Ventas totales <span className="text-slate-300 mx-1">|</span> {todayTx} {todayTx === 1 ? 'transacción' : 'transacciones'}
-                </p>
-                <p className="text-sm font-bold text-teal-700 mt-1 truncate">
-                  Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
-                </p>
-
-                {/* Con / sin Cashea */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
-                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-                    <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💵</div>
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500 truncate">Ventas sin Cashea</p>
-                      <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
-                      <p className="text-xs text-slate-500">{Math.round(pctOfToday(todaySinCashea))}% del total</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-                    <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🛍️</div>
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
-                      <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
-                      <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCashea))}% del total</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Desglose por método de pago */}
-                <div className="border-t border-slate-100 mt-4 pt-4">
-                  <p className="text-sm font-bold text-slate-800 mb-3">Desglose por método de pago</p>
-                  <div className="space-y-3">
-                    {todayBreakdown.map((m) => (
-                      <div key={m.key} className="flex items-center gap-3 min-w-0">
-                        <div className={`w-9 h-9 rounded-lg ${m.iconBg} flex items-center justify-center text-base shrink-0`}>{m.icon}</div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2 text-sm">
-                            <span className="text-slate-700 capitalize truncate">{m.label}</span>
-                            <span className="flex items-baseline gap-2 shrink-0">
-                              <span className="font-semibold text-slate-800">${m.amount.toFixed(2)}</span>
-                              <span className={`font-bold w-10 text-right ${m.text}`}>{Math.round(m.pct)}%</span>
-                            </span>
-                          </div>
-                          <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
-                            <div className={`h-full rounded-full ${m.bar} transition-all`} style={{ width: `${m.pct}%` }} />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              {renderTodaySalesCard('Ventas de Hoy', 'md:col-span-2 md:row-span-3')}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]">
                 <p className="text-slate-500 font-medium mb-1">Esta Semana</p>
                 <h2 className="text-3xl font-bold text-slate-800">${thisWeekUSD.toFixed(2)}</h2>
@@ -621,19 +637,7 @@ export default function DashboardPage() {
                   {monthGrowth >= 0 ? '↗' : '↘'} {Math.abs(monthGrowth).toFixed(1)}% <span className="text-slate-400 font-normal">vs mes pasado</span>
                 </p>
               </div>
-              {/* Transacciones hoy */}
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-center min-h-[140px]">
-                <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl mb-3">🛍️</div>
-                <h2 className="text-3xl font-bold text-slate-800">{todayTx}</h2>
-                <p className="text-slate-500 font-medium mt-1">Transacciones hoy</p>
-                <button
-                  type="button"
-                  onClick={goToTodayHistory}
-                  className="text-sm font-semibold text-teal-600 hover:text-teal-800 transition mt-2 text-left w-fit"
-                >
-                  Ver todas
-                </button>
-              </div>
+              {renderTodayTxCard()}
             </div>
 
             {/* GRÁFICO */}
