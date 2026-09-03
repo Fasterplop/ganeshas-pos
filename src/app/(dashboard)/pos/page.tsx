@@ -50,8 +50,8 @@ export default function POSPage() {
   
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
-  // Recargo 5% Punto de Venta: activo por default, el cajero puede desmarcarlo.
-  const [pdvSurchargeEnabled, setPdvSurchargeEnabled] = useState(true);
+  // Recargo 5% Punto de Venta: desmarcado por default, el cajero lo activa.
+  const [pdvSurchargeEnabled, setPdvSurchargeEnabled] = useState(false);
 
   // PAGO DIVIDIDO (hasta 2 métodos en una misma venta)
   const [splitPayment, setSplitPayment] = useState(false);
@@ -91,7 +91,7 @@ export default function POSPage() {
     setCustomerPhone('');
     setPaymentMethod(null);
     setPaymentRef('');
-    setPdvSurchargeEnabled(true);
+    setPdvSurchargeEnabled(false);
     setSplitPayment(false);
     setPaymentMethod2(null);
     setSplitAmount1('');
@@ -561,7 +561,7 @@ export default function POSPage() {
       setCustomerPhone('');
       setPaymentRef('');
       setPaymentMethod(null);
-      setPdvSurchargeEnabled(true);
+      setPdvSurchargeEnabled(false);
       setSplitPayment(false);
       setPaymentMethod2(null);
       setSplitAmount1('');
