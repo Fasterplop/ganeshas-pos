@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { usePOSStore } from '@/store/usePOSStore';
 import { notifySaleWhatsApp } from './actions';
 import { formatVariant } from '@/lib/productVariant';
+import CasheaLogo from '@/components/CasheaLogo';
 
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
@@ -947,7 +948,7 @@ export default function POSPage() {
                     onClick={() => setPaymentMethod('cashea')}
                     className={`py-2.5 rounded-lg border flex col-span-2 items-center justify-center gap-2 transition ${paymentMethod === 'cashea' ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
                   >
-                    <span className="text-xl">🛍️</span>
+                    <CasheaLogo className="w-6 h-6 rounded-md" />
                     <span className="text-sm font-medium">Cashea</span>
                   </button>
                 </div>

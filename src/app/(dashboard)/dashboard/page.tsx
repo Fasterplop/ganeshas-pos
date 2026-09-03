@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Modal from '@/components/Modal';
+import CasheaLogo from '@/components/CasheaLogo';
 import LoyaltySettingsCard from '@/components/LoyaltySettingsCard';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
@@ -25,12 +26,13 @@ const paymentToText = (sale: any) => {
 
 // Métodos de pago que se muestran en el desglose de "Ventas de Hoy"
 // (mismos valores del enum que usa el POS). El orden es el de la lista.
-const PAYMENT_METHODS = [
+// icon: emoji, o un nodo React (Cashea usa su logo oficial).
+const PAYMENT_METHODS: { key: string; label: string; icon: ReactNode; iconBg: string; bar: string; text: string }[] = [
   { key: 'efectivo',       label: 'Efectivo',       icon: '💵', iconBg: 'bg-emerald-100', bar: 'bg-emerald-600', text: 'text-emerald-700' },
   { key: 'punto_de_venta', label: 'Punto de Venta', icon: '💳', iconBg: 'bg-blue-100',    bar: 'bg-blue-500',    text: 'text-blue-600' },
   { key: 'zelle',          label: 'Zelle',          icon: '🔄', iconBg: 'bg-purple-100',  bar: 'bg-purple-500',  text: 'text-purple-600' },
   { key: 'pago_movil',     label: 'Pago Móvil',     icon: '📱', iconBg: 'bg-indigo-100',  bar: 'bg-indigo-500',  text: 'text-indigo-600' },
-  { key: 'cashea',         label: 'Cashea',         icon: '🛍️', iconBg: 'bg-amber-100',   bar: 'bg-amber-400',   text: 'text-amber-600' },
+  { key: 'cashea',         label: 'Cashea',         icon: <CasheaLogo className="w-9 h-9 rounded-lg" />, iconBg: '', bar: 'bg-amber-400', text: 'text-amber-600' },
 ];
 
 // Suma el monto de una venta al acumulado por método de pago.
@@ -529,7 +531,7 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-          <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🛍️</div>
+          <CasheaLogo className="w-11 h-11 rounded-lg shrink-0" />
           <div className="min-w-0">
             <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
             <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
@@ -544,7 +546,9 @@ export default function DashboardPage() {
         <div className="space-y-3">
           {todayBreakdown.map((m) => (
             <div key={m.key} className="flex items-center gap-3 min-w-0">
-              <div className={`w-9 h-9 rounded-lg ${m.iconBg} flex items-center justify-center text-base shrink-0`}>{m.icon}</div>
+              {typeof m.icon === 'string'
+                ? <div className={`w-9 h-9 rounded-lg ${m.iconBg} flex items-center justify-center text-base shrink-0`}>{m.icon}</div>
+                : <div className="shrink-0">{m.icon}</div>}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2 text-sm">
                   <span className="text-slate-700 capitalize truncate">{m.label}</span>
