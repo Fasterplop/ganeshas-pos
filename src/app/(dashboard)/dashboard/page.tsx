@@ -523,7 +523,7 @@ export default function DashboardPage() {
       {/* Con / sin Cashea */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-          <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💵</div>
+          <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">🧾</div>
           <div className="min-w-0">
             <p className="text-xs text-slate-500 truncate">Ventas sin Cashea</p>
             <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
