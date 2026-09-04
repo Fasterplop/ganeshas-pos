@@ -59,8 +59,11 @@ interface VariantRowInput {
   sku_barcode: string;
   talla: string;
   color: string;
-  stock: number;
-  price: number;
+  // '' mientras el campo está vacío mientras se edita (si no, Number('') = 0
+  // queda "pegado" y no se puede borrar el último dígito). Se normaliza a
+  // número recién al guardar.
+  stock: number | '';
+  price: number | '';
 }
 
 // Nombre visible de cada categoría. Los valores del enum de la BD van en
@@ -440,6 +443,22 @@ export default function InventoryPage() {
     setPage(1);
   }, [searchTerm, stockFilter, categoryFilter, sortKey, sortDir, viewStoreId]);
 
+  // Si la búsqueda encuentra una variante, expandimos su grupo automáticamente
+  // para que las hermanas (y el padre) se vean sin un clic extra.
+  useEffect(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (term.length < 2) return;
+    const matched = products.filter(p =>
+      p.parent_group_id && (p.name.toLowerCase().includes(term) || p.sku_barcode.toLowerCase().includes(term))
+    );
+    if (matched.length === 0) return;
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      matched.forEach(p => next.add(p.parent_group_id as string));
+      return next;
+    });
+  }, [searchTerm, products]);
+
   // Al cambiar de tienda, el filtro de categoría vuelve a "Todas" (cada tienda
   // tiene su propio surtido de categorías).
   useEffect(() => {
@@ -694,10 +713,10 @@ export default function InventoryPage() {
           sku_barcode: sku,
           name: data.name,
           category: data.category,
-          price: v.price,
+          price: v.price === '' ? 0 : v.price,
           talla: v.talla,
           color: v.color,
-          stock: v.stock,
+          stock: v.stock === '' ? 0 : v.stock,
           ownerStoreId: targetStoreId,
           parentGroupId: newGroup.id,
         });
@@ -929,10 +948,24 @@ const handleExportCSV = async () => {
     .sort((a, b) => categoryLabel(a).localeCompare(categoryLabel(b), 'es'));
 
   // Pipeline de la tabla: búsqueda → categoría → filtro de semáforo → orden → paginación.
+  //
+  // Si la búsqueda encuentra una variante (por su propio SKU o nombre), se
+  // suman también TODAS sus hermanas (aunque su SKU/nombre no coincida) para
+  // que se vea el grupo completo con su padre, no solo la fila encontrada.
+  const searchLower = searchTerm.toLowerCase();
+  const directMatchIds = new Set(
+    products
+      .filter(p =>
+        (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower)) &&
+        (categoryFilter === 'all' || p.category === categoryFilter)
+      )
+      .map(p => p.id)
+  );
+  const matchedGroupIds = new Set(
+    products.filter(p => directMatchIds.has(p.id) && p.parent_group_id).map(p => p.parent_group_id as string)
+  );
   const searched = products.filter(p =>
-    (p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.sku_barcode.toLowerCase().includes(searchTerm.toLowerCase())) &&
-    (categoryFilter === 'all' || p.category === categoryFilter)
+    directMatchIds.has(p.id) || (p.parent_group_id && matchedGroupIds.has(p.parent_group_id))
   );
   const statusFiltered = searched.filter(p => {
     if (stockFilter === 'low') return isLow(p.stock, lowStockMax);
@@ -1781,7 +1814,7 @@ const handleExportCSV = async () => {
                             <input
                               type="number"
                               value={v.stock}
-                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, stock: Number(e.target.value) } : r))}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, stock: e.target.value === '' ? '' : Number(e.target.value) } : r))}
                               className="w-16 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm text-right focus:ring-2 focus:ring-teal-600 outline-none"
                             />
                           </td>
@@ -1790,7 +1823,7 @@ const handleExportCSV = async () => {
                               type="number"
                               step="0.01"
                               value={v.price}
-                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, price: Number(e.target.value) } : r))}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, price: e.target.value === '' ? '' : Number(e.target.value) } : r))}
                               className="w-20 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm text-right focus:ring-2 focus:ring-teal-600 outline-none"
                             />
                           </td>
