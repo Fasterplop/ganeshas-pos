@@ -76,14 +76,28 @@ async function readCandidateGroups() {
   const ws = wb.getWorksheet(SHEET_NAME);
   if (!ws) throw new Error(`No se encontro la hoja "${SHEET_NAME}" en ${XLSX_PATH}`);
 
-  // Columnas (ver header real de la hoja): 1 Grupo, 4 SKU, 5 Nombre, 6 Talla,
-  // 7 Color, 8 Precio, 9 Stock, 10 Activo, 12 ID.
+  // Columnas por NOMBRE de encabezado (no por posición fija): distintos
+  // análisis (el original vs. los de re-chequeo) no siempre tienen las
+  // mismas columnas en el mismo orden, así que se ubican leyendo la fila 1.
+  const headerRow = ws.getRow(1);
+  const colOf = (label) => {
+    let idx = null;
+    headerRow.eachCell((cell, colNumber) => {
+      if (String(cell.value ?? '').trim().toLowerCase() === label.toLowerCase()) idx = colNumber;
+    });
+    if (!idx) throw new Error(`No se encontró la columna "${label}" en la hoja "${SHEET_NAME}"`);
+    return idx;
+  };
+  const groupCol = colOf('Grupo (nombre)');
+  const skuCol = colOf('SKU');
+  const idCol = colOf('ID');
+
   const groups = new Map(); // nombre del grupo -> [{ id, sku }]
   ws.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return; // header
-    const groupName = String(row.getCell(1).value ?? '').trim();
-    const sku = String(row.getCell(4).value ?? '').trim();
-    const id = String(row.getCell(12).value ?? '').trim();
+    const groupName = String(row.getCell(groupCol).value ?? '').trim();
+    const sku = String(row.getCell(skuCol).value ?? '').trim();
+    const id = String(row.getCell(idCol).value ?? '').trim();
     if (!groupName || !id) return;
     if (!groups.has(groupName)) groups.set(groupName, []);
     groups.get(groupName).push({ id, sku });
