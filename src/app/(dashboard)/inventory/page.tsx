@@ -238,6 +238,12 @@ export default function InventoryPage() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkSubmitting, setLinkSubmitting] = useState(false);
 
+  // Modal "Editar producto padre" (renombrar el grupo).
+  const [editingGroup, setEditingGroup] = useState<ProductGroup | null>(null);
+  const [editGroupName, setEditGroupName] = useState('');
+  const [editGroupError, setEditGroupError] = useState<string | null>(null);
+  const [editGroupSubmitting, setEditGroupSubmitting] = useState(false);
+
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
 
@@ -602,6 +608,33 @@ export default function InventoryPage() {
     setLinkSubmitting(false);
     if (linkErr) { setLinkError('Grupo creado, pero no se pudo vincular el producto: ' + linkErr.message); return; }
     closeLinkModal();
+    refreshInventory(viewStoreId);
+  };
+
+  // --- Editar el nombre de un producto padre --------------------------------
+  const openEditGroupModal = (group: ProductGroup) => {
+    setEditingGroup(group);
+    setEditGroupName(group.name);
+    setEditGroupError(null);
+  };
+  const closeEditGroupModal = () => {
+    setEditingGroup(null);
+    setEditGroupError(null);
+    setEditGroupSubmitting(false);
+  };
+  const handleSaveGroupName = async () => {
+    if (!editingGroup) return;
+    const newName = editGroupName.trim();
+    if (!newName) { setEditGroupError('El nombre no puede quedar vacío.'); return; }
+    setEditGroupSubmitting(true);
+    setEditGroupError(null);
+    const { error } = await supabase
+      .from('product_groups')
+      .update({ name: newName })
+      .eq('id', editingGroup.id);
+    setEditGroupSubmitting(false);
+    if (error) { setEditGroupError('No se pudo guardar: ' + error.message); return; }
+    closeEditGroupModal();
     refreshInventory(viewStoreId);
   };
 
@@ -1135,13 +1168,24 @@ const handleExportCSV = async () => {
         </td>
         <td className="p-3 text-center">
           {canDelete && !isRestocker ? (
-            <button
-              onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
-              className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 cursor-pointer"
-              title="Eliminar producto padre (las variantes no se borran)"
-            >
-              🗑️
-            </button>
+            <>
+              {group && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openEditGroupModal(group); }}
+                  className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
+                  title="Editar nombre del producto padre"
+                >
+                  ✏️
+                </button>
+              )}
+              <button
+                onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                title="Eliminar producto padre (las variantes no se borran)"
+              >
+                🗑️
+              </button>
+            </>
           ) : (
             <span className="text-slate-300">—</span>
           )}
@@ -1281,13 +1325,24 @@ const handleExportCSV = async () => {
               <span className="text-sm font-bold text-slate-700">{priceLabel}</span>
             </div>
             {canDelete && !isRestocker && (
-              <button
-                onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
-                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 cursor-pointer"
-                title="Eliminar producto padre"
-              >
-                🗑️
-              </button>
+              <div className="flex items-center">
+                {group && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openEditGroupModal(group); }}
+                    className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-2 cursor-pointer"
+                    title="Editar nombre del producto padre"
+                  >
+                    ✏️
+                  </button>
+                )}
+                <button
+                  onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 cursor-pointer"
+                  title="Eliminar producto padre"
+                >
+                  🗑️
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -1972,6 +2027,44 @@ const handleExportCSV = async () => {
                     Crear y vincular
                   </button>
                 )}
+              </div>
+            </div>
+          )}
+        </Modal>
+
+        {/* MODAL: EDITAR NOMBRE DEL PRODUCTO PADRE */}
+        <Modal isOpen={!!editingGroup} onClose={closeEditGroupModal} title="Editar producto padre">
+          {editingGroup && (
+            <div className="space-y-4">
+              <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200">
+                {categoryLabel(editingGroup.category)} · ${editingGroup.default_price.toFixed(2)}
+              </div>
+              {editGroupError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">{editGroupError}</div>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={editGroupName}
+                  onChange={(e) => setEditGroupName(e.target.value)}
+                  onFocus={(e) => e.target.select()}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveGroupName(); }}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                />
+                <p className="text-xs text-slate-400 mt-1">Solo cambia el nombre del producto padre; el nombre de cada variante (SKU) no se toca.</p>
+              </div>
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button type="button" onClick={closeEditGroupModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+                <button
+                  type="button"
+                  disabled={editGroupSubmitting}
+                  onClick={handleSaveGroupName}
+                  className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50"
+                >
+                  Guardar
+                </button>
               </div>
             </div>
           )}
