@@ -1257,7 +1257,7 @@ const handleExportCSV = async () => {
         </tr>
       );
       children.forEach(child => rows.push(renderDesktopRow(child, { indent: true })));
-      if (group && canDelete && !isRestocker) {
+      if (group && canAdd) {
         rows.push(
           <tr key={`group-${groupId}-add`} className="bg-slate-100 border-b border-slate-200">
             <td colSpan={7} className="px-6 py-2">
@@ -1423,7 +1423,7 @@ const handleExportCSV = async () => {
               ℹ️ Cada variante mantiene su propio SKU ya impreso.
             </p>
             {children.map(child => renderMobileCard(child, { indent: true }))}
-            {group && canDelete && !isRestocker && (
+            {group && canAdd && (
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); openAddVariantModal(group); }}
