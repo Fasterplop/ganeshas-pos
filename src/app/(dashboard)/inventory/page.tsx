@@ -244,6 +244,16 @@ export default function InventoryPage() {
   const [editGroupError, setEditGroupError] = useState<string | null>(null);
   const [editGroupSubmitting, setEditGroupSubmitting] = useState(false);
 
+  // Modal "Agregar variante" a un producto padre YA existente.
+  const [addingVariantGroup, setAddingVariantGroup] = useState<ProductGroup | null>(null);
+  const [addVariantSku, setAddVariantSku] = useState('');
+  const [addVariantTalla, setAddVariantTalla] = useState('');
+  const [addVariantColor, setAddVariantColor] = useState('');
+  const [addVariantStock, setAddVariantStock] = useState<number | ''>(0);
+  const [addVariantPrice, setAddVariantPrice] = useState<number | ''>(0);
+  const [addVariantError, setAddVariantError] = useState<string | null>(null);
+  const [addVariantSubmitting, setAddVariantSubmitting] = useState(false);
+
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
 
@@ -635,6 +645,52 @@ export default function InventoryPage() {
     setEditGroupSubmitting(false);
     if (error) { setEditGroupError('No se pudo guardar: ' + error.message); return; }
     closeEditGroupModal();
+    refreshInventory(viewStoreId);
+  };
+
+  // --- Agregar una variante nueva a un producto padre ya existente ---------
+  const openAddVariantModal = (group: ProductGroup) => {
+    setAddingVariantGroup(group);
+    setAddVariantSku('');
+    setAddVariantTalla('');
+    setAddVariantColor('');
+    setAddVariantStock(0);
+    setAddVariantPrice(group.default_price);
+    setAddVariantError(null);
+  };
+  const closeAddVariantModal = () => {
+    setAddingVariantGroup(null);
+    setAddVariantError(null);
+    setAddVariantSubmitting(false);
+  };
+  const handleAddVariantSubmit = async () => {
+    if (!addingVariantGroup) return;
+    setAddVariantSubmitting(true);
+    setAddVariantError(null);
+
+    const targetStore = stores.find(s => s.id === addingVariantGroup.owner_store_id) ?? currentStore;
+    let sku = addVariantSku.trim();
+    if (!sku && targetStore) {
+      const prefix = storePrefix(targetStore.name);
+      sku = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+
+    const { error } = await createProductRow({
+      sku_barcode: sku,
+      name: addingVariantGroup.name,
+      category: addingVariantGroup.category,
+      price: addVariantPrice === '' ? 0 : addVariantPrice,
+      talla: addVariantTalla,
+      color: addVariantColor,
+      stock: addVariantStock === '' ? 0 : addVariantStock,
+      ownerStoreId: addingVariantGroup.owner_store_id,
+      parentGroupId: addingVariantGroup.id,
+    });
+
+    setAddVariantSubmitting(false);
+    if (error) { setAddVariantError(error); return; }
+    closeAddVariantModal();
+    setExpandedGroups(prev => new Set(prev).add(addingVariantGroup.id));
     refreshInventory(viewStoreId);
   };
 
@@ -1201,6 +1257,21 @@ const handleExportCSV = async () => {
         </tr>
       );
       children.forEach(child => rows.push(renderDesktopRow(child, { indent: true })));
+      if (group && canDelete && !isRestocker) {
+        rows.push(
+          <tr key={`group-${groupId}-add`} className="bg-slate-100 border-b border-slate-200">
+            <td colSpan={7} className="px-6 py-2">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); openAddVariantModal(group); }}
+                className="text-sm font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+              >
+                + Agregar variante a este producto padre
+              </button>
+            </td>
+          </tr>
+        );
+      }
     }
     return rows;
   };
@@ -1352,6 +1423,15 @@ const handleExportCSV = async () => {
               ℹ️ Cada variante mantiene su propio SKU ya impreso.
             </p>
             {children.map(child => renderMobileCard(child, { indent: true }))}
+            {group && canDelete && !isRestocker && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); openAddVariantModal(group); }}
+                className="text-sm font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer px-1"
+              >
+                + Agregar variante a este producto padre
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -2064,6 +2144,87 @@ const handleExportCSV = async () => {
                   className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50"
                 >
                   Guardar
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+
+        {/* MODAL: AGREGAR VARIANTE A UN PRODUCTO PADRE EXISTENTE */}
+        <Modal isOpen={!!addingVariantGroup} onClose={closeAddVariantModal} title="Agregar variante">
+          {addingVariantGroup && (
+            <div className="space-y-4">
+              <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200">
+                {addingVariantGroup.name} &middot; {categoryLabel(addingVariantGroup.category)}
+              </div>
+              {addVariantError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">{addVariantError}</div>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Código de Barras (Escanea o deja vacío)</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={addVariantSku}
+                  onChange={(e) => setAddVariantSku(e.target.value)}
+                  placeholder="Escanea el código aquí..."
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Talla</label>
+                  <input
+                    type="text"
+                    value={addVariantTalla}
+                    onChange={(e) => setAddVariantTalla(e.target.value)}
+                    placeholder="S, M, 10..."
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Color</label>
+                  <input
+                    type="text"
+                    value={addVariantColor}
+                    onChange={(e) => setAddVariantColor(e.target.value)}
+                    placeholder="Negro, Beige..."
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Stock ({effectiveStore?.name ?? currentStore.name})</label>
+                  <input
+                    type="number"
+                    value={addVariantStock}
+                    onChange={(e) => setAddVariantStock(e.target.value === '' ? '' : Number(e.target.value))}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Precio ($)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={addVariantPrice}
+                    onChange={(e) => setAddVariantPrice(e.target.value === '' ? '' : Number(e.target.value))}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button type="button" onClick={closeAddVariantModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+                <button
+                  type="button"
+                  disabled={addVariantSubmitting}
+                  onClick={handleAddVariantSubmit}
+                  className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50"
+                >
+                  Agregar variante
                 </button>
               </div>
             </div>
