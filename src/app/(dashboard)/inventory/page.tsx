@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
-import { SlidersHorizontal, ChevronRight, ChevronDown } from 'lucide-react';
+import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 
@@ -1104,6 +1104,13 @@ const handleExportCSV = async () => {
   const currentPage = Math.min(page, totalPages);
   const paginatedRows = displayRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
+  // IDs de todos los productos padre visibles (con el filtro/búsqueda actual,
+  // en todas las páginas) para el botón "expandir todos" del encabezado.
+  const allGroupIds = displayRows.filter((r): r is Extract<DisplayRow, { type: 'group' }> => r.type === 'group').map(r => r.groupId);
+  const allGroupsExpanded = allGroupIds.length > 0 && allGroupIds.every(id => expandedGroups.has(id));
+  const toggleAllGroupsExpanded = () =>
+    setExpandedGroups(allGroupsExpanded ? new Set() : new Set(allGroupIds));
+
   // --- Render de una fila de PRODUCTO (standalone o variante hija) --------
   const renderDesktopRow = (product: Product, opts?: { indent?: boolean }) => {
     const tier = stockTier(product.stock, lowStockMax);
@@ -1673,7 +1680,21 @@ const handleExportCSV = async () => {
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-slate-700 text-white text-sm">
-                    <th className="p-3 rounded-tl-lg">Código</th>
+                    <th className="p-3 rounded-tl-lg">
+                      <div className="flex items-center gap-1.5">
+                        <span>Código</span>
+                        {allGroupIds.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={toggleAllGroupsExpanded}
+                            className="text-slate-300 hover:text-white transition cursor-pointer"
+                            title={allGroupsExpanded ? 'Colapsar todos los productos padre' : 'Expandir todos los productos padre'}
+                          >
+                            {allGroupsExpanded ? <ChevronsUp className="w-4 h-4" /> : <ChevronsDown className="w-4 h-4" />}
+                          </button>
+                        )}
+                      </div>
+                    </th>
                     <th className="p-3">Nombre</th>
                     <th className="p-3 cursor-pointer select-none hover:bg-slate-600 transition" onClick={() => toggleSort('variant')}>
                       <span className="inline-flex items-center gap-1">Talla/Color {sortIcon('variant')}</span>
