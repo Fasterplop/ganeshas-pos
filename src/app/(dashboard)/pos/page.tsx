@@ -8,6 +8,19 @@ import { formatVariant } from '@/lib/productVariant';
 import CasheaLogo from '@/components/CasheaLogo';
 
 
+// Una variante hermana dentro del mismo producto padre (para el "cambiar"
+// del carrito): id/precio/talla/color propios, con su stock local embebido.
+interface SiblingVariant {
+  id: string;
+  name: string;
+  price: number;
+  talla: string | null;
+  color: string | null;
+  sku_barcode: string;
+  parent_group_id: string | null;
+  store_stock?: { stock: number }[];
+}
+
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
 type DiscountType = 'none' | 'percent' | 'fixed';
 
@@ -281,7 +294,7 @@ export default function POSPage() {
         .maybeSingle();
 
       if (data) {
-        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null });
+        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
         setProductSearch('');
         setSearchResults([]);
       } else {
@@ -296,10 +309,53 @@ export default function POSPage() {
   };
 
   const handleAddFromSearch = (product: any) => {
-    addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null });
+    addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null, parent_group_id: product.parent_group_id ?? null });
     setProductSearch('');
     setSearchResults([]);
     searchInputRef.current?.focus();
+  };
+
+  // --- Variantes hermanas (cambiar talla/color en el carrito) -------------
+  // Fetch perezoso: solo cuando el cajero abre "cambiar", cacheado por grupo.
+  const [openVariantSwitcherFor, setOpenVariantSwitcherFor] = useState<string | null>(null);
+  const [siblingsByGroup, setSiblingsByGroup] = useState<Record<string, SiblingVariant[]>>({});
+  const [loadingSiblings, setLoadingSiblings] = useState(false);
+
+  const toggleVariantSwitcher = async (cartItem: import('@/store/usePOSStore').CartItem) => {
+    const groupId = cartItem.parent_group_id;
+    if (!groupId) return;
+    if (openVariantSwitcherFor === cartItem.id) {
+      setOpenVariantSwitcherFor(null);
+      return;
+    }
+    setOpenVariantSwitcherFor(cartItem.id);
+    if (!siblingsByGroup[groupId]) {
+      setLoadingSiblings(true);
+      const { data } = await supabase
+        .from('products')
+        .select('id, name, price, talla, color, sku_barcode, parent_group_id, store_stock(stock)')
+        .eq('parent_group_id', groupId)
+        .eq('is_active', true)
+        .order('talla')
+        .order('color');
+      setSiblingsByGroup(prev => ({ ...prev, [groupId]: data ?? [] }));
+      setLoadingSiblings(false);
+    }
+  };
+
+  const handleSwapVariant = (cartItem: import('@/store/usePOSStore').CartItem, sibling: SiblingVariant) => {
+    if (sibling.id === cartItem.id) { setOpenVariantSwitcherFor(null); return; }
+    removeFromCart(cartItem.id);
+    addToCart({
+      id: sibling.id,
+      name: sibling.name,
+      price: sibling.price,
+      quantity: cartItem.quantity,
+      talla: sibling.talla ?? null,
+      color: sibling.color ?? null,
+      parent_group_id: sibling.parent_group_id ?? null,
+    });
+    setOpenVariantSwitcherFor(null);
   };
 
   const handleAddQuickProduct = () => {
@@ -742,6 +798,9 @@ export default function POSPage() {
                           <p className="text-sm text-slate-500">{formatVariant(p.talla, p.color)}</p>
                         )}
                         <p className="text-sm text-slate-500">SKU: {p.sku_barcode}</p>
+                        {p.parent_group_id && (
+                          <p className="text-xs font-semibold text-purple-600">👕 tiene variantes</p>
+                        )}
                       </div>
                       <p className="text-lg font-bold text-teal-700">${p.price.toFixed(2)}</p>
                     </li>
@@ -807,10 +866,44 @@ export default function POSPage() {
                 ) : (
                   cart.map(item => (
                     <tr key={item.id} className="hover:bg-slate-50 transition">
-                      <td className="p-3 pl-4">
+                      <td className="p-3 pl-4 relative">
                         <p className="text-lg font-semibold text-slate-800">{item.name}</p>
                         {formatVariant(item.talla, item.color) && (
                           <p className="text-sm text-slate-500">{formatVariant(item.talla, item.color)}</p>
+                        )}
+                        {item.parent_group_id && (
+                          <button
+                            type="button"
+                            onClick={() => toggleVariantSwitcher(item)}
+                            className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5 hover:bg-purple-100 transition cursor-pointer"
+                          >
+                            👕 variantes <span className="text-[10px]">▾</span>
+                          </button>
+                        )}
+                        {item.parent_group_id && openVariantSwitcherFor === item.id && (
+                          <div className="absolute z-20 left-3 top-full mt-1 w-72 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden">
+                            {loadingSiblings && !siblingsByGroup[item.parent_group_id] ? (
+                              <p className="p-3 text-sm text-slate-400">Cargando variantes...</p>
+                            ) : (
+                              (siblingsByGroup[item.parent_group_id] ?? []).map(s => {
+                                const stock = s.store_stock?.[0]?.stock ?? 0;
+                                return (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => handleSwapVariant(item, s)}
+                                    className={`w-full text-left p-2.5 border-b border-slate-100 last:border-0 hover:bg-teal-50 transition cursor-pointer flex items-center justify-between gap-2 ${s.id === item.id ? 'bg-teal-50/60' : ''}`}
+                                  >
+                                    <span>
+                                      <span className={`text-sm font-medium ${s.id === item.id ? 'text-teal-700' : 'text-slate-800'}`}>{formatVariant(s.talla, s.color) || 'N/A'}</span>
+                                      <span className="block text-[11px] text-slate-400">Stock {stock}</span>
+                                    </span>
+                                    <span className="text-sm font-bold text-slate-600">${Number(s.price).toFixed(2)}</span>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="p-3">

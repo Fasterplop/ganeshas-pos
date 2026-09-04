@@ -14,6 +14,7 @@ export interface CartItem {
   quantity: number;
   talla?: string | null;
   color?: string | null;
+  parent_group_id?: string | null;
 }
 
 interface POSState {

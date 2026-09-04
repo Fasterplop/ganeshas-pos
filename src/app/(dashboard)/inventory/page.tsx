@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
-import { SlidersHorizontal } from 'lucide-react';
+import { SlidersHorizontal, ChevronRight, ChevronDown } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 
@@ -39,6 +39,28 @@ interface Product {
   color: string | null;
   created_at: string | null;       // alta del producto (null = anterior a la migración)
   label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
+  parent_group_id: string | null;  // NULL = producto sin variantes (igual que hoy)
+}
+
+// "Producto padre": agrupa variantes (talla/color) de productos ya existentes.
+// No es vendible ni escaneable; solo agrupa filas reales de `products`.
+interface ProductGroup {
+  id: string;
+  name: string;
+  category: string;
+  default_price: number;
+  owner_store_id: string;
+  is_active: boolean;
+}
+
+// Una fila de la tabla de variantes embebida en el modal de alta.
+interface VariantRowInput {
+  key: string; // key local estable para React, no va a la BD
+  sku_barcode: string;
+  talla: string;
+  color: string;
+  stock: number;
+  price: number;
 }
 
 // Nombre visible de cada categoría. Los valores del enum de la BD van en
@@ -187,6 +209,32 @@ export default function InventoryPage() {
 
   const [formError, setFormError] = useState<string | null>(null);
 
+  // --- Variantes de producto (grupos) ---
+  const [groups, setGroups] = useState<ProductGroup[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroupExpanded = (groupId: string) =>
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
+      return next;
+    });
+
+  // Alta con variantes: toggle + filas de la tabla embebida del modal.
+  const [hasVariants, setHasVariants] = useState(false);
+  const [variantRows, setVariantRows] = useState<VariantRowInput[]>([]);
+  const newVariantRow = (price: number): VariantRowInput => ({
+    key: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    sku_barcode: '', talla: '', color: '', stock: 0, price,
+  });
+
+  // Modal "Vincular a producto padre" (para productos sueltos existentes).
+  const [linkingProduct, setLinkingProduct] = useState<Product | null>(null);
+  const [linkMode, setLinkMode] = useState<'existing' | 'new'>('new');
+  const [linkGroupSearch, setLinkGroupSearch] = useState('');
+  const [linkNewGroupName, setLinkNewGroupName] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkSubmitting, setLinkSubmitting] = useState(false);
+
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
 
@@ -298,11 +346,15 @@ export default function InventoryPage() {
         .order('id') // desempate estable para que la paginación no duplique/salte filas
         .range(from, from + PAGE - 1);
 
-    // created_at/label_printed_at alimentan el badge "Nuevo". Si esas columnas
-    // aún no existen (migración sin aplicar), degradamos a la consulta base
-    // para no dejar el inventario vacío.
+    // created_at/label_printed_at/parent_group_id alimentan el badge "Nuevo" y
+    // las variantes agrupadas. Si esas columnas aún no existen (migración sin
+    // aplicar), degradamos escalón por escalón para no dejar el inventario vacío.
     let globalProducts: Record<string, unknown>[] | null = null;
-    for (const cols of [`${BASE_COLS}, created_at, label_printed_at`, BASE_COLS]) {
+    for (const cols of [
+      `${BASE_COLS}, created_at, label_printed_at, parent_group_id`,
+      `${BASE_COLS}, created_at, label_printed_at`,
+      BASE_COLS,
+    ]) {
       const rows: Record<string, unknown>[] = [];
       let failed = false;
       for (let from = 0; ; from += PAGE) {
@@ -328,6 +380,7 @@ export default function InventoryPage() {
           color: row.color ?? null,
           created_at: row.created_at ?? null,
           label_printed_at: row.label_printed_at ?? null,
+          parent_group_id: row.parent_group_id ?? null,
           stock: row.store_stock?.[0]?.stock ?? 0,
         };
       });
@@ -337,6 +390,32 @@ export default function InventoryPage() {
     }
 
     setLoading(false);
+  }
+
+  // Grupos de variantes ("producto padre") de la tienda que se está viendo.
+  // Pocos registros hoy, pero se pagina igual que products/customers (regla
+  // del proyecto: toda consulta masiva pagina, Supabase corta en 1000 filas).
+  async function fetchGroups(storeId: string) {
+    const PAGE = 1000;
+    const rows: ProductGroup[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('product_groups')
+        .select('id, name, category, default_price, owner_store_id, is_active')
+        .eq('owner_store_id', storeId)
+        .eq('is_active', true)
+        .order('name')
+        .order('id')
+        .range(from, from + PAGE - 1);
+      if (error) { setGroups([]); return; } // migración sin aplicar: sin grupos, sin romper la vista
+      rows.push(...((data as ProductGroup[]) ?? []));
+      if (!data || data.length < PAGE) break;
+    }
+    setGroups(rows);
+  }
+
+  async function refreshInventory(storeId: string) {
+    await Promise.all([fetchProducts(storeId), fetchGroups(storeId)]);
   }
 
   // Al cambiar la tienda de operación: reseteamos la vista a esa tienda y recargamos catálogos.
@@ -353,7 +432,7 @@ export default function InventoryPage() {
 
   // Cargar el inventario de la tienda que se está viendo.
   useEffect(() => {
-    if (viewStoreId) fetchProducts(viewStoreId);
+    if (viewStoreId) refreshInventory(viewStoreId);
   }, [viewStoreId]);
 
   // Cualquier cambio de búsqueda/filtro/orden/tienda vuelve a la primera página.
@@ -381,6 +460,8 @@ export default function InventoryPage() {
   const handleOpenAddModal = () => {
     setEditingProduct(null);
     setFormError(null);
+    setHasVariants(false);
+    setVariantRows([]);
 
     reset({
       sku_barcode: '',
@@ -393,6 +474,116 @@ export default function InventoryPage() {
       color: '',
     });
     setIsModalOpen(true);
+  };
+
+  // Crea UNA fila de producto (standalone o variante hija de un grupo) + su
+  // stock inicial en la tienda dueña. La usan tanto el alta simple como el
+  // alta "con variantes" (una llamada por fila de la tabla embebida).
+  async function createProductRow(row: {
+    sku_barcode: string; name: string; category: string; price: number;
+    talla: string; color: string; stock: number; ownerStoreId: string; parentGroupId?: string | null;
+  }): Promise<{ error: string | null }> {
+    const { data: newProduct, error: productError } = await supabase
+      .from('products')
+      .insert([{
+        sku_barcode: row.sku_barcode,
+        name: row.name,
+        category: row.category,
+        price: row.price,
+        is_active: true,
+        owner_store_id: row.ownerStoreId,
+        talla: row.talla.trim() ? row.talla.trim() : null,
+        color: row.color.trim() ? row.color.trim() : null,
+        parent_group_id: row.parentGroupId ?? null,
+      }])
+      .select('id')
+      .single();
+
+    if (productError || !newProduct) {
+      if (productError?.code === '23505') return { error: `⚠️ Ya existe un producto con el código "${row.sku_barcode}".` };
+      return { error: 'Error al crear producto: ' + productError?.message };
+    }
+
+    if (row.stock > 0) {
+      if (isRestocker) {
+        const { error } = await supabase.rpc('restock_stock', {
+          p_product_id: newProduct.id,
+          p_store_id: row.ownerStoreId,
+          p_new_stock: row.stock,
+        });
+        if (error) return { error: `Producto "${row.sku_barcode}" creado, pero no se pudo cargar el stock inicial: ${error.message}` };
+      } else {
+        const { error: stockError } = await supabase
+          .from('store_stock')
+          .upsert({ product_id: newProduct.id, store_id: row.ownerStoreId, stock: row.stock }, { onConflict: 'product_id, store_id' });
+        if (stockError) return { error: `Producto "${row.sku_barcode}" creado, pero no se pudo cargar el stock inicial: ${stockError.message}` };
+      }
+    }
+    return { error: null };
+  }
+
+  // --- Vincular un producto suelto existente a un producto padre ---------
+  const openLinkModal = (product: Product) => {
+    setLinkingProduct(product);
+    setLinkMode('new');
+    setLinkGroupSearch('');
+    setLinkNewGroupName(product.name);
+    setLinkError(null);
+  };
+  const closeLinkModal = () => {
+    setLinkingProduct(null);
+    setLinkError(null);
+    setLinkSubmitting(false);
+  };
+  const matchingGroups = linkGroupSearch.trim()
+    ? groups.filter(g => g.name.toLowerCase().includes(linkGroupSearch.trim().toLowerCase()))
+    : groups;
+
+  const handleLinkExisting = async (groupId: string, groupName: string) => {
+    if (!linkingProduct) return;
+    if (!window.confirm(`¿Vincular "${linkingProduct.name}" (${linkingProduct.sku_barcode}) a "${groupName}"?`)) return;
+    setLinkSubmitting(true);
+    setLinkError(null);
+    const { error } = await supabase
+      .from('products')
+      .update({ parent_group_id: groupId })
+      .eq('id', linkingProduct.id);
+    setLinkSubmitting(false);
+    if (error) { setLinkError('No se pudo vincular: ' + error.message); return; }
+    closeLinkModal();
+    refreshInventory(viewStoreId);
+  };
+
+  const handleLinkCreateNew = async () => {
+    if (!linkingProduct) return;
+    if (!linkNewGroupName.trim()) { setLinkError('Ponle un nombre al producto padre.'); return; }
+    if (!window.confirm(`¿Crear el producto padre "${linkNewGroupName.trim()}" y vincular "${linkingProduct.name}" (${linkingProduct.sku_barcode})?`)) return;
+    setLinkSubmitting(true);
+    setLinkError(null);
+    const { data: newGroup, error: groupError } = await supabase
+      .from('product_groups')
+      .insert([{
+        name: linkNewGroupName.trim(),
+        category: linkingProduct.category,
+        default_price: linkingProduct.price,
+        owner_store_id: linkingProduct.owner_store_id ?? viewStoreId,
+        is_active: true,
+      }])
+      .select('id')
+      .single();
+    if (groupError || !newGroup) {
+      setLinkSubmitting(false);
+      setLinkError('No se pudo crear el producto padre: ' + groupError?.message);
+      return;
+    }
+    const { error: linkErr } = await supabase
+      .from('products')
+      .update({ parent_group_id: newGroup.id })
+      .eq('id', linkingProduct.id);
+    setLinkSubmitting(false);
+    if (linkErr) { setLinkError('Grupo creado, pero no se pudo vincular el producto: ' + linkErr.message); return; }
+    closeLinkModal();
+    refreshInventory(viewStoreId);
   };
 
   const onSubmitProduct = async (data: ProductFormValues) => {
@@ -418,7 +609,7 @@ export default function InventoryPage() {
         return;
       }
       closeModal();
-      fetchProducts(viewStoreId);
+      refreshInventory(viewStoreId);
       return;
     }
 
@@ -468,58 +659,70 @@ export default function InventoryPage() {
         return;
       }
 
-    } else {
-      // MODO CREACIÓN: Insertar Producto Globalmente, atado a su tienda dueña.
-      const { data: newProduct, error: productError } = await supabase
-        .from('products')
+    } else if (hasVariants) {
+      // MODO CREACIÓN CON VARIANTES: 1) crear el producto padre (grupo),
+      // 2) crear una fila de producto por variante, vinculada al grupo.
+      if (variantRows.length < 2) {
+        setFormError('Agrega al menos 2 variantes, o desmarca "¿Este producto tiene variantes?".');
+        return;
+      }
+      const { data: newGroup, error: groupError } = await supabase
+        .from('product_groups')
         .insert([{
-          sku_barcode: finalSku,
           name: data.name,
           category: data.category,
-          price: data.price,
-          is_active: true,
+          default_price: data.price,
           owner_store_id: targetStoreId,
-          talla: data.talla?.trim() ? data.talla.trim() : null,
-          color: data.color?.trim() ? data.color.trim() : null
+          is_active: true,
         }])
         .select('id')
         .single();
 
-      if (productError || !newProduct) {
-        if (productError?.code === '23505') setFormError('⚠️ Ya existe un producto con este código.');
-        else setFormError('Error al crear producto: ' + productError?.message);
+      if (groupError || !newGroup) {
+        setFormError('Error al crear el producto padre: ' + groupError?.message);
         return;
       }
 
-      // Stock inicial en la tienda dueña. Upsert: crea la fila de store_stock si
-      // el trigger de la BD no existe (un UPDATE a una fila inexistente no da
-      // error y dejaría el producto en 0 / "Agotados"). El cajero reponedor
-      // carga vía el RPC (que valida su alcance: global o local).
-      if (data.stock > 0) {
-        if (isRestocker) {
-          const { error } = await supabase.rpc('restock_stock', {
-            p_product_id: newProduct.id,
-            p_store_id: targetStoreId,
-            p_new_stock: data.stock,
-          });
-          if (error) alert('Producto creado, pero no se pudo cargar el stock inicial: ' + error.message);
-        } else {
-          const { error: stockError } = await supabase
-            .from('store_stock')
-            .upsert({
-              product_id: newProduct.id,
-              store_id: targetStoreId,
-              stock: data.stock
-            }, { onConflict: 'product_id, store_id' });
-          if (stockError) {
-            alert('Producto creado, pero no se pudo cargar el stock inicial: ' + stockError.message);
-          }
+      const rowErrors: string[] = [];
+      for (const v of variantRows) {
+        let sku = v.sku_barcode.trim();
+        if (!sku) {
+          const prefix = storePrefix(targetStore.name);
+          sku = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
         }
+        const { error } = await createProductRow({
+          sku_barcode: sku,
+          name: data.name,
+          category: data.category,
+          price: v.price,
+          talla: v.talla,
+          color: v.color,
+          stock: v.stock,
+          ownerStoreId: targetStoreId,
+          parentGroupId: newGroup.id,
+        });
+        if (error) rowErrors.push(error);
       }
+      if (rowErrors.length > 0) {
+        alert('Producto padre creado. Algunas variantes tuvieron problemas:\n' + rowErrors.join('\n'));
+      }
+    } else {
+      // MODO CREACIÓN: Insertar Producto Globalmente, atado a su tienda dueña.
+      const { error } = await createProductRow({
+        sku_barcode: finalSku,
+        name: data.name,
+        category: data.category,
+        price: data.price,
+        talla: data.talla ?? '',
+        color: data.color ?? '',
+        stock: data.stock,
+        ownerStoreId: targetStoreId,
+      });
+      if (error) { setFormError(error); return; }
     }
 
     closeModal();
-    fetchProducts(viewStoreId);
+    refreshInventory(viewStoreId);
   };
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
@@ -535,8 +738,39 @@ export default function InventoryPage() {
         return;
       }
       if (selectedProduct?.id === id) setSelectedProduct(null);
-      fetchProducts(viewStoreId);
+      refreshInventory(viewStoreId);
     }
+  };
+
+  // Quita una variante de su grupo (vuelve a ser un producto suelto). No
+  // borra ni desactiva nada, solo limpia el vínculo.
+  const handleUnlinkVariant = async (e: React.MouseEvent, product: Product) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Desvincular "${product.name}" (${product.sku_barcode}) de su producto padre?`)) return;
+    const { error } = await supabase
+      .from('products')
+      .update({ parent_group_id: null })
+      .eq('id', product.id);
+    if (error) { alert('No se pudo desvincular: ' + error.message); return; }
+    refreshInventory(viewStoreId);
+  };
+
+  // Elimina un grupo: los hijos vuelven a ser productos sueltos (no se
+  // borra ni desactiva ninguno), y el grupo queda inactivo.
+  const handleDeleteGroup = async (e: React.MouseEvent, groupId: string, childIds: string[]) => {
+    e.stopPropagation();
+    if (!window.confirm('¿Eliminar este producto padre? Sus variantes NO se borran, solo dejan de estar agrupadas.')) return;
+    const { error: unlinkError } = await supabase
+      .from('products')
+      .update({ parent_group_id: null })
+      .in('id', childIds);
+    if (unlinkError) { alert('No se pudo desagrupar las variantes: ' + unlinkError.message); return; }
+    const { error: groupError } = await supabase
+      .from('product_groups')
+      .update({ is_active: false })
+      .eq('id', groupId);
+    if (groupError) { alert('Variantes desagrupadas, pero no se pudo desactivar el grupo: ' + groupError.message); }
+    refreshInventory(viewStoreId);
   };
 
   const handleEdit = (e: React.MouseEvent, product: Product) => {
@@ -560,6 +794,8 @@ export default function InventoryPage() {
     setIsModalOpen(false);
     setEditingProduct(null);
     setFormError(null);
+    setHasVariants(false);
+    setVariantRows([]);
     reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0, owner_store_id: currentStore?.id ?? '', talla: '', color: '' });
   };
 
@@ -573,9 +809,12 @@ const handleExportCSV = async () => {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
 
+  const groupsById = new Map(groups.map(g => [g.id, g] as const));
+
   ws.columns = [
     { header: 'SKU',                          key: 'sku',      width: 18 },
     { header: 'Nombre',                       key: 'nombre',   width: 36 },
+    { header: 'Producto padre',               key: 'padre',    width: 28 },
     { header: 'Talla/Color',                  key: 'variante', width: 18 },
     { header: 'Categoría',                    key: 'categoria', width: 16 },
     { header: 'Precio',                       key: 'precio',   width: 14, style: { numFmt: '"$"#,##0.00' } },
@@ -605,6 +844,7 @@ const handleExportCSV = async () => {
     const row = ws.addRow({
       sku: p.sku_barcode,
       nombre: p.name,
+      padre: p.parent_group_id ? (groupsById.get(p.parent_group_id)?.name ?? '') : '',
       variante: variantLabel(p.talla, p.color),
       categoria: categoryLabel(p.category),
       precio,           // número real → Excel formatea
@@ -632,7 +872,7 @@ const handleExportCSV = async () => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
   });
 
-  ws.autoFilter = { from: 'A1', to: 'G1' };
+  ws.autoFilter = { from: 'A1', to: 'H1' };
 
   // --- Descarga ---
   const buffer = await workbook.xlsx.writeBuffer();
@@ -714,9 +954,321 @@ const handleExportCSV = async () => {
       })
     : statusFiltered;
 
-  const totalPages = Math.max(1, Math.ceil(sortedProducts.length / PAGE_SIZE));
+  // Agrupa las variantes de un mismo producto padre en UNA sola fila de
+  // pantalla ("N variantes"), en la posición del primer hijo encontrado en
+  // el orden ya calculado arriba. Los filtros (búsqueda/categoría/semáforo)
+  // siguen operando por variante: si solo algunas hermanas pasan el filtro,
+  // la fila del grupo solo trae esas. Agrupar es puramente presentación.
+  const groupsById = new Map(groups.map(g => [g.id, g] as const));
+  type DisplayRow =
+    | { type: 'standalone'; product: Product }
+    | { type: 'group'; groupId: string; group: ProductGroup | null; children: Product[] };
+  const displayRows: DisplayRow[] = [];
+  {
+    const seenGroupIds = new Set<string>();
+    for (const p of sortedProducts) {
+      if (p.parent_group_id) {
+        if (seenGroupIds.has(p.parent_group_id)) continue;
+        seenGroupIds.add(p.parent_group_id);
+        const children = sortedProducts.filter(x => x.parent_group_id === p.parent_group_id);
+        displayRows.push({ type: 'group', groupId: p.parent_group_id, group: groupsById.get(p.parent_group_id) ?? null, children });
+      } else {
+        displayRows.push({ type: 'standalone', product: p });
+      }
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(displayRows.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const paginatedProducts = sortedProducts.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const paginatedRows = displayRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  // --- Render de una fila de PRODUCTO (standalone o variante hija) --------
+  const renderDesktopRow = (product: Product, opts?: { indent?: boolean }) => {
+    const tier = stockTier(product.stock, lowStockMax);
+    return (
+      <tr
+        key={product.id}
+        onClick={() => setSelectedProduct(product)}
+        className={`border-b transition cursor-pointer ${opts?.indent ? 'border-slate-200 bg-slate-100' : 'border-slate-100'} ${selectedProduct?.id === product.id ? 'bg-teal-50' : opts?.indent ? 'hover:bg-slate-200/70' : 'hover:bg-slate-50'}`}
+      >
+        <td className={`p-3 text-slate-500 font-mono text-sm ${opts?.indent ? 'pl-8' : ''}`}>{product.sku_barcode}</td>
+        <td className="p-3 font-medium text-slate-800">
+          {/* La variante no repite el nombre del padre (ya se ve en la fila del grupo): solo el badge "Nuevo" si aplica. */}
+          {!opts?.indent && (
+            <span className="inline-flex items-center gap-2">
+              {product.name}
+              {isNewProduct(product) && (
+                <span
+                  title={product.created_at ? `Agregado: ${new Date(product.created_at).toLocaleString('es-VE')}` : undefined}
+                  className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full"
+                >
+                  Nuevo
+                </span>
+              )}
+            </span>
+          )}
+        </td>
+        <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
+        <td className="p-3">
+          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(product.category)}</span>
+        </td>
+        <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
+        <td className="p-3">
+          <div className="flex justify-end">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {product.stock}
+            </span>
+          </div>
+        </td>
+        <td className="p-3 text-center">
+          {canEditRow ? (
+            <>
+              <button
+                onClick={(e) => handleEdit(e, product)}
+                className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
+                title={isRestocker ? 'Reponer stock' : 'Editar'}
+              >
+                {isRestocker ? '📦' : '✏️'}
+              </button>
+              {canDelete && (
+                <button
+                  onClick={(e) => handleDelete(e, product.id)}
+                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                  title="Desactivar Globalmente"
+                >
+                  🗑️
+                </button>
+              )}
+              {canDelete && !isRestocker && !product.parent_group_id && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openLinkModal(product); }}
+                  className="text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                  title="Vincular a producto padre"
+                >
+                  🔗
+                </button>
+              )}
+              {canDelete && !isRestocker && product.parent_group_id && (
+                <button
+                  onClick={(e) => handleUnlinkVariant(e, product)}
+                  className="text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition p-1.5 ml-2 cursor-pointer"
+                  title="Desvincular del grupo"
+                >
+                  ⛓️‍💥
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="text-slate-300">—</span>
+          )}
+        </td>
+      </tr>
+    );
+  };
+
+  // Fila de GRUPO (colapsada) + banner + filas hijas cuando está expandida.
+  const renderDesktopGroup = (row: Extract<DisplayRow, { type: 'group' }>) => {
+    const { groupId, group, children } = row;
+    const isExpanded = expandedGroups.has(groupId);
+    const totalStock = children.reduce((s, c) => s + c.stock, 0);
+    const prices = [...new Set(children.map(c => c.price))];
+    const priceLabel = prices.length === 1 ? `$${prices[0].toFixed(2)}` : `desde $${Math.min(...prices).toFixed(2)}`;
+    const tier = stockTier(totalStock, lowStockMax);
+    const rows: React.ReactElement[] = [
+      <tr
+        key={`group-${groupId}`}
+        onClick={() => toggleGroupExpanded(groupId)}
+        className={`border-b transition cursor-pointer ${isExpanded ? 'border-slate-200 bg-slate-100 hover:bg-slate-200/70' : 'border-slate-100 bg-slate-50/70 hover:bg-slate-100'}`}
+      >
+        <td className="p-3 text-slate-500">
+          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </td>
+        <td className="p-3 font-semibold text-slate-800">{group?.name ?? children[0]?.name}</td>
+        <td className="p-3">
+          <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs font-semibold">
+            {children.length} {children.length === 1 ? 'variante' : 'variantes'}
+          </span>
+        </td>
+        <td className="p-3">
+          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(group?.category ?? children[0]?.category ?? '')}</span>
+        </td>
+        <td className="p-3 text-right font-medium text-slate-600">{priceLabel}</td>
+        <td className="p-3">
+          <div className="flex justify-end">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {totalStock}
+            </span>
+          </div>
+        </td>
+        <td className="p-3 text-center">
+          {canDelete && !isRestocker ? (
+            <button
+              onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+              className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 cursor-pointer"
+              title="Eliminar producto padre (las variantes no se borran)"
+            >
+              🗑️
+            </button>
+          ) : (
+            <span className="text-slate-300">—</span>
+          )}
+        </td>
+      </tr>,
+    ];
+    if (isExpanded) {
+      rows.push(
+        <tr key={`group-${groupId}-info`} className="bg-slate-100">
+          <td colSpan={7} className="px-6 py-2 text-xs text-slate-600 border-b border-slate-200">
+            ℹ️ Se conservan los códigos ya impresos: cada variante mantiene su propio SKU de siempre.
+          </td>
+        </tr>
+      );
+      children.forEach(child => rows.push(renderDesktopRow(child, { indent: true })));
+    }
+    return rows;
+  };
+
+  const renderMobileCard = (product: Product, opts?: { indent?: boolean }) => {
+    const tier = stockTier(product.stock, lowStockMax);
+    const variant = variantLabel(product.talla, product.color);
+    const selected = selectedProduct?.id === product.id;
+    return (
+      <div
+        key={product.id}
+        onClick={() => setSelectedProduct(product)}
+        className={`border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${selected ? 'border-teal-400 ring-2 ring-teal-100 bg-teal-50' : opts?.indent ? 'border-slate-200 bg-slate-100' : 'border-slate-200 bg-white'} ${opts?.indent ? 'ml-3' : ''}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            {/* La variante no repite el nombre del padre (ya se ve en la tarjeta del grupo): solo el badge "Nuevo" si aplica. */}
+            {!opts?.indent && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-slate-800 text-sm leading-snug">{product.name}</h3>
+                {isNewProduct(product) && (
+                  <span className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
+                    Nuevo
+                  </span>
+                )}
+              </div>
+            )}
+            <p className="text-[11px] font-mono text-slate-500 mt-0.5">{product.sku_barcode}</p>
+          </div>
+          <div className="shrink-0 text-center">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {product.stock}
+            </span>
+            <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(product.category)}</span>
+            {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
+            <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
+          </div>
+          <div className="shrink-0 flex items-center">
+            {canEditRow ? (
+              <>
+                <button
+                  onClick={(e) => handleEdit(e, product)}
+                  className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-2 cursor-pointer"
+                  title={isRestocker ? 'Reponer stock' : 'Editar'}
+                >
+                  {isRestocker ? '📦' : '✏️'}
+                </button>
+                {canDelete && (
+                  <button
+                    onClick={(e) => handleDelete(e, product.id)}
+                    className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 ml-1 cursor-pointer"
+                    title="Desactivar Globalmente"
+                  >
+                    🗑️
+                  </button>
+                )}
+                {canDelete && !isRestocker && !product.parent_group_id && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openLinkModal(product); }}
+                    className="text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded transition p-2 ml-1 cursor-pointer"
+                    title="Vincular a producto padre"
+                  >
+                    🔗
+                  </button>
+                )}
+                {canDelete && !isRestocker && product.parent_group_id && (
+                  <button
+                    onClick={(e) => handleUnlinkVariant(e, product)}
+                    className="text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition p-2 ml-1 cursor-pointer"
+                    title="Desvincular del grupo"
+                  >
+                    ⛓️‍💥
+                  </button>
+                )}
+              </>
+            ) : (
+              <span className="text-slate-300 text-sm">—</span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderMobileGroup = (row: Extract<DisplayRow, { type: 'group' }>) => {
+    const { groupId, group, children } = row;
+    const isExpanded = expandedGroups.has(groupId);
+    const totalStock = children.reduce((s, c) => s + c.stock, 0);
+    const prices = [...new Set(children.map(c => c.price))];
+    const priceLabel = prices.length === 1 ? `$${prices[0].toFixed(2)}` : `desde $${Math.min(...prices).toFixed(2)}`;
+    const tier = stockTier(totalStock, lowStockMax);
+    return (
+      <div key={`group-${groupId}`} className="space-y-2">
+        <div
+          onClick={() => toggleGroupExpanded(groupId)}
+          className={`border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${isExpanded ? 'bg-slate-100 border-slate-300' : 'bg-white border-slate-200'}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="font-bold text-slate-800 text-sm leading-snug flex items-center gap-1">
+                {isExpanded ? <ChevronDown className="w-4 h-4 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
+                {group?.name ?? children[0]?.name}
+              </h3>
+            </div>
+            <div className="shrink-0 text-center">
+              <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+                {totalStock}
+              </span>
+              <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(group?.category ?? children[0]?.category ?? '')}</span>
+              <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-semibold">{children.length} {children.length === 1 ? 'variante' : 'variantes'}</span>
+              <span className="text-sm font-bold text-slate-700">{priceLabel}</span>
+            </div>
+            {canDelete && !isRestocker && (
+              <button
+                onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 cursor-pointer"
+                title="Eliminar producto padre"
+              >
+                🗑️
+              </button>
+            )}
+          </div>
+        </div>
+        {isExpanded && (
+          <div className="pl-2 space-y-2">
+            <p className="text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5">
+              ℹ️ Cada variante mantiene su propio SKU ya impreso.
+            </p>
+            {children.map(child => renderMobileCard(child, { indent: true }))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -941,77 +1493,14 @@ const handleExportCSV = async () => {
             <div className="lg:hidden p-3 space-y-3 bg-slate-50/50">
               {loading ? (
                 <p className="p-6 text-center text-sm text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</p>
-              ) : sortedProducts.length === 0 ? (
+              ) : displayRows.length === 0 ? (
                 <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
               ) : (
-                paginatedProducts.map((product) => {
-                  const tier = stockTier(product.stock, lowStockMax);
-                  const variant = variantLabel(product.talla, product.color);
-                  const selected = selectedProduct?.id === product.id;
-                  return (
-                    <div
-                      key={product.id}
-                      onClick={() => setSelectedProduct(product)}
-                      className={`bg-white border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${selected ? 'border-teal-400 ring-2 ring-teal-100' : 'border-slate-200'}`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-bold text-slate-800 text-sm leading-snug">{product.name}</h3>
-                            {isNewProduct(product) && (
-                              <span className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
-                                Nuevo
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] font-mono text-slate-500 mt-0.5">{product.sku_barcode}</p>
-                        </div>
-                        <div className="shrink-0 text-center">
-                          <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
-                            {product.stock}
-                          </span>
-                          <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
-                        <div className="flex items-center gap-2 flex-wrap min-w-0">
-                          <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(product.category)}</span>
-                          {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
-                          <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
-                        </div>
-                        <div className="shrink-0 flex items-center">
-                          {canEditRow ? (
-                            <>
-                              <button
-                                onClick={(e) => handleEdit(e, product)}
-                                className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-2 cursor-pointer"
-                                title={isRestocker ? 'Reponer stock' : 'Editar'}
-                              >
-                                {isRestocker ? '📦' : '✏️'}
-                              </button>
-                              {canDelete && (
-                                <button
-                                  onClick={(e) => handleDelete(e, product.id)}
-                                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 ml-1 cursor-pointer"
-                                  title="Desactivar Globalmente"
-                                >
-                                  🗑️
-                                </button>
-                              )}
-                            </>
-                          ) : (
-                            <span className="text-slate-300 text-sm">—</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
+                paginatedRows.map((row) => row.type === 'standalone' ? renderMobileCard(row.product) : renderMobileGroup(row))
               )}
             </div>
 
-            {/* PC: tabla completa (sin cambios) */}
+            {/* PC: tabla completa */}
             <div className="hidden lg:block flex-1 overflow-auto px-6">
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead className="sticky top-0 z-10">
@@ -1032,82 +1521,19 @@ const handleExportCSV = async () => {
                 <tbody>
                   {loading ? (
                     <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
-                  ) : sortedProducts.length === 0 ? (
+                  ) : displayRows.length === 0 ? (
                     <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
-                    paginatedProducts.map((product) => {
-                      const tier = stockTier(product.stock, lowStockMax);
-                      return (
-                        <tr
-                          key={product.id}
-                          onClick={() => setSelectedProduct(product)}
-                          className={`border-b border-slate-100 cursor-pointer transition ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'hover:bg-slate-50'}`}
-                        >
-                          <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
-                          <td className="p-3 font-medium text-slate-800">
-                            <span className="inline-flex items-center gap-2">
-                              {product.name}
-                              {isNewProduct(product) && (
-                                <span
-                                  title={product.created_at ? `Agregado: ${new Date(product.created_at).toLocaleString('es-VE')}` : undefined}
-                                  className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full"
-                                >
-                                  Nuevo
-                                </span>
-                              )}
-                            </span>
-                          </td>
-                          <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
-                          <td className="p-3">
-                            <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(product.category)}</span>
-                          </td>
-                          <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
-                          <td className="p-3">
-                            <div className="flex justify-end">
-                              <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
-                                {product.stock}
-                              </span>
-                            </div>
-                          </td>
-
-                          <td className="p-3 text-center">
-                            {canEditRow ? (
-                              <>
-                                {/* Editar / Reponer stock. El cajero reponedor solo repone stock. */}
-                                <button
-                                  onClick={(e) => handleEdit(e, product)}
-                                  className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
-                                  title={isRestocker ? 'Reponer stock' : 'Editar'}
-                                >
-                                  {isRestocker ? '📦' : '✏️'}
-                                </button>
-                                {/* Eliminar: solo owner en su tienda. */}
-                                {canDelete && (
-                                  <button
-                                    onClick={(e) => handleDelete(e, product.id)}
-                                    className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
-                                    title="Desactivar Globalmente"
-                                  >
-                                    🗑️
-                                  </button>
-                                )}
-                              </>
-                            ) : (
-                              <span className="text-slate-300">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
+                    paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : renderDesktopGroup(row))
                   )}
                 </tbody>
               </table>
             </div>
 
-            {/* Pie: conteo + paginación (los controles aparecen con más de 50 productos) */}
-            {!loading && sortedProducts.length > 0 && (
+            {/* Pie: conteo + paginación (los controles aparecen con más de 50 filas) */}
+            {!loading && displayRows.length > 0 && (
               <div className="px-4 md:px-6 py-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs md:text-sm text-slate-500">
-                <span>Mostrando {paginatedProducts.length} de {sortedProducts.length} productos</span>
+                <span>Mostrando {paginatedRows.length} de {displayRows.length} productos</span>
                 {totalPages > 1 && (
                   <div className="flex items-center gap-2">
                     <button
@@ -1281,39 +1707,238 @@ const handleExportCSV = async () => {
               </div>
             </div>
 
-            {/* Talla y Color: opcionales. Se muestran juntos como "Talla · Color". */}
-            <div className="grid grid-cols-2 gap-4">
+            {/* ¿Tiene variantes?: solo al dar de alta (no en edición ni reposición). */}
+            {!editingProduct && (
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Talla <span className="text-slate-400 font-normal">(opcional)</span></label>
-                <input type="text" readOnly={editStockOnly} {...register('talla')} placeholder="Ej: S, M, 10, 38" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+                <label className="block text-sm font-medium text-slate-700 mb-1">¿Este producto tiene variantes?</label>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setHasVariants(false)}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer ${!hasVariants ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHasVariants(true);
+                      if (variantRows.length === 0) setVariantRows([newVariantRow(watch('price') || 0)]);
+                    }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer ${hasVariants ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                  >
+                    Sí
+                  </button>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Color <span className="text-slate-400 font-normal">(opcional)</span></label>
-                <input type="text" readOnly={editStockOnly} {...register('color')} placeholder="Ej: Beige, Negro" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
-              </div>
-            </div>
+            )}
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Stock {editingProduct ? `para ${effectiveStore?.name ?? currentStore.name}` : `inicial (${formStore?.name ?? currentStore.name})`}
-              </label>
-              <input
-                type="number"
-                min={editingProduct && userRole === 'cashier' ? editingProduct.stock : undefined}
-                {...register('stock', { valueAsNumber: true })}
-                placeholder="0"
-                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
-              />
-              {errors.stock && <p className="text-red-500 text-xs mt-1">{errors.stock.message}</p>}
-            </div>
+            {hasVariants && !editingProduct ? (
+              <div className="space-y-3">
+                <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                  <table className="w-full text-sm min-w-[560px]">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 text-xs uppercase">
+                        <th className="p-2 text-left">Código existente</th>
+                        <th className="p-2 text-left">Talla</th>
+                        <th className="p-2 text-left">Color</th>
+                        <th className="p-2 text-right">Stock</th>
+                        <th className="p-2 text-right">Precio</th>
+                        <th className="p-2 text-center">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {variantRows.map((v, idx) => (
+                        <tr key={v.key} className="border-t border-slate-100">
+                          <td className="p-2">
+                            <input
+                              type="text"
+                              value={v.sku_barcode}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, sku_barcode: e.target.value } : r))}
+                              placeholder="Escanea o deja vacío"
+                              className="w-full p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="text"
+                              value={v.talla}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, talla: e.target.value } : r))}
+                              placeholder="S, M, 10..."
+                              className="w-20 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="text"
+                              value={v.color}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, color: e.target.value } : r))}
+                              placeholder="Negro..."
+                              className="w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="number"
+                              value={v.stock}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, stock: Number(e.target.value) } : r))}
+                              className="w-16 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm text-right focus:ring-2 focus:ring-teal-600 outline-none"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={v.price}
+                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, price: Number(e.target.value) } : r))}
+                              className="w-20 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm text-right focus:ring-2 focus:ring-teal-600 outline-none"
+                            />
+                          </td>
+                          <td className="p-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setVariantRows(rows => rows.filter((_, i) => i !== idx))}
+                              className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1 cursor-pointer"
+                              title="Quitar variante"
+                            >
+                              🗑️
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVariantRows(rows => [...rows, newVariantRow(watch('price') || 0)])}
+                  className="text-sm font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+                >
+                  + Agregar variante
+                </button>
+                <p className="text-xs text-slate-400 -mt-2">Cada variante arranca con el Precio Global de arriba; puedes cambiarlo por fila.</p>
+              </div>
+            ) : (
+              <>
+                {/* Talla y Color: opcionales. Se muestran juntos como "Talla · Color". */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Talla <span className="text-slate-400 font-normal">(opcional)</span></label>
+                    <input type="text" readOnly={editStockOnly} {...register('talla')} placeholder="Ej: S, M, 10, 38" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Color <span className="text-slate-400 font-normal">(opcional)</span></label>
+                    <input type="text" readOnly={editStockOnly} {...register('color')} placeholder="Ej: Beige, Negro" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Stock {editingProduct ? `para ${effectiveStore?.name ?? currentStore.name}` : `inicial (${formStore?.name ?? currentStore.name})`}
+                  </label>
+                  <input
+                    type="number"
+                    min={editingProduct && userRole === 'cashier' ? editingProduct.stock : undefined}
+                    {...register('stock', { valueAsNumber: true })}
+                    placeholder="0"
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  {errors.stock && <p className="text-red-500 text-xs mt-1">{errors.stock.message}</p>}
+                </div>
+              </>
+            )}
 
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-4">
               <button type="button" onClick={closeModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
               <button type="submit" className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer">
-                {editingProduct ? "Guardar Cambios" : "Guardar Producto"}
+                {editingProduct ? "Guardar Cambios" : hasVariants ? "Guardar producto con variantes" : "Guardar Producto"}
               </button>
             </div>
           </form>
+        </Modal>
+
+        {/* MODAL: VINCULAR A PRODUCTO PADRE */}
+        <Modal isOpen={!!linkingProduct} onClose={closeLinkModal} title="Vincular a producto padre">
+          {linkingProduct && (
+            <div className="space-y-4">
+              <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200">
+                {linkingProduct.name} ({linkingProduct.sku_barcode})
+              </div>
+              {linkError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">{linkError}</div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setLinkMode('new')}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer ${linkMode === 'new' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                >
+                  Crear producto padre
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLinkMode('existing')}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer ${linkMode === 'existing' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                >
+                  Usar uno existente
+                </button>
+              </div>
+
+              {linkMode === 'new' ? (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del producto padre</label>
+                  <input
+                    type="text"
+                    value={linkNewGroupName}
+                    onChange={(e) => setLinkNewGroupName(e.target.value)}
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Categoría y precio se toman de este producto ({categoryLabel(linkingProduct.category)}, ${linkingProduct.price.toFixed(2)}).</p>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Buscar producto padre</label>
+                  <input
+                    type="text"
+                    value={linkGroupSearch}
+                    onChange={(e) => setLinkGroupSearch(e.target.value)}
+                    placeholder="Nombre del producto padre..."
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none mb-2"
+                  />
+                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {matchingGroups.length === 0 ? (
+                      <p className="p-3 text-sm text-slate-400">Sin productos padre que coincidan.</p>
+                    ) : matchingGroups.map(g => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        disabled={linkSubmitting}
+                        onClick={() => handleLinkExisting(g.id, g.name)}
+                        className="w-full text-left p-3 hover:bg-teal-50 transition cursor-pointer disabled:opacity-50"
+                      >
+                        <p className="font-medium text-slate-800 text-sm">{g.name}</p>
+                        <p className="text-xs text-slate-500">{categoryLabel(g.category)} · ${g.default_price.toFixed(2)}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button type="button" onClick={closeLinkModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+                {linkMode === 'new' && (
+                  <button
+                    type="button"
+                    disabled={linkSubmitting}
+                    onClick={handleLinkCreateNew}
+                    className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50"
+                  >
+                    Crear y vincular
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </Modal>
       </div>
 
