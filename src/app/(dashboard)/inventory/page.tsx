@@ -15,7 +15,7 @@ import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
   name: z.string().min(3, { message: 'El nombre es obligatorio' }),
-  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar', 'bolso', 'navaja_suiza'], {
+  category: z.enum(['juguetes', 'ropa', 'zapato', 'perfume', 'accesorios', 'lentes', 'uniforme_escolar', 'utiles_escolares', 'bolso', 'navaja_suiza'], {
     message: 'Selecciona una categoría válida',
   }),
   price: z.number({ message: 'Debe ser un número válido' }).min(0.01, { message: 'El precio debe ser mayor a 0' }),
@@ -26,6 +26,7 @@ const productSchema = z.object({
 });
 
 type ProductFormValues = z.infer<typeof productSchema>;
+type ProductCategory = ProductFormValues['category'];
 
 interface Product {
   id: string;
@@ -76,6 +77,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   accesorios: 'Accesorios',
   lentes: 'Lentes',
   uniforme_escolar: 'Uniformes Escolares',
+  utiles_escolares: 'Útiles Escolares',
   bolso: 'Bolso',
   navaja_suiza: 'Navaja Suiza',
 };
@@ -95,6 +97,22 @@ function defaultCategoryForStore(storeName: string): 'juguetes' | 'ropa' | 'zapa
   if (n.includes('ropa')) return 'ropa';
   if (n.includes('juguet')) return 'juguetes';
   return 'juguetes';
+}
+
+// Todas las categorías, en el orden del enum (única fuente de verdad: el schema).
+const ALL_CATEGORIES: readonly ProductCategory[] = productSchema.shape.category.options;
+
+// Categorías exclusivas de una tienda, decididas por el NOMBRE de la tienda
+// (misma convención que storePrefix / lowStockMaxFor). Las que no aparecen
+// aquí se ofrecen en todas las tiendas.
+const CATEGORY_STORE_RULE: Partial<Record<ProductCategory, (storeNameLower: string) => boolean>> = {
+  utiles_escolares: (n) => n.includes('juguet'),
+};
+
+// Categorías que se ofrecen en el formulario para una tienda dueña dada.
+function categoriesForStore(storeName?: string | null): ProductCategory[] {
+  const n = (storeName ?? '').toLowerCase();
+  return ALL_CATEGORIES.filter(c => CATEGORY_STORE_RULE[c]?.(n) ?? true);
 }
 
 // --- Semáforo de stock ---------------------------------------------------
@@ -261,7 +279,7 @@ export default function InventoryPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [viewStoreId, setViewStoreId] = useState<string>('');
 
-  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<ProductFormValues>({
+  const { register, handleSubmit, reset, watch, setValue, getValues, formState: { errors } } = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
     defaultValues: { stock: 0, sku_barcode: '' }
   });
@@ -299,6 +317,15 @@ export default function InventoryPage() {
   // Tienda seleccionada en el formulario de alta (para el aviso y el prefijo del SKU).
   const watchedOwnerStoreId = watch('owner_store_id');
   const formStore = stores.find(s => s.id === watchedOwnerStoreId) ?? currentStore;
+
+  // Categorías del select: las permitidas para la tienda dueña elegida. Al editar
+  // un producto cuya categoría ya no está permitida (dato legado), se conserva
+  // como opción para que el select no la cambie en silencio.
+  const allowedCategories = categoriesForStore(formStore?.name);
+  const selectableCategories: string[] =
+    editingProduct && !allowedCategories.includes(editingProduct.category as ProductCategory)
+      ? [...allowedCategories, editingProduct.category]
+      : allowedCategories;
 
   // Rol del usuario + tiendas activas (para los selectores de vista y de alta).
   async function loadStores() {
@@ -726,6 +753,13 @@ export default function InventoryPage() {
     const targetStoreId = editingProduct ? viewStoreId : data.owner_store_id;
     const targetStore = stores.find(s => s.id === targetStoreId) ?? currentStore;
 
+    // Al crear, la categoría debe estar disponible para la tienda dueña elegida
+    // (el select ya la restringe; esto cubre cualquier estado intermedio).
+    if (!editingProduct && !categoriesForStore(targetStore.name).includes(data.category)) {
+      setFormError(`La categoría "${categoryLabel(data.category)}" no está disponible para ${targetStore.name}.`);
+      return;
+    }
+
     let finalSku = data.sku_barcode?.trim();
     if (!finalSku) {
       // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la categoría.
@@ -904,7 +938,7 @@ export default function InventoryPage() {
     setFormError(null);
     setHasVariants(false);
     setVariantRows([]);
-    reset({ sku_barcode: '', name: '', category: 'juguetes', price: 0, stock: 0, owner_store_id: currentStore?.id ?? '', talla: '', color: '' });
+    reset({ sku_barcode: '', name: '', category: defaultCategoryForStore(currentStore?.name ?? ''), price: 0, stock: 0, owner_store_id: currentStore?.id ?? '', talla: '', color: '' });
   };
 
   const LOW_STOCK_THRESHOLD = 5; // ajústalo a tu realidad
@@ -1865,7 +1899,19 @@ const handleExportCSV = async () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Tienda a la que pertenece</label>
                 {/* El reponedor LOCAL solo puede crear productos en su tienda asignada:
                     se bloquea con una única opción (sin `disabled`, para no perder el valor en RHF). */}
-                <select {...register('owner_store_id')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${isLocalRestocker ? 'bg-slate-100 text-slate-500 pointer-events-none' : 'bg-white'}`}>
+                {/* Si al cambiar de tienda la categoría elegida deja de estar disponible
+                    (p. ej. Útiles Escolares fuera de Juguetes), vuelve a la default de esa tienda. */}
+                <select
+                  {...register('owner_store_id', {
+                    onChange: (e) => {
+                      const st = stores.find(s => s.id === e.target.value);
+                      if (!categoriesForStore(st?.name).includes(getValues('category'))) {
+                        setValue('category', defaultCategoryForStore(st?.name ?? ''), { shouldValidate: true, shouldDirty: true });
+                      }
+                    },
+                  })}
+                  className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${isLocalRestocker ? 'bg-slate-100 text-slate-500 pointer-events-none' : 'bg-white'}`}
+                >
                   {(isLocalRestocker ? stores.filter(s => s.id === currentStore.id) : stores).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
                 {errors.owner_store_id && <p className="text-red-500 text-xs mt-1">{errors.owner_store_id.message}</p>}
@@ -1876,15 +1922,7 @@ const handleExportCSV = async () => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Categoría</label>
                 <select tabIndex={editStockOnly ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${editStockOnly ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
-                  <option value="juguetes">Juguetes</option>
-                  <option value="ropa">Ropa</option>
-                  <option value="zapato">Zapato</option>
-                  <option value="perfume">Perfume</option>
-                  <option value="accesorios">Accesorios</option>
-                  <option value="lentes">Lentes</option>
-                  <option value="uniforme_escolar">Uniformes Escolares</option>
-                  <option value="bolso">Bolso</option>
-                  <option value="navaja_suiza">Navaja Suiza</option>
+                  {selectableCategories.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
               </div>
