@@ -4,14 +4,19 @@
  * de la hoja "Variantes talla-color" del análisis de duplicados de Tienda de
  * Ropa (backups/2026-09-01T21-23-13/analisis-duplicados-tienda-ropa.xlsx).
  *
+ * Sirve para cualquier tienda: la hoja solo necesita las columnas
+ * "Grupo (nombre)", "SKU" e "ID". Para Tienda de Juguetes (2026-09-07) se
+ * usa la hoja "A. Nombre exacto (agrupar)" de
+ * backups/2026-09-07T20-12-45/analisis-variantes-tienda-juguetes.xlsx.
+ *
  *   node scripts/backfill-ropa-variants.mjs            # dry-run (no escribe nada)
  *   node scripts/backfill-ropa-variants.mjs --apply     # aplica de verdad
- *   node scripts/backfill-ropa-variants.mjs --file otro.xlsx [--apply]
+ *   node scripts/backfill-ropa-variants.mjs --file otro.xlsx [--sheet "Otra hoja"] [--apply]
  *
  * Requiere que db/product_variants.sql ya esté aplicado en Supabase (crea
  * product_groups y products.parent_group_id).
  *
- * Qué hace, por cada grupo de la hoja "Variantes talla-color":
+ * Qué hace, por cada grupo de la hoja (default "Variantes talla-color"):
  *   1. Toma los IDs de producto listados en el xlsx (columna ID).
  *   2. Vuelve a consultar esos IDs DIRECTO en la base de datos actual (nunca
  *      confía en el snapshot del xlsx) para leer name/category/price/
@@ -66,7 +71,9 @@ const XLSX_PATH = path.resolve(
     ? args[fileFlagIdx + 1]
     : 'backups/2026-09-01T21-23-13/analisis-duplicados-tienda-ropa.xlsx'
 );
-const SHEET_NAME = 'Variantes talla-color';
+// Hoja a procesar (--sheet). Default: la del análisis original de Ropa.
+const sheetFlagIdx = args.indexOf('--sheet');
+const SHEET_NAME = sheetFlagIdx >= 0 && args[sheetFlagIdx + 1] ? args[sheetFlagIdx + 1] : 'Variantes talla-color';
 
 // --- 1. Leer los grupos candidatos del xlsx --------------------------------
 async function readCandidateGroups() {
