@@ -170,6 +170,8 @@ export default function DashboardPage() {
   const { currentStore } = usePOSStore(); // <-- 2. Obtenemos la tienda activa
   
   const [loading, setLoading] = useState(true);
+  // Tienda cuyas métricas ya se cargaron una vez (ver fetchDashboardData).
+  const loadedStoreRef = useRef<string | null>(null);
   const [role, setRole] = useState<string>('');
 
   // Estados para métricas principales
@@ -255,7 +257,10 @@ export default function DashboardPage() {
     async function fetchDashboardData() {
       if (!currentStore) return; // Bloqueo de seguridad si no hay tienda
       
-      setLoading(true);
+      // Pantalla de carga completa solo la primera vez por tienda. En un
+      // refresco (tras un cambio de producto o una anulación) la página NO se
+      // desmonta: así un modal abierto y la posición del scroll se conservan.
+      if (loadedStoreRef.current !== currentStore.id) setLoading(true);
       
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
@@ -411,6 +416,7 @@ export default function DashboardPage() {
         setTopProducts([]);
       }
 
+      loadedStoreRef.current = currentStore.id;
       setLoading(false);
     }
     fetchDashboardData();

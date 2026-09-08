@@ -380,7 +380,14 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     setDoneId(id);
     setDoneSummary({ total, points: pointsEarned });
     setSubmitting(false);
-    onDone?.(id);
+  };
+
+  // `onDone` se avisa recién al CERRAR el modal (no al confirmar): si el padre
+  // refresca sus datos y se re-renderiza al recibirlo, la pantalla de éxito
+  // ya no está en juego y el cajero no ve el modal "reaparecer".
+  const handleClose = () => {
+    if (doneId) onDone?.(doneId);
+    onClose();
   };
 
   // ============================================================================
@@ -389,7 +396,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   const title = doneId ? 'Cambio registrado' : 'Cambio de producto';
 
   return (
-    <Modal isOpen onClose={onClose} title={title}>
+    <Modal isOpen onClose={handleClose} title={title}>
       {!currentStore ? (
         <p className="text-slate-500">Cargando contexto de la sucursal...</p>
       ) : doneId && doneSummary ? (
@@ -407,7 +414,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="mt-6 px-6 py-3 bg-[#0f5c5c] hover:bg-[#0a4545] text-white rounded-xl font-bold text-lg transition"
           >
             Listo
@@ -730,7 +737,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
           )}
 
           <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
-            <button type="button" onClick={onClose} className="px-4 py-2.5 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition">
+            <button type="button" onClick={handleClose} className="px-4 py-2.5 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition">
               Cancelar
             </button>
             <button
