@@ -10,6 +10,14 @@ import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el conte
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
 import { formatVariant } from '@/lib/productVariant';
+import { isMissingColumnError } from '@/lib/supabaseErrors';
+
+// PostgREST corta cada respuesta en 1000 filas (y trunca en silencio): las
+// consultas de ventas se paginan con .range() de a SALES_PAGE.
+const SALES_PAGE = 1000;
+// Fila de `sales` tal como la devuelve PostgREST (el proyecto no tiene tipos
+// generados de la BD; los campos se leen con Number()/casts puntuales).
+type SaleRow = Record<string, unknown>;
 
 // Nombre legible de un método de pago ('punto_de_venta' -> 'punto de venta')
 const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
@@ -32,8 +40,13 @@ const PAYMENT_METHODS: { key: string; label: string; icon: ReactNode; iconBg: st
   { key: 'punto_de_venta', label: 'Punto de Venta', icon: '💳', iconBg: 'bg-blue-100',    bar: 'bg-blue-500',    text: 'text-blue-600' },
   { key: 'zelle',          label: 'Zelle',          icon: '🔄', iconBg: 'bg-purple-100',  bar: 'bg-purple-500',  text: 'text-purple-600' },
   { key: 'pago_movil',     label: 'Pago Móvil',     icon: '📱', iconBg: 'bg-indigo-100',  bar: 'bg-indigo-500',  text: 'text-indigo-600' },
-  { key: 'cashea',         label: 'Cashea',         icon: <CasheaLogo className="w-9 h-9 rounded-lg" />, iconBg: '', bar: 'bg-amber-400', text: 'text-amber-600' },
+  { key: 'cashea',         label: 'Cashea (Procesado)', icon: <CasheaLogo className="w-9 h-9 rounded-lg" />, iconBg: '', bar: 'bg-amber-400', text: 'text-amber-600' },
 ];
+// Fila extra del desglose: la inicial de Cashea que el cliente pagó en tienda.
+// Va justo debajo de "Cashea (Procesado)" para que el desglose siga sumando el total del día.
+const CASHEA_INITIAL_ROW: (typeof PAYMENT_METHODS)[number] = {
+  key: 'cashea_inicial', label: 'Inicial Cashea (en tienda)', icon: '🏪', iconBg: 'bg-amber-100', bar: 'bg-amber-600', text: 'text-amber-700',
+};
 
 // Suma el monto de una venta al acumulado por método de pago.
 // Pago simple: todo el total al método. Pago dividido: cada parte a su método.
@@ -48,6 +61,46 @@ const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
     acc[m] = (acc[m] || 0) + (Number(sale.total_amount) || 0);
   }
 };
+
+// Monto COMPLETO que fue por Cashea en una venta (0 si Cashea no participó).
+// Pago simple: el total. Dividido: el monto del método donde esté Cashea.
+// (Cashea nunca lleva recargo PDV, así que coincide con lo que calculó el POS.)
+const casheaLeg = (sale: SaleRow): number => {
+  if (sale.payment_method_2) {
+    if (sale.payment_method === 'cashea') return Number(sale.payment_amount_1) || 0;
+    if (sale.payment_method_2 === 'cashea') return Number(sale.payment_amount_2) || 0;
+    return 0;
+  }
+  return sale.payment_method === 'cashea' ? (Number(sale.total_amount) || 0) : 0;
+};
+// Inicial de Cashea cobrada en tienda (db/cashea_initial.sql). 0 en ventas
+// viejas o si la columna todavía no existe.
+const casheaInitialOf = (sale: SaleRow): number => Number(sale.cashea_initial_usd) || 0;
+
+// Columnas del historial y del export. `withCasheaInitial` = false es el
+// fallback cuando sales.cashea_initial_usd todavía no existe en la BD.
+const historySelect = (withCasheaInitial: boolean) => `
+  id,
+  created_at,
+  total_amount,
+  redemption_discount_usd,
+  punto_de_venta_surcharge_usd,
+  ${withCasheaInitial ? 'cashea_initial_usd,' : ''}
+  bcv_rate,
+  payment_method,
+  payment_ref,
+  payment_method_2,
+  payment_amount_1,
+  payment_amount_2,
+  customers (full_name),
+  profiles (full_name),
+  sale_items (
+    quantity,
+    unit_price,
+    custom_name,
+    products (name, talla, color)
+  )
+`;
 
 // Cantidad total de artículos vendidos en una venta.
 const saleItemCount = (sale: any) =>
@@ -65,7 +118,9 @@ export default function DashboardPage() {
   const [todayVES, setTodayVES] = useState(0);
   const [todayTx, setTodayTx] = useState(0);
   const [todayByMethod, setTodayByMethod] = useState<Record<string, number>>({});
-  
+  // Iniciales de Cashea cobradas hoy en tienda (suma de sales.cashea_initial_usd).
+  const [todayCasheaInitial, setTodayCasheaInitial] = useState(0);
+
   const [thisWeekUSD, setThisWeekUSD] = useState(0);
   const [weekGrowth, setWeekGrowth] = useState(0);
   
@@ -155,26 +210,53 @@ export default function DashboardPage() {
       const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-      // A. Obtener todas las ventas desde el mes pasado AISLADAS POR TIENDA
-      const { data: recentSales } = await supabase
-        .from('sales')
-        .select('total_amount, bcv_rate, created_at, payment_method, payment_method_2, payment_amount_1, payment_amount_2')
-        .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
-        .gte('created_at', startOfLastMonth.toISOString());
+      // A. Obtener todas las ventas desde el mes pasado AISLADAS POR TIENDA.
+      // Paginado con .range() (PostgREST corta en 1000 filas y trunca en
+      // silencio). Se intenta primero CON sales.cashea_initial_usd y, si esa
+      // columna todavía no existe (db/cashea_initial.sql se aplica a mano),
+      // se vuelve a pedir sin ella: las iniciales de Cashea quedan en 0.
+      const METRIC_COLS = 'total_amount, bcv_rate, created_at, payment_method, payment_method_2, payment_amount_1, payment_amount_2';
+      let recentSales: SaleRow[] | null = null;
+      for (const cols of [`${METRIC_COLS}, cashea_initial_usd`, METRIC_COLS]) {
+        const rows: SaleRow[] = [];
+        let failed = false;
+        for (let from = 0; ; from += SALES_PAGE) {
+          const { data, error } = await supabase
+            .from('sales')
+            .select(cols)
+            .eq('store_id', currentStore.id) // <-- FILTRO MULTI-TIENDA
+            .gte('created_at', startOfLastMonth.toISOString())
+            .order('created_at', { ascending: true })
+            .order('id', { ascending: true })
+            .range(from, from + SALES_PAGE - 1);
+          if (error) {
+            if (isMissingColumnError(error, 'cashea_initial_usd')) {
+              console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); iniciales de Cashea en 0.');
+            }
+            failed = true;
+            break;
+          }
+          // El select es dinámico (string), así que supabase-js no puede inferir la fila.
+          rows.push(...((data ?? []) as unknown as SaleRow[]));
+          if (!data || data.length < SALES_PAGE) break;
+        }
+        if (!failed) { recentSales = rows; break; }
+      }
 
       if (recentSales) {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
-        let tTx = 0;
+        let tTx = 0, tCasheaInitial = 0;
         const byMethod: Record<string, number> = {};
 
         recentSales.forEach(sale => {
-          const saleDate = parseSupabaseDate(sale.created_at);
+          const saleDate = parseSupabaseDate(sale.created_at as string);
           const amount = Number(sale.total_amount);
 
           if (saleDate >= startOfToday) {
             tUSD += amount;
             tVES += amount * Number(sale.bcv_rate);
             tTx += 1;
+            tCasheaInitial += casheaInitialOf(sale);
             addSaleToBreakdown(byMethod, sale);
           }
           if (saleDate >= startOfThisWeek) tWeek += amount;
@@ -187,13 +269,14 @@ export default function DashboardPage() {
         setTodayVES(tVES);
         setTodayTx(tTx);
         setTodayByMethod(byMethod);
+        setTodayCasheaInitial(tCasheaInitial);
         setThisWeekUSD(tWeek);
         setThisMonthUSD(tMonth);
         setWeekGrowth(lWeek ? ((tWeek - lWeek) / lWeek) * 100 : 0);
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
       } else {
         // Reset a cero si no hay ventas en la nueva tienda
-        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayByMethod({}); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayByMethod({}); setTodayCasheaInitial(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
       }
 
       // B. Mejores Clientes AISLADOS POR TIENDA
@@ -289,40 +372,22 @@ export default function DashboardPage() {
       if (!currentStore) return;
       
       setLoadingHistory(true);
-      const { data } = await supabase
+      // Con fallback si sales.cashea_initial_usd todavía no existe (ver historySelect).
+      const run = (withCasheaInitial: boolean) => supabase
         .from('sales')
-        .select(`
-          id,
-          created_at,
-          total_amount,
-          redemption_discount_usd,
-          punto_de_venta_surcharge_usd,
-          bcv_rate,
-          payment_method,
-          payment_ref,
-          payment_method_2,
-          payment_amount_1,
-          payment_amount_2,
-          customers (full_name),
-          profiles (full_name),
-          sale_items (
-            quantity,
-            unit_price,
-            custom_name,
-            products (name, talla, color)
-          )
-        `)
-        .eq('store_id', currentStore.id) 
+        .select(historySelect(withCasheaInitial))
+        .eq('store_id', currentStore.id)
         .gte('created_at', `${historyDateRange.start}T00:00:00.000-04:00`)
         .lte('created_at', `${historyDateRange.end}T23:59:59.999-04:00`)
         .order('created_at', { ascending: false })
         .limit(100);
-
-      if (data) {
-        setSalesHistory(data);
-      } else {
-        setSalesHistory([]);
+      let res = await run(true);
+      if (res.error && isMissingColumnError(res.error, 'cashea_initial_usd')) {
+        console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); historial sin inicial de Cashea.');
+        res = await run(false);
       }
+
+      setSalesHistory((res.data as unknown as SaleRow[] | null) ?? []);
       setLoadingHistory(false);
     }
     fetchHistory();
@@ -337,37 +402,35 @@ export default function DashboardPage() {
       const fromISO = `${historyDateRange.start}T00:00:00.000-04:00`;
       const toISO   = `${historyDateRange.end}T23:59:59.999-04:00`;
 
-      // Query PROPIA del export: SIN .limit() → trae TODO el rango (la tabla sí está capada a 50).
-      const { data: rows, error } = await supabase
+      // Query PROPIA del export: trae TODO el rango paginando con .range()
+      // (la tabla sí está capada a 100). Con fallback si sales.cashea_initial_usd
+      // todavía no existe (ver historySelect).
+      const fetchExportPage = (withCasheaInitial: boolean, from: number) => supabase
         .from('sales')
-        .select(`
-          id,
-          created_at,
-          total_amount,
-          redemption_discount_usd,
-          punto_de_venta_surcharge_usd,
-          bcv_rate,
-          payment_method,
-          payment_ref,
-          payment_method_2,
-          payment_amount_1,
-          payment_amount_2,
-          customers (full_name),
-          profiles (full_name),
-          sale_items (
-            quantity,
-            unit_price,
-            custom_name,
-            products (name, talla, color)
-          )
-        `)
+        .select(historySelect(withCasheaInitial))
         .eq('store_id', currentStore.id)
         .gte('created_at', fromISO)
         .lte('created_at', toISO)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, from + SALES_PAGE - 1);
 
-      if (error) throw error;
-      if (!rows || rows.length === 0) {
+      const rows: SaleRow[] = [];
+      let withCasheaInitial = true;
+      for (let from = 0; ; from += SALES_PAGE) {
+        let page = await fetchExportPage(withCasheaInitial, from);
+        if (page.error && withCasheaInitial && isMissingColumnError(page.error, 'cashea_initial_usd')) {
+          console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); export sin inicial de Cashea.');
+          withCasheaInitial = false;
+          page = await fetchExportPage(withCasheaInitial, from);
+        }
+        if (page.error) throw page.error;
+        const data = (page.data as unknown as SaleRow[] | null) ?? [];
+        rows.push(...data);
+        if (data.length < SALES_PAGE) break;
+      }
+
+      if (rows.length === 0) {
         alert('No hay transacciones en el rango seleccionado.');
         return;
       }
@@ -387,6 +450,7 @@ export default function DashboardPage() {
         { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Recargo PDV USD',       key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Inicial Cashea USD',    key: 'inicial',    width: 17, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
@@ -409,6 +473,7 @@ export default function DashboardPage() {
       let totalSumaVES = 0;
       let totalDescuento = 0;
       let totalRecargo = 0;
+      let totalInicial = 0;
       let totalCantidad = 0;
 
       rows.forEach((sale: any) => {
@@ -430,10 +495,12 @@ export default function DashboardPage() {
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
         const descuentoUSD = Number(sale.redemption_discount_usd) || 0;
         const recargoUSD = Number(sale.punto_de_venta_surcharge_usd) || 0;
+        const inicialUSD = casheaInitialOf(sale);
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
         totalDescuento += descuentoUSD;
         totalRecargo += recargoUSD;
+        totalInicial += inicialUSD;
         totalCantidad += itemCount;
 
         ws.addRow({
@@ -446,6 +513,7 @@ export default function DashboardPage() {
           cantidad: itemCount,
           descuento: descuentoUSD,
           recargo: recargoUSD,
+          inicial: inicialUSD,
           usd: amountUSD,
           bs: amountVES,
         });
@@ -458,6 +526,7 @@ export default function DashboardPage() {
         cantidad: totalCantidad,
         descuento: totalDescuento,
         recargo: totalRecargo,
+        inicial: totalInicial,
         usd: totalSumaUSD,
         bs: totalSumaVES,
       });
@@ -465,11 +534,11 @@ export default function DashboardPage() {
       totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
       totalRow.height = 20;
       totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
-      for (let c = 1; c <= 11; c++) {
+      for (let c = 1; c <= 12; c++) {
         totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
       }
 
-      ws.autoFilter = { from: 'A1', to: 'K1' };
+      ws.autoFilter = { from: 'A1', to: 'L1' };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -501,17 +570,28 @@ export default function DashboardPage() {
   }
 
   // Desglose de hoy: con/sin Cashea y por método de pago (porcentajes sobre el total del día).
+  //   Ventas con Cashea  = todo lo vendido a través de Cashea (inicial incluida)
+  //   Cashea (Procesado) = lo que Cashea le paga al comercio = con Cashea − iniciales
+  //   Recibido en tienda = lo que entró en caja hoy = total − Cashea (Procesado)
   const todayCashea = todayByMethod['cashea'] || 0;
   const todaySinCashea = Math.max(0, todayUSD - todayCashea);
+  const todayCasheaProcesado = Math.max(0, todayCashea - todayCasheaInitial);
+  const todayRecibidoTienda = Math.max(0, todayUSD - todayCasheaProcesado);
   const pctOfToday = (v: number) => (todayUSD > 0 ? Math.min(100, (v / todayUSD) * 100) : 0);
   const todayBreakdown = [
-    ...PAYMENT_METHODS,
+    // La fila Cashea muestra lo procesado por Cashea; la inicial va en su propia
+    // fila justo debajo, así el desglose sigue sumando el total del día.
+    ...PAYMENT_METHODS.flatMap(m => (m.key === 'cashea' ? [m, CASHEA_INITIAL_ROW] : [m])),
     // Cualquier método que no esté en la lista (p. ej. valores viejos del enum) se muestra igual.
     ...Object.keys(todayByMethod)
       .filter(k => !PAYMENT_METHODS.some(m => m.key === k))
       .map(k => ({ key: k, label: prettyMethod(k), icon: '💠', iconBg: 'bg-slate-100', bar: 'bg-slate-400', text: 'text-slate-600' })),
   ].map(m => {
-    const amount = todayByMethod[m.key] || 0;
+    const amount = m.key === 'cashea'
+      ? todayCasheaProcesado
+      : m.key === 'cashea_inicial'
+        ? todayCasheaInitial
+        : (todayByMethod[m.key] || 0);
     return { ...m, amount, pct: pctOfToday(amount) };
   });
 
@@ -528,8 +608,20 @@ export default function DashboardPage() {
         Bs. {todayVES.toFixed(2)} <span className="text-slate-400 font-normal">Equivalente</span>
       </p>
 
-      {/* Con / sin Cashea */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+      {/* Recibido en tienda hoy: todo lo que entró en caja (incluye la inicial de Cashea) */}
+      <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-lg p-3 mt-4 min-w-0">
+        <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">🏪</div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-slate-500 truncate">Recibido en Tienda Hoy</p>
+          <p className="text-2xl font-bold text-emerald-700 truncate">${todayRecibidoTienda.toFixed(2)}</p>
+          <p className="text-xs text-slate-500 truncate">
+            {Math.round(pctOfToday(todayRecibidoTienda))}% del total <span className="text-slate-300 mx-1">|</span> Incluyendo pago inicial
+          </p>
+        </div>
+      </div>
+
+      {/* Con / sin Cashea + iniciales cobradas */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
           <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">🧾</div>
           <div className="min-w-0">
@@ -544,6 +636,14 @@ export default function DashboardPage() {
             <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
             <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
             <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCashea))}% del total</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+          <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🏪</div>
+          <div className="min-w-0">
+            <p className="text-xs text-slate-500 truncate">Iniciales Cashea Cobradas</p>
+            <p className="text-xl font-bold text-amber-700 truncate">${todayCasheaInitial.toFixed(2)}</p>
+            <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCasheaInitial))}% del total</p>
           </div>
         </div>
       </div>
@@ -899,6 +999,11 @@ export default function DashboardPage() {
   {Number(sale.punto_de_venta_surcharge_usd) > 0 && (
     <p className="text-[11px] text-sky-600 font-semibold mt-0.5">
       💳 Recargo Punto de Venta: +${Number(sale.punto_de_venta_surcharge_usd).toFixed(2)}
+    </p>
+  )}
+  {casheaInitialOf(sale) > 0 && (
+    <p className="text-[11px] text-amber-600 font-semibold mt-0.5">
+      🏪 Inicial Cashea: ${casheaInitialOf(sale).toFixed(2)} · Cashea: ${Math.max(0, casheaLeg(sale) - casheaInitialOf(sale)).toFixed(2)}
     </p>
   )}
 
