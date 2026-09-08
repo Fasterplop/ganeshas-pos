@@ -19,6 +19,17 @@ const SALES_PAGE = 1000;
 // generados de la BD; los campos se leen con Number()/casts puntuales).
 type SaleRow = Record<string, unknown>;
 
+// Icono de "inicial de Cashea": el logo de Cashea con una mini insignia de
+// tienda (🏪) en la esquina, para distinguirlo de "Ventas con Cashea".
+const CasheaInicialIcon = ({ className = 'w-9 h-9' }: { className?: string }) => (
+  <div className={`relative shrink-0 ${className}`}>
+    <CasheaLogo className="w-full h-full rounded-lg" />
+    <span className="absolute -bottom-1 -right-1 w-4.5 h-4.5 rounded-full bg-white border border-amber-300 text-[10px] leading-none flex items-center justify-center shadow-sm">
+      🏪
+    </span>
+  </div>
+);
+
 // Nombre legible de un método de pago ('punto_de_venta' -> 'punto de venta')
 const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
 
@@ -45,7 +56,7 @@ const PAYMENT_METHODS: { key: string; label: string; icon: ReactNode; iconBg: st
 // Fila extra del desglose: la inicial de Cashea que el cliente pagó en tienda.
 // Va justo debajo de "Cashea (Procesado)" para que el desglose siga sumando el total del día.
 const CASHEA_INITIAL_ROW: (typeof PAYMENT_METHODS)[number] = {
-  key: 'cashea_inicial', label: 'Inicial Cashea (en tienda)', icon: '🏪', iconBg: 'bg-amber-100', bar: 'bg-amber-600', text: 'text-amber-700',
+  key: 'cashea_inicial', label: 'Inicial Cashea (en tienda)', icon: <CasheaInicialIcon />, iconBg: '', bar: 'bg-amber-600', text: 'text-amber-700',
 };
 
 // Suma el monto de una venta al acumulado por método de pago.
@@ -620,28 +631,31 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Con / sin Cashea + iniciales cobradas */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
-        <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-          <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">🧾</div>
-          <div className="min-w-0">
-            <p className="text-xs text-slate-500 truncate">Ventas sin Cashea</p>
-            <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
-            <p className="text-xs text-slate-500">{Math.round(pctOfToday(todaySinCashea))}% del total</p>
+      {/* Con / sin Cashea + iniciales cobradas. Los títulos hacen salto de
+          línea (no se truncan). El cajero no ve "Ventas sin Cashea". */}
+      <div className={`grid grid-cols-1 ${role === 'cashier' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'} gap-3 mt-4`}>
+        {role !== 'cashier' && (
+          <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+            <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">🧾</div>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-500 leading-tight">Ventas sin Cashea</p>
+              <p className="text-xl font-bold text-emerald-600 truncate">${todaySinCashea.toFixed(2)}</p>
+              <p className="text-xs text-slate-500">{Math.round(pctOfToday(todaySinCashea))}% del total</p>
+            </div>
           </div>
-        </div>
+        )}
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
           <CasheaLogo className="w-11 h-11 rounded-lg shrink-0" />
           <div className="min-w-0">
-            <p className="text-xs text-slate-500 truncate">Ventas con Cashea</p>
+            <p className="text-xs text-slate-500 leading-tight">Ventas con Cashea</p>
             <p className="text-xl font-bold text-amber-500 truncate">${todayCashea.toFixed(2)}</p>
             <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCashea))}% del total</p>
           </div>
         </div>
         <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-          <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">🏪</div>
+          <CasheaInicialIcon className="w-11 h-11" />
           <div className="min-w-0">
-            <p className="text-xs text-slate-500 truncate">Iniciales Cashea Cobradas</p>
+            <p className="text-xs text-slate-500 leading-tight">Iniciales Cashea Cobradas</p>
             <p className="text-xl font-bold text-amber-700 truncate">${todayCasheaInitial.toFixed(2)}</p>
             <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCasheaInitial))}% del total</p>
           </div>
