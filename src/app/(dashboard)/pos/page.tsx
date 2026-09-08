@@ -344,12 +344,30 @@ export default function POSPage() {
     }
   }, [maxBlocks]);
 
-  const showNotification = (message: string, type: 'success' | 'error') => {
-    setNotification({ message, type });
-    setTimeout(() => {
-      setNotification(null);
-    }, 4000);
+  // El cartel de éxito se cierra solo muy rápido (o con el botón OK, que
+  // cancela el temporizador para que no quede un timeout huérfano).
+  const notificationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const dismissNotification = () => {
+    if (notificationTimer.current) {
+      clearTimeout(notificationTimer.current);
+      notificationTimer.current = null;
+    }
+    setNotification(null);
   };
+
+  const showNotification = (message: string, type: 'success' | 'error') => {
+    if (notificationTimer.current) clearTimeout(notificationTimer.current);
+    setNotification({ message, type });
+    notificationTimer.current = setTimeout(() => {
+      notificationTimer.current = null;
+      setNotification(null);
+    }, type === 'success' ? 1500 : 4000);
+  };
+
+  useEffect(() => () => {
+    if (notificationTimer.current) clearTimeout(notificationTimer.current);
+  }, []);
 
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -769,14 +787,50 @@ export default function POSPage() {
   return (
     <div className="relative font-sans h-auto lg:h-[calc(100vh-4rem)] lg:flex lg:flex-col lg:overflow-hidden">
       
-      {/* Notificación de ÉXITO: cartel grande y centrado, imposible de no ver */}
+      {/* Notificación de ÉXITO: cartel centrado con botón OK; se cierra solo
+          en 1.5 s o al tocar OK / el fondo. */}
       {notification && notification.type === 'success' && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-900/50 backdrop-blur-sm animate-fade-in-down pointer-events-none p-4">
-          <div className="bg-white border-4 border-emerald-400 rounded-3xl shadow-2xl px-10 sm:px-20 py-12 sm:py-16 text-center max-w-3xl w-full">
-            <div className="text-8xl sm:text-9xl mb-6 leading-none">✅</div>
-            <p className="text-4xl sm:text-6xl font-extrabold text-emerald-700 leading-tight">
+        <div
+          onClick={dismissNotification}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-900/40 backdrop-blur-sm animate-fade-in-down p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-[2rem] shadow-2xl px-8 sm:px-14 py-10 sm:py-12 text-center max-w-lg w-full"
+          >
+            <svg viewBox="0 0 180 120" className="w-48 sm:w-56 h-auto mx-auto mb-6" aria-hidden="true">
+              <g stroke="#6ee7b7" strokeWidth="5" strokeLinecap="round">
+                <line x1="51.9" y1="42.3" x2="39.3" y2="36.3" />
+                <line x1="48" y1="60" x2="34" y2="60" />
+                <line x1="51.9" y1="77.8" x2="39.3" y2="83.7" />
+                <line x1="128.1" y1="42.3" x2="140.7" y2="36.3" />
+                <line x1="132" y1="60" x2="146" y2="60" />
+                <line x1="128.1" y1="77.8" x2="140.7" y2="83.7" />
+              </g>
+              <circle cx="90" cy="60" r="34" fill="#d1fae5" />
+              <path
+                d="M74 61 L85 72 L107 47"
+                fill="none"
+                stroke="#059669"
+                strokeWidth="8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+
+            <p className="text-3xl sm:text-4xl font-extrabold text-emerald-800 leading-tight">
               {notification.message}
             </p>
+            <p className="mt-3 text-base sm:text-lg text-slate-500">
+              La transacción se completó correctamente.
+            </p>
+
+            <button
+              onClick={dismissNotification}
+              className="mt-8 w-full sm:w-64 bg-emerald-600 hover:bg-emerald-700 text-white text-xl font-bold py-3 rounded-xl shadow-md transition-colors"
+            >
+              OK
+            </button>
           </div>
         </div>
       )}
