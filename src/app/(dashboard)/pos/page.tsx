@@ -7,6 +7,7 @@ import { notifySaleWhatsApp } from './actions';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
 import CasheaLogo from '@/components/CasheaLogo';
+import ExchangeModal from '@/components/ExchangeModal';
 
 
 // Una variante hermana dentro del mismo producto padre (para el "cambiar"
@@ -91,6 +92,10 @@ export default function POSPage() {
 
   const [notification, setNotification] = useState<NotificationType>(null);
 
+  // Cambio de producto: el modal busca la venta original por cédula y registra
+  // el cambio con el RPC register_exchange (no pasa por handleCheckout).
+  const [showExchange, setShowExchange] = useState(false);
+
   // NUEVOS ESTADOS PARA CANJE DE PUNTOS
   const [customerPoints, setCustomerPoints] = useState<number | null>(null);
   const [customerLookupName, setCustomerLookupName] = useState<string | null>(null);
@@ -123,6 +128,7 @@ export default function POSPage() {
     setCustomerLookupName(null);
     setWaOptIn(false);
     setWaOptedOut(false);
+    setShowExchange(false);
     redeemTouchedRef.current = false;
   }, [currentStore?.id, clearCart]);
 
@@ -786,12 +792,25 @@ export default function POSPage() {
       )}
 
       {/* Indicador de Tienda Activa en el POS */}
-      <div className="mb-2 flex items-center justify-between shrink-0">
+      <div className="mb-2 flex items-center justify-between gap-3 shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Terminal de Venta</h1>
           <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
+        <button
+          type="button"
+          onClick={() => setShowExchange(true)}
+          className="px-4 py-2 rounded-lg font-bold border-2 bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 transition whitespace-nowrap"
+        >
+          🔁 Cambio de producto
+        </button>
       </div>
+
+      <ExchangeModal
+        isOpen={showExchange}
+        onClose={() => setShowExchange(false)}
+        initialSaleId={null}
+      />
 
       <div className="flex flex-col lg:flex-row gap-4 pb-6 lg:pb-0 lg:flex-1 lg:min-h-0">
         

@@ -1,0 +1,21 @@
+-- ============================================================================
+-- Cambios de producto (1/2): valor 'cambio' en el enum de métodos de pago.
+--
+-- Un cambio SIN diferencia de precio se registra como una fila de `sales`
+-- con total_amount = 0 y payment_method = 'cambio' (el modelo completo está
+-- en db/exchange_02_schema_and_rpc.sql).
+--
+-- Va en su PROPIO archivo, igual que db/add_category_utiles_escolares.sql:
+-- el SQL Editor corre cada script como una sola transacción y Postgres no
+-- permite USAR un valor nuevo de un enum dentro de la misma transacción que
+-- lo agrega (error 55P04 "unsafe use of new value"). Aplicar este archivo
+-- primero y el 02 después, como scripts separados.
+--
+-- payment_method_2 se creó clonando el tipo de payment_method
+-- (db/split_payment.sql), así que este único ADD VALUE cubre ambas columnas.
+--
+-- Aplicar en el SQL Editor de Supabase. Aditivo, no destructivo (los valores
+-- de un enum no se pueden quitar después).
+-- Verificar: SELECT enum_range(NULL::public.payment_method_type);
+-- ============================================================================
+ALTER TYPE public.payment_method_type ADD VALUE IF NOT EXISTS 'cambio';

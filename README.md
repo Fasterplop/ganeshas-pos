@@ -59,6 +59,7 @@ La base de datos relacional en PostgreSQL está protegida por **Row-Level Securi
 * **`sale_items`**: Detalle de productos adquiridos (`sale_id`, `product_id`, `quantity`, `unit_price`, `subtotal`).
 * **`loyalty_settings` (NUEVO):** Configuración del programa de fidelidad (`store_id`, `points_per_block`, `discount_per_block_usd`). Editable únicamente por el `owner`; define el monto a gastar y el descuento en USD equivalente (con la tasa de 1 punto por $1, `points_per_block` = monto en dólares). La regla es **GLOBAL**: aunque la tabla guarda una fila por sucursal, la app la mantiene idéntica en todas.
 * **`get_global_points` / `redeem_points_global` (RPC, NUEVO):** Funciones (`SECURITY DEFINER`) que leen y canjean el saldo de puntos como un **pool unificado** entre sucursales. El canje bloquea las filas del cliente (`FOR UPDATE`), **impide saldos negativos y el doble gasto**, resuelve carreras entre cajas y aborta si el saldo GLOBAL no alcanza. (La versión previa `redeem_points`, por sucursal, queda en la base pero ya no se usa.)
+* **`sales.kind` / `sales.exchange_of_sale_id` / `sale_items.source_sale_item_id`, tabla `customer_points_adjustments`, RPC `register_exchange` / `adjust_customer_points` (NUEVO):** cambios de producto y ajuste manual de puntos; ver módulos 8 y 9. El CHECK de `sale_items.quantity` pasa a `<> 0` (las líneas devueltas de un cambio son negativas).
 
 ---
 
@@ -110,6 +111,17 @@ Sistema de impresión masiva integrado directamente en el navegador:
 * Interfaz para seleccionar **múltiples productos y cantidades** e imprimirlos en lote.
 * CSS optimizado (`print:block`, `print:hidden`, `print:p-0`) para impresoras de rollo térmico sin márgenes, garantizando que las etiquetas salgan perfectas sin configuraciones extra en el OS.
 
+### 8. Cambios de producto (🔁)
+El cliente devuelve producto(s) de una venta ya registrada y se lleva otro(s). SQL en `db/exchange_01_payment_method_cambio.sql` y `db/exchange_02_schema_and_rpc.sql` (aplicar en ese orden, **como scripts separados**: el valor nuevo del enum no puede usarse en la misma transacción que lo crea).
+* **Entrada:** botón "🔁 Cambiar" en cada fila del Historial de Transacciones (cajero y owner) y botón "🔁 Cambio de producto" en el POS, que busca las ventas del cliente por cédula en la tienda activa. Las ventas sin cliente (consumidor final) solo se cambian desde el historial. Ambos abren el mismo `ExchangeModal`.
+* **Modelo:** un cambio es una fila de `sales` con `kind = 'exchange'` y `exchange_of_sale_id` → venta origen. Sus `sale_items` son las líneas devueltas con **cantidad negativa** (`unit_price` = crédito, `source_sale_item_id` → línea original) y las nuevas con cantidad positiva. Por eso los top productos, los ingresos del día y la anulación "netean" solos, y la venta origen **no se modifica** (conserva total, método y fecha). "Transacciones hoy" no cuenta los cambios (los muestra aparte) y el Excel los marca como `CAMBIO DE PRODUCTO`.
+* **Reglas:** no se devuelve dinero ni se acredita: si lo nuevo vale menos que lo devuelto, el sistema bloquea el cambio y el cliente agrega productos. El crédito de lo devuelto es el precio del ticket **prorrateado por el descuento manual** de la venta (el canje de puntos no lo reduce). La diferencia se paga con un solo método (efectivo / zelle / pago móvil / punto de venta, con recargo 5% opcional) y puede reducirse canjeando puntos; sin diferencia queda `payment_method = 'cambio'`. El cambio suma `FLOOR(total)` puntos como una venta.
+* **Atomicidad:** todo lo hace el RPC `register_exchange` en una transacción: bloquea la venta origen (`FOR UPDATE`), valida cantidades restantes por línea, mueve stock en la tienda de la venta (ordenado por producto para evitar deadlocks), canjea y acredita puntos. Rechaza devolver de más, productos inactivos, cajero de otra tienda y un total distinto al que vio el cajero (`TOTAL_MISMATCH`). Se pueden encadenar cambios (las líneas positivas de un cambio son devolvibles).
+* **Anulación:** "Anular Cambio" (owner) usa `delete_sale_and_revert`, que ahora exige owner dentro del SQL, bloquea la fila y rechaza anular una venta con cambios (`SALE_HAS_EXCHANGES`): primero se anula el cambio, después la venta.
+
+### 9. Ajuste manual de puntos (owner)
+Desde el detalle de un cliente en `/customers`, el owner puede **sumar o restar puntos** indicando un motivo obligatorio. Va por el RPC `adjust_customer_points` (owner-only en SQL; al restar reutiliza `redeem_points_global`, así nunca deja saldos negativos) y cada ajuste queda registrado en `customer_points_adjustments` (quién, cuándo, cuánto y por qué), visible debajo del formulario.
+
 ---
 
 ## 📲 Notificación WhatsApp post-venta (Cloud API de Meta + n8n)
@@ -137,7 +149,7 @@ Runbook completo de despliegue (VPS, nginx, Meta, workflows, troubleshooting): `
 
 * **Redención de Puntos (POS — ✅ Implementado):** El cajero ya puede canjear los `reward_points` del cliente como descuento directo en caja. Los **puntos son un pool unificado** entre sucursales y la **regla de descuento es global** (configurable por el `owner` en `loyalty_settings`), con deducción atómica sobre el saldo global (`redeem_points_global`). **Pendiente:** exponer el balance y el canje también desde la Customer App.
 
-> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio); la anulación de una venta con canje no reintegra los puntos automáticamente; y no se guarda un ledger de canjes (solo el `redemption_discount_usd` en la venta y el saldo reducido del cliente).
+> **Deuda técnica aceptada (Fase 2):** por alcance, el canje y la creación de venta no comparten una única transacción (se prioriza no dar descuento "gratis" al negocio). La anulación de una venta con canje **sí** reintegra los puntos canjeados (`redemption_points`), y los cambios de producto (`register_exchange`) **sí** son atómicos. No hay ledger de canjes (solo `redemption_discount_usd` / `redemption_points` en la venta); los ajustes manuales del owner sí quedan en `customer_points_adjustments`.
 
 ---
 *GaneshaStores POS - Desarrollado para optimización de flujo en mostrador y alta fidelidad contable.*

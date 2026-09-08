@@ -11,6 +11,8 @@ import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
+import ExchangeModal from '@/components/ExchangeModal';
+import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
 
 // PostgREST corta cada respuesta en 1000 filas (y trunca en silencio): las
 // consultas de ventas se paginan con .range() de a SALES_PAGE.
@@ -36,6 +38,8 @@ const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
 // Texto del/los método(s) de pago de una venta (usado en el Excel).
 // Pago simple: "punto de venta". Pago dividido: "efectivo ($50.00), cashea ($80.00)".
 const paymentToText = (sale: any) => {
+  // Cambio de producto sin diferencia de precio: no hubo cobro.
+  if (sale.payment_method === EXCHANGE_NO_DIFF_METHOD) return 'sin diferencia (cambio)';
   const m1 = prettyMethod(sale.payment_method) || 'N/A';
   if (!sale.payment_method_2) return m1;
   const a1 = Number(sale.payment_amount_1) || 0;
@@ -62,6 +66,8 @@ const CASHEA_INITIAL_ROW: (typeof PAYMENT_METHODS)[number] = {
 // Suma el monto de una venta al acumulado por método de pago.
 // Pago simple: todo el total al método. Pago dividido: cada parte a su método.
 const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
+  // Un cambio sin diferencia no movió dinero: no crea una fila "$0.00" en el desglose.
+  if (sale.payment_method === EXCHANGE_NO_DIFF_METHOD) return;
   if (sale.payment_method_2) {
     const a1 = Number(sale.payment_amount_1) || 0;
     const a2 = Number(sale.payment_amount_2) || 0;
@@ -88,15 +94,46 @@ const casheaLeg = (sale: SaleRow): number => {
 // viejas o si la columna todavía no existe.
 const casheaInitialOf = (sale: SaleRow): number => Number(sale.cashea_initial_usd) || 0;
 
-// Columnas del historial y del export. `withCasheaInitial` = false es el
-// fallback cuando sales.cashea_initial_usd todavía no existe en la BD.
-const historySelect = (withCasheaInitial: boolean) => `
+// Columnas opcionales de `sales` que dependen de migraciones aplicadas a mano:
+//   cashea   -> sales.cashea_initial_usd (db/cashea_initial.sql)
+//   exchange -> sales.kind / exchange_of_sale_id, sale_items.source_sale_item_id
+//               (db/exchange_02_schema_and_rpc.sql)
+type ColFlags = { cashea: boolean; exchange: boolean };
+const DEFAULT_FLAGS: ColFlags = { cashea: true, exchange: true };
+
+// Ejecuta un select y, si la BD todavía no tiene alguna de esas columnas,
+// reintenta sin ella (cada reintento apaga un flag, así que termina siempre).
+// Devuelve también los flags con los que se logró la consulta.
+async function selectWithFallback(
+  initial: ColFlags,
+  run: (flags: ColFlags) => PromiseLike<{ data: unknown; error: { code?: string; message?: string } | null }>,
+): Promise<{ data: unknown; error: { code?: string; message?: string } | null; flags: ColFlags }> {
+  let flags = { ...initial };
+  for (;;) {
+    const res = await run(flags);
+    if (res.error && flags.exchange && isMissingExchangeColumn(res.error)) {
+      console.warn('[dashboard] columnas de cambios de producto no existen aún (aplicar db/exchange_02_schema_and_rpc.sql); historial sin cambios.');
+      flags = { ...flags, exchange: false };
+      continue;
+    }
+    if (res.error && flags.cashea && isMissingColumnError(res.error, 'cashea_initial_usd')) {
+      console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); historial sin inicial de Cashea.');
+      flags = { ...flags, cashea: false };
+      continue;
+    }
+    return { data: res.data, error: res.error, flags };
+  }
+}
+
+// Columnas del historial y del export (ver ColFlags para las opcionales).
+const historySelect = (flags: ColFlags) => `
   id,
   created_at,
   total_amount,
   redemption_discount_usd,
   punto_de_venta_surcharge_usd,
-  ${withCasheaInitial ? 'cashea_initial_usd,' : ''}
+  ${flags.cashea ? 'cashea_initial_usd,' : ''}
+  ${flags.exchange ? 'kind, exchange_of_sale_id,' : ''}
   bcv_rate,
   payment_method,
   payment_ref,
@@ -106,12 +143,23 @@ const historySelect = (withCasheaInitial: boolean) => `
   customers (full_name),
   profiles (full_name),
   sale_items (
+    id,
+    product_id,
     quantity,
     unit_price,
     custom_name,
+    ${flags.exchange ? 'source_sale_item_id,' : ''}
     products (name, talla, color)
   )
 `;
+
+// Consulta `.in()` por lotes: 100 ventas × varias líneas superan el largo de URL cómodo.
+const IN_CHUNK = 100;
+const chunks = <T,>(arr: T[], size: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
 
 // Cantidad total de artículos vendidos en una venta.
 const saleItemCount = (sale: any) =>
@@ -131,6 +179,8 @@ export default function DashboardPage() {
   const [todayByMethod, setTodayByMethod] = useState<Record<string, number>>({});
   // Iniciales de Cashea cobradas hoy en tienda (suma de sales.cashea_initial_usd).
   const [todayCasheaInitial, setTodayCasheaInitial] = useState(0);
+  // Cambios de producto registrados hoy (no cuentan como transacciones de venta).
+  const [todayExchanges, setTodayExchanges] = useState(0);
 
   const [thisWeekUSD, setThisWeekUSD] = useState(0);
   const [weekGrowth, setWeekGrowth] = useState(0);
@@ -163,6 +213,14 @@ export default function DashboardPage() {
   const [salesHistory, setSalesHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [exporting, setExporting] = useState(false);
+  // Cambios de producto: unidades ya devueltas por línea (id de sale_items) y
+  // fecha de la venta origen de cada cambio (id de sales) para las filas del historial.
+  const [returnedByLine, setReturnedByLine] = useState<Record<string, number>>({});
+  const [sourceSaleDates, setSourceSaleDates] = useState<Record<string, string>>({});
+  // Venta sobre la que se abre el modal de cambio (null = cerrado).
+  const [exchangeSaleId, setExchangeSaleId] = useState<string | null>(null);
+  // Se incrementa tras registrar un cambio para recargar métricas, gráfico e historial.
+  const [refreshKey, setRefreshKey] = useState(0);
   // El historial arranca en el DÍA ACTUAL (calculado en zona horaria de Caracas
   // para no correrse un día si se usa de noche — toISOString() usa UTC).
   const todayCaracas = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Caracas' });
@@ -227,8 +285,15 @@ export default function DashboardPage() {
       // columna todavía no existe (db/cashea_initial.sql se aplica a mano),
       // se vuelve a pedir sin ella: las iniciales de Cashea quedan en 0.
       const METRIC_COLS = 'total_amount, bcv_rate, created_at, payment_method, payment_method_2, payment_amount_1, payment_amount_2';
+      // `kind` distingue ventas de cambios de producto (db/exchange_02_schema_and_rpc.sql);
+      // si tampoco existe, los cambios se cuentan como transacciones.
       let recentSales: SaleRow[] | null = null;
-      for (const cols of [`${METRIC_COLS}, cashea_initial_usd`, METRIC_COLS]) {
+      for (const cols of [
+        `${METRIC_COLS}, cashea_initial_usd, kind`,
+        `${METRIC_COLS}, cashea_initial_usd`,
+        `${METRIC_COLS}, kind`,
+        METRIC_COLS,
+      ]) {
         const rows: SaleRow[] = [];
         let failed = false;
         for (let from = 0; ; from += SALES_PAGE) {
@@ -243,6 +308,8 @@ export default function DashboardPage() {
           if (error) {
             if (isMissingColumnError(error, 'cashea_initial_usd')) {
               console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); iniciales de Cashea en 0.');
+            } else if (isMissingExchangeColumn(error)) {
+              console.warn('[dashboard] sales.kind no existe aún (aplicar db/exchange_02_schema_and_rpc.sql); los cambios cuentan como transacciones.');
             }
             failed = true;
             break;
@@ -256,7 +323,7 @@ export default function DashboardPage() {
 
       if (recentSales) {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
-        let tTx = 0, tCasheaInitial = 0;
+        let tTx = 0, tCasheaInitial = 0, tExchanges = 0;
         const byMethod: Record<string, number> = {};
 
         recentSales.forEach(sale => {
@@ -264,9 +331,11 @@ export default function DashboardPage() {
           const amount = Number(sale.total_amount);
 
           if (saleDate >= startOfToday) {
+            // La diferencia cobrada en un cambio es ingreso del día, pero el
+            // cambio no es una transacción de venta.
             tUSD += amount;
             tVES += amount * Number(sale.bcv_rate);
-            tTx += 1;
+            if (isExchange(sale)) tExchanges += 1; else tTx += 1;
             tCasheaInitial += casheaInitialOf(sale);
             addSaleToBreakdown(byMethod, sale);
           }
@@ -279,6 +348,7 @@ export default function DashboardPage() {
         setTodayUSD(tUSD);
         setTodayVES(tVES);
         setTodayTx(tTx);
+        setTodayExchanges(tExchanges);
         setTodayByMethod(byMethod);
         setTodayCasheaInitial(tCasheaInitial);
         setThisWeekUSD(tWeek);
@@ -287,7 +357,7 @@ export default function DashboardPage() {
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
       } else {
         // Reset a cero si no hay ventas en la nueva tienda
-        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayByMethod({}); setTodayCasheaInitial(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayExchanges(0); setTodayByMethod({}); setTodayCasheaInitial(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
       }
 
       // B. Mejores Clientes AISLADOS POR TIENDA
@@ -315,18 +385,27 @@ export default function DashboardPage() {
           const pId = item.product_id || `quick-${item.custom_name}`;
 
           const productName = item.custom_name || item.products?.name || 'Desconocido';
-          const price = item.unit_price ?? item.products?.price ?? 0;
+          const qty = Number(item.quantity) || 0;
+          // Una línea devuelta en un cambio (cantidad negativa) trae el crédito,
+          // no el precio: el precio se toma solo de líneas vendidas.
+          const price = qty > 0
+            ? (item.unit_price ?? item.products?.price ?? 0)
+            : (item.products?.price ?? 0);
           const variant = formatVariant(item.products?.talla, item.products?.color);
 
           if (!productCounts[pId]) {
             productCounts[pId] = { id: pId, name: productName, variant, price: price, qty: 0 };
+          } else if (qty > 0 && item.unit_price != null) {
+            productCounts[pId].price = item.unit_price;
           }
-          productCounts[pId].qty += item.quantity;
+          // Las devoluciones restan: el ranking refleja lo que realmente quedó vendido.
+          productCounts[pId].qty += qty;
         });
-        
+
         const sortedProducts = Object.values(productCounts)
+          .filter(p => p.qty > 0)
           .sort((a, b) => b.qty - a.qty)
-          .slice(0, 50); 
+          .slice(0, 50);
         setTopProducts(sortedProducts);
       } else {
         setTopProducts([]);
@@ -335,7 +414,7 @@ export default function DashboardPage() {
       setLoading(false);
     }
     fetchDashboardData();
-  }, [supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
+  }, [supabase, currentStore?.id, refreshKey]); // <-- Se vuelve a ejecutar si cambia la tienda o tras un cambio de producto
 
   // =======================================================
   // 2. GRÁFICO DE RECHARTS
@@ -373,7 +452,7 @@ export default function DashboardPage() {
       }
     }
     fetchChartData();
-  }, [dateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
+  }, [dateRange, supabase, currentStore?.id, refreshKey]); // <-- Se vuelve a ejecutar si cambia la tienda o tras un cambio de producto
 
   // =======================================================
   // 3. HISTORIAL DE TRANSACCIONES
@@ -383,26 +462,60 @@ export default function DashboardPage() {
       if (!currentStore) return;
       
       setLoadingHistory(true);
-      // Con fallback si sales.cashea_initial_usd todavía no existe (ver historySelect).
-      const run = (withCasheaInitial: boolean) => supabase
+      // Con fallback si sales.cashea_initial_usd o las columnas de cambios
+      // todavía no existen (ver selectWithFallback / historySelect).
+      const res = await selectWithFallback(DEFAULT_FLAGS, (flags) => supabase
         .from('sales')
-        .select(historySelect(withCasheaInitial))
+        .select(historySelect(flags))
         .eq('store_id', currentStore.id)
         .gte('created_at', `${historyDateRange.start}T00:00:00.000-04:00`)
         .lte('created_at', `${historyDateRange.end}T23:59:59.999-04:00`)
         .order('created_at', { ascending: false })
-        .limit(100);
-      let res = await run(true);
-      if (res.error && isMissingColumnError(res.error, 'cashea_initial_usd')) {
-        console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); historial sin inicial de Cashea.');
-        res = await run(false);
-      }
+        .limit(100));
 
-      setSalesHistory((res.data as unknown as SaleRow[] | null) ?? []);
+      const rows = (res.data as SaleRow[] | null) ?? [];
+      setSalesHistory(rows);
       setLoadingHistory(false);
+
+      // Marcas de cambio para las filas visibles: qué líneas ya fueron devueltas
+      // y la fecha de la venta origen de cada cambio. Van en consultas aparte
+      // (el embed auto-referenciado de PostgREST es ambiguo); el historial está
+      // capado a 100 ventas así que son consultas chicas.
+      if (!res.flags.exchange) {
+        setReturnedByLine({});
+        setSourceSaleDates({});
+        return;
+      }
+      type HistoryLine = { id: string; quantity: unknown };
+      type HistoryRow = { sale_items?: HistoryLine[]; exchange_of_sale_id?: string | null };
+      const typedRows = rows as unknown as HistoryRow[];
+      const lineIds: string[] = typedRows.flatMap((s) =>
+        (s.sale_items ?? []).filter((it) => Number(it.quantity) > 0).map((it) => it.id));
+      const sourceIds: string[] = typedRows
+        .map((s) => s.exchange_of_sale_id)
+        .filter((id): id is string => typeof id === 'string' && id !== '');
+
+      const returned: Record<string, number> = {};
+      for (const ids of chunks(lineIds, IN_CHUNK)) {
+        const { data: rets } = await supabase
+          .from('sale_items')
+          .select('source_sale_item_id, quantity')
+          .in('source_sale_item_id', ids);
+        for (const r of rets ?? []) {
+          const key = r.source_sale_item_id as string;
+          returned[key] = (returned[key] || 0) + Math.max(0, -Number(r.quantity));
+        }
+      }
+      const dates: Record<string, string> = {};
+      for (const ids of chunks(sourceIds, IN_CHUNK)) {
+        const { data: srcs } = await supabase.from('sales').select('id, created_at').in('id', ids);
+        for (const s of srcs ?? []) dates[s.id as string] = s.created_at as string;
+      }
+      setReturnedByLine(returned);
+      setSourceSaleDates(dates);
     }
     fetchHistory();
-  }, [historyDateRange, supabase, currentStore?.id]); // <-- Se vuelve a ejecutar si cambia la tienda
+  }, [historyDateRange, supabase, currentStore?.id, refreshKey]); // <-- Se vuelve a ejecutar si cambia la tienda o tras un cambio de producto
 
   const handleExportCSV = async () => {
     if (!currentStore || exporting) return;
@@ -416,9 +529,9 @@ export default function DashboardPage() {
       // Query PROPIA del export: trae TODO el rango paginando con .range()
       // (la tabla sí está capada a 100). Con fallback si sales.cashea_initial_usd
       // todavía no existe (ver historySelect).
-      const fetchExportPage = (withCasheaInitial: boolean, from: number) => supabase
+      const fetchExportPage = (flags: ColFlags, from: number) => supabase
         .from('sales')
-        .select(historySelect(withCasheaInitial))
+        .select(historySelect(flags))
         .eq('store_id', currentStore.id)
         .gte('created_at', fromISO)
         .lte('created_at', toISO)
@@ -427,16 +540,13 @@ export default function DashboardPage() {
         .range(from, from + SALES_PAGE - 1);
 
       const rows: SaleRow[] = [];
-      let withCasheaInitial = true;
+      let flags: ColFlags = { ...DEFAULT_FLAGS };
       for (let from = 0; ; from += SALES_PAGE) {
-        let page = await fetchExportPage(withCasheaInitial, from);
-        if (page.error && withCasheaInitial && isMissingColumnError(page.error, 'cashea_initial_usd')) {
-          console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); export sin inicial de Cashea.');
-          withCasheaInitial = false;
-          page = await fetchExportPage(withCasheaInitial, from);
-        }
+        // Los flags con los que funcionó la primera página se reutilizan en las siguientes.
+        const page = await selectWithFallback(flags, (f) => fetchExportPage(f, from));
+        flags = page.flags;
         if (page.error) throw page.error;
-        const data = (page.data as unknown as SaleRow[] | null) ?? [];
+        const data = (page.data as SaleRow[] | null) ?? [];
         rows.push(...data);
         if (data.length < SALES_PAGE) break;
       }
@@ -496,11 +606,17 @@ export default function DashboardPage() {
 
         // Celda "Productos comprados": una línea por artículo con formato "Nx nombre".
         const itemCount = saleItemCount(sale);
-        const productos = sale.sale_items?.map((item: any) => {
+        // Un cambio de producto lista lo devuelto (↩, cantidad negativa en la BD)
+        // y lo entregado; la fila se marca como CAMBIO para distinguirla de una venta.
+        const productoLines = sale.sale_items?.map((item: any) => {
           const nm = item.custom_name || item.products?.name || 'Desconocido';
           const variant = formatVariant(item.products?.talla, item.products?.color);
-          return `${item.quantity}x ${nm}${variant ? ` (${variant})` : ''}`;
+          const qty = Number(item.quantity) || 0;
+          return qty < 0
+            ? `↩ ${-qty}x ${nm}${variant ? ` (${variant})` : ''} (devuelto)`
+            : `${qty}x ${nm}${variant ? ` (${variant})` : ''}`;
         }).join('\n') || '';
+        const productos = isExchange(sale) ? `CAMBIO DE PRODUCTO\n${productoLines}` : productoLines;
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
@@ -695,6 +811,11 @@ export default function DashboardPage() {
       <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl mb-3">🛍️</div>
       <h2 className="text-3xl font-bold text-slate-800">{todayTx}</h2>
       <p className="text-slate-500 font-medium mt-1">Transacciones hoy</p>
+      {todayExchanges > 0 && (
+        <p className="text-xs text-amber-700 font-semibold mt-0.5">
+          +{todayExchanges} {todayExchanges === 1 ? 'cambio' : 'cambios'} de producto
+        </p>
+      )}
       <button
         type="button"
         onClick={goToTodayHistory}
@@ -951,13 +1072,30 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {salesHistory.map((sale) => (
-                    <tr key={sale.id} className="hover:bg-slate-50 transition-colors">
+                  {salesHistory.map((sale) => {
+                    // Cambio de producto: fila de `sales` con kind = 'exchange' cuyas
+                    // líneas negativas son lo devuelto y las positivas lo entregado.
+                    const exchange = isExchange(sale);
+                    const counts = exchangeCounts(sale.sale_items);
+                    const sourceDate = exchange && sale.exchange_of_sale_id ? sourceSaleDates[sale.exchange_of_sale_id] : null;
+                    const hasReturns = !exchange && (sale.sale_items ?? []).some((it: { id: string }) => (returnedByLine[it.id] || 0) > 0);
+                    return (
+                    <tr key={sale.id} className={`hover:bg-slate-50 transition-colors ${exchange ? 'bg-amber-50/40' : ''}`}>
                       <td className="p-3 text-slate-600 whitespace-nowrap">
                         {parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
                           timeZone: 'America/Caracas',
                           day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
                         })}
+                        {exchange && (
+                          <span className="block mt-1 w-fit text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                            🔁 Cambio{sourceDate ? ` · venta del ${parseSupabaseDate(sourceDate).toLocaleDateString('es-VE', { timeZone: 'America/Caracas', day: '2-digit', month: '2-digit' })}` : ''}
+                          </span>
+                        )}
+                        {hasReturns && (
+                          <span className="block mt-1 w-fit text-[10px] font-bold uppercase tracking-wider text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                            Con cambio
+                          </span>
+                        )}
                       </td>
                       <td className="p-3 text-slate-800 font-medium max-w-[150px] truncate">
                         {sale.customers?.full_name || 'Anónimo'}
@@ -967,19 +1105,35 @@ export default function DashboardPage() {
                       </td>
                       <td className="p-3 align-top">
                         <ul className="list-disc list-inside text-slate-600 text-xs space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                          {sale.sale_items?.map((item: any, idx: number) => (
-                            <li key={idx} className="truncate max-w-[200px]">
-                              <span className="font-medium text-slate-700">{item.quantity}x</span> {item.custom_name || item.products?.name || 'Desconocido'}
-                              {formatVariant(item.products?.talla, item.products?.color) && (
-                                <span className="text-slate-400 ml-1">· {formatVariant(item.products?.talla, item.products?.color)}</span>
-                              )}
-                              <span className="text-slate-400 ml-1">(${item.unit_price})</span>
-                            </li>
-                          ))}
+                          {sale.sale_items?.map((item: any, idx: number) => {
+                            const qty = Number(item.quantity) || 0;
+                            const returnedHere = exchange ? 0 : (returnedByLine[item.id] || 0);
+                            const variant = formatVariant(item.products?.talla, item.products?.color);
+                            return (
+                              <li key={idx} className={`truncate max-w-[200px] ${qty < 0 ? 'text-amber-700' : ''}`}>
+                                <span className={`font-medium ${qty < 0 ? '' : 'text-slate-700'}`}>{qty < 0 ? `↩ ${-qty}x` : `${qty}x`}</span> {item.custom_name || item.products?.name || 'Desconocido'}
+                                {variant && (
+                                  <span className={`ml-1 ${qty < 0 ? 'text-amber-600/80' : 'text-slate-400'}`}>· {variant}</span>
+                                )}
+                                {qty < 0 ? (
+                                  <span className="text-amber-600/80 ml-1">(devuelto · crédito ${Number(item.unit_price).toFixed(2)})</span>
+                                ) : (
+                                  <span className="text-slate-400 ml-1">(${Number(item.unit_price).toFixed(2)})</span>
+                                )}
+                                {returnedHere > 0 && (
+                                  <span className="text-amber-700 font-semibold ml-1">({returnedHere} devuelto)</span>
+                                )}
+                              </li>
+                            );
+                          })}
                         </ul>
                       </td>
                       <td className="p-3">
-                        {sale.payment_method_2 ? (
+                        {sale.payment_method === EXCHANGE_NO_DIFF_METHOD ? (
+                          <div className="text-slate-500 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
+                            Sin diferencia
+                          </div>
+                        ) : sale.payment_method_2 ? (
                           <div className="flex flex-col gap-1 items-start">
                             <span className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
                               {prettyMethod(sale.payment_method)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_1).toFixed(2)})</span>
@@ -998,10 +1152,19 @@ export default function DashboardPage() {
                         )}
                       </td>
                       <td className="p-3 text-center text-slate-700 font-semibold whitespace-nowrap">
-                        {saleItemCount(sale)}
+                        {exchange ? (
+                          <span className="text-xs" title="devueltos / entregados">
+                            <span className="text-amber-700">↩{counts.returned}</span> / <span className="text-teal-700">+{counts.added}</span>
+                          </span>
+                        ) : saleItemCount(sale)}
                       </td>
                       <td className="p-3 text-right">
-  <p className="font-bold text-slate-800">${Number(sale.total_amount).toFixed(2)}</p>
+  <p className="font-bold text-slate-800">
+    ${Number(sale.total_amount).toFixed(2)}
+    {exchange && (
+      <span className="text-[11px] text-slate-500 font-medium ml-1">{Number(sale.total_amount) > 0 ? 'diferencia' : 'sin dif.'}</span>
+    )}
+  </p>
   <p className="text-[11px] text-slate-500 font-medium mt-0.5">
     Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
   </p>
@@ -1021,17 +1184,31 @@ export default function DashboardPage() {
     </p>
   )}
 
-  {/* NUEVO: Botón de anular venta */}
+  {/* Cambio de producto: cajero y owner (el RPC limita al cajero a su tienda) */}
+  <button
+    type="button"
+    onClick={() => setExchangeSaleId(sale.id)}
+    className="text-xs text-teal-700 hover:text-teal-900 mt-2 font-semibold"
+  >
+    🔁 Cambiar
+  </button>
+
+  {/* Botón de anular venta / cambio (solo owner) */}
   {role === 'owner' && (
   <button 
     onClick={async () => {
-      if (confirm('¿Estás seguro de anular esta venta? El stock y los puntos del cliente serán revertidos inmediatamente.')) {
+      const msg = exchange
+        ? '¿Anular este cambio de producto? El stock y los puntos del cliente volverán a como estaban antes del cambio.'
+        : '¿Estás seguro de anular esta venta? El stock y los puntos del cliente serán revertidos inmediatamente.';
+      if (confirm(msg)) {
         try {
            await deleteSaleAction(sale.id);
            
            // Actualiza el estado local para que desaparezca al instante
            setSalesHistory(prev => prev.filter(s => s.id !== sale.id));
-           alert('Venta anulada con éxito');
+           alert(exchange ? 'Cambio anulado con éxito' : 'Venta anulada con éxito');
+           // Un cambio anulado devuelve unidades a la venta origen: refrescar marcas y métricas.
+           setRefreshKey(k => k + 1);
            
         } catch (error) {
            // CORRECCIÓN TYPESCRIPT: Verificamos si es una instancia de Error
@@ -1045,18 +1222,27 @@ export default function DashboardPage() {
     }}
     className="text-xs text-red-500 hover:text-red-700 mt-2 font-semibold"
   >
-    Anular Venta
+    {exchange ? 'Anular Cambio' : 'Anular Venta'}
   </button>
 )}
 </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
           </div>
         )}
       </div>
+
+      {/* --- MODAL DE CAMBIO DE PRODUCTO (se abre desde una fila del historial) --- */}
+      <ExchangeModal
+        isOpen={exchangeSaleId !== null}
+        onClose={() => setExchangeSaleId(null)}
+        initialSaleId={exchangeSaleId}
+        onDone={() => setRefreshKey(k => k + 1)}
+      />
 
       {/* --- MODALES "VER MÁS" --- */}
       {role !== 'cashier' && (

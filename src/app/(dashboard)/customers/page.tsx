@@ -7,6 +7,7 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el Store
+import { exchangeErrorMessage, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
 
 // Esquema de validación con Zod
 const customerSchema = z.object({
@@ -17,6 +18,15 @@ const customerSchema = z.object({
 });
 
 type CustomerFormValues = z.infer<typeof customerSchema>;
+
+// Fila de customer_points_adjustments (ajuste manual de puntos por el owner).
+interface PointsAdjustment {
+  id: string;
+  delta: number;
+  reason: string | null;
+  created_at: string;
+  profiles: { full_name: string } | null;
+}
 
 interface Customer {
   document_id: string;
@@ -66,8 +76,17 @@ export default function CustomersPage() {
   const [customerSales, setCustomerSales] = useState<any[]>([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
-  // Rol del usuario (solo el owner puede eliminar clientes)
+  // Rol del usuario (solo el owner puede eliminar clientes y ajustar puntos)
   const [userRole, setUserRole] = useState<string | null>(null);
+
+  // Ajuste manual de puntos (owner): RPC adjust_customer_points + historial
+  // de ajustes (customer_points_adjustments). Ver db/exchange_02_schema_and_rpc.sql.
+  const [adjSign, setAdjSign] = useState<'+' | '-'>('+');
+  const [adjAmount, setAdjAmount] = useState('');
+  const [adjReason, setAdjReason] = useState('');
+  const [adjBusy, setAdjBusy] = useState(false);
+  const [adjMsg, setAdjMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [adjustments, setAdjustments] = useState<PointsAdjustment[]>([]);
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
@@ -188,13 +207,22 @@ export default function CustomersPage() {
     setSelectedCustomer(customer);
     setIsViewModalOpen(true);
     setLoadingSales(true);
+    setAdjSign('+');
+    setAdjAmount('');
+    setAdjReason('');
+    setAdjMsg(null);
+    setAdjustments([]);
+    if (userRole === 'owner') fetchAdjustments(customer.document_id);
 
-    const { data, error } = await supabase
+    // `kind` distingue ventas de cambios de producto; si la migración de
+    // cambios aún no está aplicada, se reintenta sin esa columna.
+    const run = (withExchange: boolean) => supabase
       .from('sales')
       .select(`
         id,
         created_at,
         total_amount,
+        ${withExchange ? 'kind,' : ''}
         stores ( name ),
         sale_items (
           quantity,
@@ -207,6 +235,12 @@ export default function CustomersPage() {
       .eq('customer_id', customer.document_id) // <-- GLOBAL: todas las sucursales
       .order('created_at', { ascending: false });
 
+    let { data, error } = await run(true);
+    if (error && isMissingExchangeColumn(error)) {
+      console.warn('[customers] sales.kind no existe aún (aplicar db/exchange_02_schema_and_rpc.sql); historial sin marcas de cambio.');
+      ({ data, error } = await run(false));
+    }
+
     if (error) {
       console.error('Error fetching sales:', error);
       setCustomerSales([]);
@@ -215,6 +249,58 @@ export default function CustomersPage() {
     }
     
     setLoadingSales(false);
+  };
+
+  // Historial de ajustes manuales de puntos del cliente (solo lo ve el owner).
+  // La tabla puede no existir todavía (migración a mano): en ese caso, lista vacía.
+  const fetchAdjustments = async (documentId: string) => {
+    const { data, error } = await supabase
+      .from('customer_points_adjustments')
+      .select('id, delta, reason, created_at, profiles ( full_name )')
+      .eq('document_id', documentId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setAdjustments(error ? [] : ((data ?? []) as unknown as PointsAdjustment[]));
+  };
+
+  // Sumar o restar puntos a mano (owner). El RPC verifica el rol, exige motivo,
+  // nunca deja saldos negativos y registra el ajuste. Devuelve el saldo global nuevo.
+  const handleAdjustPoints = async () => {
+    if (!selectedCustomer || !currentStore) return;
+    const amount = parseInt(adjAmount, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setAdjMsg({ text: 'Ingresa una cantidad de puntos mayor a 0.', ok: false });
+      return;
+    }
+    if (adjReason.trim() === '') {
+      setAdjMsg({ text: 'Escribe el motivo del ajuste.', ok: false });
+      return;
+    }
+    const delta = adjSign === '+' ? amount : -amount;
+
+    setAdjBusy(true);
+    setAdjMsg(null);
+    const { data, error } = await supabase.rpc('adjust_customer_points', {
+      p_document_id: selectedCustomer.document_id,
+      p_store_id: currentStore.id,
+      p_delta: delta,
+      p_reason: adjReason.trim(),
+    });
+    setAdjBusy(false);
+
+    if (error) {
+      setAdjMsg({ text: exchangeErrorMessage(error, 'No se pudieron ajustar los puntos.'), ok: false });
+      return;
+    }
+
+    const newTotal = Number(data) || 0;
+    const docId = selectedCustomer.document_id;
+    setSelectedCustomer((prev) => (prev ? { ...prev, reward_points: newTotal } : prev));
+    setCustomers((prev) => prev.map((c) => (c.document_id === docId ? { ...c, reward_points: newTotal } : c)));
+    setAdjAmount('');
+    setAdjReason('');
+    setAdjMsg({ text: `Puntos ajustados (${delta > 0 ? '+' : ''}${delta}). Saldo actual: ${newTotal} pts.`, ok: true });
+    fetchAdjustments(docId);
   };
 
   // Eliminar DEFINITIVAMENTE un cliente — solo owner. Se borran sus datos y
@@ -272,7 +358,9 @@ export default function CustomersPage() {
     (customer.phone && customer.phone.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  const totalCompras = customerSales.length;
+  // Los cambios de producto (kind = 'exchange') no cuentan como compras, pero la
+  // diferencia que pagaron sí es gasto real (consistente con customers.total_spent).
+  const totalCompras = customerSales.filter((s) => !isExchange(s)).length;
   const totalGastadoReal = customerSales.reduce((acc, sale) => acc + Number(sale.total_amount), 0);
   const promedioCompra = totalCompras > 0 ? (totalGastadoReal / totalCompras) : 0;
 
@@ -503,6 +591,85 @@ export default function CustomersPage() {
               </div>
             </div>
 
+            {/* Ajuste manual de puntos (solo owner). Va por el RPC
+                adjust_customer_points (owner-only en SQL) y deja rastro en
+                customer_points_adjustments, que se lista debajo. */}
+            {userRole === 'owner' && (
+              <div className="border border-teal-200 bg-teal-50/40 rounded-lg p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                  <h4 className="text-base font-bold text-slate-800">✪ Ajustar puntos manualmente</h4>
+                  <span className="text-sm text-slate-500">
+                    Saldo global: <strong className="text-teal-700">{selectedCustomer.reward_points || 0} pts</strong>
+                  </span>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="flex shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setAdjSign('+')}
+                      className={`px-3 py-2 rounded-l-lg border font-bold transition ${adjSign === '+' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                    >
+                      + Sumar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdjSign('-')}
+                      className={`px-3 py-2 rounded-r-lg border border-l-0 font-bold transition ${adjSign === '-' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                    >
+                      − Restar
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={adjAmount}
+                    onChange={(e) => setAdjAmount(e.target.value)}
+                    placeholder="Puntos"
+                    className="w-full sm:w-28 p-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={adjReason}
+                    onChange={(e) => setAdjReason(e.target.value)}
+                    placeholder="Motivo (obligatorio)"
+                    className="flex-1 p-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAdjustPoints}
+                    disabled={adjBusy}
+                    className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed transition whitespace-nowrap"
+                  >
+                    {adjBusy ? 'Aplicando...' : 'Aplicar'}
+                  </button>
+                </div>
+                {adjMsg && (
+                  <p className={`text-sm mt-2 font-medium ${adjMsg.ok ? 'text-emerald-700' : 'text-red-600'}`}>{adjMsg.text}</p>
+                )}
+                {adjustments.length > 0 && (
+                  <ul className="mt-3 divide-y divide-slate-100 border border-slate-200 rounded-lg bg-white text-sm max-h-40 overflow-y-auto">
+                    {adjustments.map((a) => (
+                      <li key={a.id} className="px-3 py-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-slate-700 truncate">{a.reason || 'Sin motivo'}</p>
+                          <p className="text-xs text-slate-400">
+                            {new Date(a.created_at).toLocaleString('es-VE', {
+                              timeZone: 'America/Caracas', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+                            })}
+                            {' · '}{a.profiles?.full_name || 'Owner'}
+                          </p>
+                        </div>
+                        <span className={`font-bold shrink-0 ${a.delta > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                          {a.delta > 0 ? `+${a.delta}` : a.delta} pts
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             <div>
               <div className="flex justify-between items-center mb-4 mt-2">
                 <h4 className="text-lg font-bold text-slate-800">Historial de Compras</h4>
@@ -532,16 +699,24 @@ export default function CustomersPage() {
                       </tr>
                     ) : (
                       customerSales.map((sale) => {
-                        const itemsString = sale.sale_items?.map((item: any) =>
-                          `${item.quantity}x ${item.custom_name || item.products?.name || 'Producto Desconocido'}`
-                        ).join(', ');
+                        // En un cambio, las líneas con cantidad negativa son lo devuelto.
+                        const itemsString = sale.sale_items?.map((item: any) => {
+                          const qty = Number(item.quantity) || 0;
+                          const nm = item.custom_name || item.products?.name || 'Producto Desconocido';
+                          return qty < 0 ? `↩ ${-qty}x ${nm} (devuelto)` : `${qty}x ${nm}`;
+                        }).join(', ');
 
                         return (
-                          <tr key={sale.id} className="hover:bg-slate-50 transition">
+                          <tr key={sale.id} className={`hover:bg-slate-50 transition ${isExchange(sale) ? 'bg-amber-50/40' : ''}`}>
                             <td className="p-3 whitespace-nowrap">
                               {new Date(sale.created_at).toLocaleDateString('es-VE', {
                                 day: '2-digit', month: 'short', year: 'numeric'
                               })}
+                              {isExchange(sale) && (
+                                <span className="block mt-1 w-fit text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                  🔁 Cambio
+                                </span>
+                              )}
                             </td>
                             <td className="p-3 whitespace-nowrap text-teal-700 font-medium">
                               {sale.stores?.name || '—'}
