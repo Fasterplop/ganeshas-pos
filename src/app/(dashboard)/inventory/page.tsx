@@ -26,6 +26,20 @@ const productSchema = z.object({
 });
 
 type ProductFormValues = z.infer<typeof productSchema>;
+
+// Ajuste masivo de precios ya aplicado y todavía reversible (db/bulk_price_update.sql).
+interface PriceAdjustment {
+  id: string;
+  percent: number;
+  round_to: number;
+  products_count: number;
+  created_at: string;
+}
+
+// Resultado de la última operación del modal de precios (pantalla de "listo").
+type PriceResult =
+  | { kind: 'applied'; products: number }
+  | { kind: 'reverted'; restored: number; skipped: number };
 type ProductCategory = ProductFormValues['category'];
 
 interface Product {
@@ -274,6 +288,22 @@ export default function InventoryPage() {
 
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
+
+  // --- Ajuste masivo de precios (solo owner, sobre la tienda que se ve) ---
+  const [priceModalOpen, setPriceModalOpen] = useState(false);
+  const [priceDirection, setPriceDirection] = useState<'up' | 'down'>('up');
+  const [pricePercent, setPricePercent] = useState<number | ''>(10);
+  // Por defecto sin decimales: $141.60 queda en $142.
+  const [priceRoundTo, setPriceRoundTo] = useState(1);
+  // El botón "Aplicar" no ejecuta: abre la confirmación (toca TODO el catálogo).
+  const [priceConfirming, setPriceConfirming] = useState(false);
+  const [priceApplying, setPriceApplying] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const [priceResult, setPriceResult] = useState<PriceResult | null>(null);
+  // Último ajuste de esta tienda que todavía se puede deshacer (null = ninguno).
+  const [lastAdjustment, setLastAdjustment] = useState<PriceAdjustment | null>(null);
+  const [priceRevertConfirming, setPriceRevertConfirming] = useState(false);
+  const [priceReverting, setPriceReverting] = useState(false);
 
   // Tiendas activas + tienda que se está VIENDO (filtro local, solo para vista).
   const [stores, setStores] = useState<Store[]>([]);
@@ -1065,6 +1095,130 @@ const handleExportCSV = async () => {
   const lowCount = products.filter(p => isLow(p.stock, lowStockMax)).length;
   const outCount = products.filter(p => isOut(p.stock)).length;
 
+  // --- Ajuste masivo de precios: vista previa ---
+  // Se calcula sobre `products` (el catálogo COMPLETO de la tienda ya paginado,
+  // no la página visible de la tabla), así que el conteo y los totales que se
+  // muestran son los mismos que va a tocar el RPC.
+  const priceSignedPercent = (Number(pricePercent) || 0) * (priceDirection === 'down' ? -1 : 1);
+  // Misma fórmula que db/bulk_price_update.sql, para que la vista previa no mienta.
+  const previewPrice = (price: number) => {
+    const step = priceRoundTo > 0 ? priceRoundTo : 0.01;
+    return Math.max(Math.round(((price || 0) * (1 + priceSignedPercent / 100)) / step) * step, step);
+  };
+  // Tres productos de referencia (el más barato, uno del medio y el más caro)
+  // para ver de un vistazo cómo queda el catálogo.
+  const priceSamples = (() => {
+    if (products.length === 0) return [] as Product[];
+    const sorted = [...products].sort((a, b) => (a.price || 0) - (b.price || 0));
+    const idx = [...new Set([0, Math.floor(sorted.length / 2), sorted.length - 1])];
+    return idx.map(i => sorted[i]);
+  })();
+  const totalCostAfter = products.reduce((sum, p) => sum + previewPrice(p.price) * (p.stock || 0), 0);
+
+  // Mensaje de error de los RPC de precios. Los RAISE del SQL viajan dentro de
+  // error.message, así que se reconocen por su texto.
+  const priceRpcError = (error: { code?: string; message?: string }, fallback: string) => {
+    const msg = (error.message ?? '').toLowerCase();
+    if (msg.includes('not_authorized')) return 'Solo el propietario puede ajustar los precios.';
+    if (msg.includes('percent_out_of_range')) return 'El porcentaje está fuera del rango permitido (de -90% a +300%).';
+    if (msg.includes('percent_zero')) return 'Indica un porcentaje distinto de 0.';
+    if (msg.includes('already_reverted')) return 'Ese ajuste ya fue deshecho.';
+    if (msg.includes('not_latest')) return 'Hay un ajuste más reciente sin deshacer: hay que deshacer ese primero.';
+    if (msg.includes('adjustment_not_found')) return 'Ya no existe el registro de ese ajuste.';
+    if (error.code === 'PGRST202' || msg.includes('could not find the function')) {
+      return 'Falta aplicar db/bulk_price_update.sql en el SQL Editor de Supabase.';
+    }
+    return fallback;
+  };
+
+  // Último ajuste reversible de la tienda. Si la tabla todavía no existe
+  // (SQL sin aplicar), simplemente no se ofrece deshacer.
+  const fetchLastAdjustment = async (storeId: string) => {
+    const { data, error } = await supabase
+      .from('price_adjustments')
+      .select('id, percent, round_to, products_count, created_at')
+      .eq('store_id', storeId)
+      .is('reverted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setLastAdjustment(error ? null : ((data as PriceAdjustment | null) ?? null));
+  };
+
+  const openPriceModal = () => {
+    setPriceDirection('up');
+    setPricePercent(10);
+    setPriceRoundTo(1);
+    setPriceConfirming(false);
+    setPriceRevertConfirming(false);
+    setPriceError(null);
+    setPriceResult(null);
+    setLastAdjustment(null);
+    setPriceModalOpen(true);
+    if (viewStoreId) fetchLastAdjustment(viewStoreId);
+  };
+
+  const applyBulkPriceUpdate = async () => {
+    if (!viewStoreId || priceSignedPercent === 0) return;
+    setPriceApplying(true);
+    setPriceError(null);
+
+    const { data, error } = await supabase.rpc('bulk_update_prices', {
+      p_store_id: viewStoreId,
+      p_percent: priceSignedPercent,
+      p_round_to: priceRoundTo,
+    });
+
+    setPriceApplying(false);
+    setPriceConfirming(false);
+
+    if (error) {
+      setPriceError(priceRpcError(error, 'No se pudieron ajustar los precios. Ningún precio fue modificado.'));
+      return;
+    }
+
+    const res = data as { adjustment_id?: string; products?: number } | null;
+    const products = Number(res?.products) || 0;
+    setPriceResult({ kind: 'applied', products });
+    // El ajuste recién hecho queda listo para deshacer sin recargar la página.
+    if (res?.adjustment_id) {
+      setLastAdjustment({
+        id: res.adjustment_id,
+        percent: priceSignedPercent,
+        round_to: priceRoundTo,
+        products_count: products,
+        created_at: new Date().toISOString(),
+      });
+    }
+    await refreshInventory(viewStoreId);
+  };
+
+  // Deshacer: devuelve a cada producto el precio EXACTO que tenía antes del
+  // ajuste (el RPC guardó precio por precio; con redondeo, el porcentaje
+  // inverso no alcanzaría). Respeta los precios cambiados a mano después.
+  const revertLastAdjustment = async () => {
+    if (!lastAdjustment || !viewStoreId) return;
+    setPriceReverting(true);
+    setPriceError(null);
+
+    const { data, error } = await supabase.rpc('revert_price_adjustment', {
+      p_adjustment_id: lastAdjustment.id,
+    });
+
+    setPriceReverting(false);
+    setPriceRevertConfirming(false);
+
+    if (error) {
+      setPriceError(priceRpcError(error, 'No se pudo deshacer el ajuste. Ningún precio fue modificado.'));
+      return;
+    }
+
+    const res = data as { restored?: number; skipped?: number } | null;
+    setPriceResult({ kind: 'reverted', restored: Number(res?.restored) || 0, skipped: Number(res?.skipped) || 0 });
+    setLastAdjustment(null);
+    await refreshInventory(viewStoreId);
+  };
+
   // Categorías presentes en el inventario de la tienda (opciones del botón Filtros).
   const availableCategories = [...new Set(products.map(p => p.category))]
     .filter(Boolean)
@@ -1568,6 +1722,14 @@ const handleExportCSV = async () => {
             {isOwner && (
               <button onClick={handleExportCSV} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer font-medium">
                 Exportar Excel
+              </button>
+            )}
+
+            {/* Ajuste masivo de precios: mismo permiso que borrar (owner en su
+                propia tienda), porque toca el catálogo entero de una vez. */}
+            {canDelete && (
+              <button onClick={openPriceModal} className="flex-1 md:flex-none px-4 py-2 text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition cursor-pointer font-medium whitespace-nowrap">
+                Ajustar precios %
               </button>
             )}
 
@@ -2085,6 +2247,283 @@ const handleExportCSV = async () => {
               </button>
             </div>
           </form>
+        </Modal>
+
+        {/* MODAL: AJUSTE MASIVO DE PRECIOS (solo owner) */}
+        <Modal
+          isOpen={priceModalOpen}
+          onClose={() => setPriceModalOpen(false)}
+          title={`Ajustar precios · ${effectiveStore?.name ?? ''}`}
+        >
+          {priceResult ? (
+            <div className="space-y-4">
+              {priceResult.kind === 'applied' ? (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-lg text-sm font-medium">
+                  ✓ Listo: se actualizaron <strong>{priceResult.products}</strong>{' '}
+                  {priceResult.products === 1 ? 'producto' : 'productos'} de <strong>{effectiveStore?.name}</strong>.
+                </div>
+              ) : (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-lg text-sm font-medium">
+                  ↩ Ajuste deshecho: <strong>{priceResult.restored}</strong>{' '}
+                  {priceResult.restored === 1 ? 'producto volvió' : 'productos volvieron'} a su precio anterior.
+                  {priceResult.skipped > 0 && (
+                    <span className="block mt-1 font-normal">
+                      {priceResult.skipped}{' '}
+                      {priceResult.skipped === 1 ? 'producto quedó como estaba porque su precio se cambió' : 'productos quedaron como estaban porque su precio se cambió'}{' '}
+                      a mano después del ajuste.
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {priceError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
+                  {priceError}
+                </div>
+              )}
+
+              {/* Deshacer en caliente: el ajuste que se acaba de aplicar. */}
+              {priceResult.kind === 'applied' && lastAdjustment && (
+                priceRevertConfirming ? (
+                  <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 space-y-3">
+                    <p className="text-sm text-amber-900 font-medium">
+                      Se devolverán los precios exactamente como estaban antes de este ajuste.
+                    </p>
+                    <div className="flex flex-wrap justify-end gap-3">
+                      <button
+                        type="button"
+                        disabled={priceReverting}
+                        onClick={() => setPriceRevertConfirming(false)}
+                        className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-50"
+                      >
+                        Volver
+                      </button>
+                      <button
+                        type="button"
+                        disabled={priceReverting}
+                        onClick={revertLastAdjustment}
+                        className="px-4 py-2 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {priceReverting ? 'Deshaciendo…' : 'Sí, deshacer'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setPriceError(null); setPriceRevertConfirming(true); }}
+                    className="w-full px-4 py-2 border border-amber-300 text-amber-800 bg-amber-50 rounded-lg font-semibold hover:bg-amber-100 transition cursor-pointer"
+                  >
+                    ↩ Deshacer este ajuste
+                  </button>
+                )
+              )}
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPriceModalOpen(false)}
+                  className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* Ajuste anterior todavía reversible */}
+              {lastAdjustment && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+                  <p className="text-sm text-slate-700">
+                    Último ajuste:{' '}
+                    <strong className={lastAdjustment.percent < 0 ? 'text-red-600' : 'text-teal-700'}>
+                      {lastAdjustment.percent > 0 ? '+' : ''}{lastAdjustment.percent}%
+                    </strong>{' '}
+                    el{' '}
+                    {new Date(lastAdjustment.created_at).toLocaleString('es-VE', {
+                      timeZone: 'America/Caracas',
+                      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+                    })}
+                    {' · '}
+                    {lastAdjustment.products_count}{' '}
+                    {lastAdjustment.products_count === 1 ? 'producto' : 'productos'}.
+                  </p>
+                  {priceRevertConfirming ? (
+                    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-3">
+                      <p className="text-sm text-amber-900 font-medium">
+                        Se devolverán los precios exactamente como estaban antes de ese ajuste. Los productos
+                        cuyo precio se haya cambiado a mano después se dejan como están.
+                      </p>
+                      <div className="flex flex-wrap justify-end gap-3">
+                        <button
+                          type="button"
+                          disabled={priceReverting}
+                          onClick={() => setPriceRevertConfirming(false)}
+                          className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-white transition cursor-pointer disabled:opacity-50"
+                        >
+                          Volver
+                        </button>
+                        <button
+                          type="button"
+                          disabled={priceReverting}
+                          onClick={revertLastAdjustment}
+                          className="px-4 py-2 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition cursor-pointer disabled:opacity-50"
+                        >
+                          {priceReverting ? 'Deshaciendo…' : 'Sí, deshacer'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setPriceError(null); setPriceRevertConfirming(true); }}
+                      className="w-full px-4 py-2 border border-amber-300 text-amber-800 bg-amber-50 rounded-lg font-semibold hover:bg-amber-100 transition cursor-pointer"
+                    >
+                      ↩ Deshacer ese ajuste
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <p className="text-sm text-slate-600">
+                Cambia de una sola vez el precio de los <strong>{totalProducts}</strong>{' '}
+                {totalProducts === 1 ? 'producto activo' : 'productos activos'} de{' '}
+                <strong className="text-teal-700">{effectiveStore?.name}</strong>. No afecta a las otras tiendas
+                ni al stock.
+              </p>
+
+              {/* Subir / Bajar */}
+              <div className="flex gap-2">
+                {([['up', '↑ Subir'], ['down', '↓ Bajar']] as const).map(([dir, label]) => (
+                  <button
+                    key={dir}
+                    type="button"
+                    onClick={() => { setPriceDirection(dir); setPriceConfirming(false); }}
+                    className={`flex-1 px-4 py-2 rounded-lg border font-semibold text-sm transition cursor-pointer ${
+                      priceDirection === dir
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Porcentaje</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={0}
+                      max={priceDirection === 'down' ? 90 : 300}
+                      step="0.5"
+                      value={pricePercent}
+                      onChange={(e) => {
+                        setPriceConfirming(false);
+                        setPricePercent(e.target.value === '' ? '' : Number(e.target.value));
+                      }}
+                      className="w-full pr-8 pl-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">%</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Redondeo</label>
+                  <select
+                    value={priceRoundTo}
+                    onChange={(e) => { setPriceConfirming(false); setPriceRoundTo(Number(e.target.value)); }}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                  >
+                    <option value={1}>Sin decimales ($142)</option>
+                    <option value={0.5}>Al $0,50 más cercano</option>
+                    <option value={0.01}>Exacto, con centavos</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Vista previa: cómo queda el catálogo ANTES de tocar nada */}
+              {priceSignedPercent !== 0 && priceSamples.length > 0 && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Vista previa</p>
+                  {priceSamples.map(sample => (
+                    <div key={sample.id} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{sample.name}</span>
+                      <span className="shrink-0 font-medium text-slate-500">
+                        ${Number(sample.price).toFixed(2)}{' → '}
+                        <span className={priceDirection === 'down' ? 'text-red-600 font-bold' : 'text-teal-700 font-bold'}>
+                          ${previewPrice(sample.price).toFixed(priceRoundTo >= 1 ? 0 : 2)}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                  <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-slate-600 font-medium">Costo del inventario</span>
+                    <span className="shrink-0 font-medium text-slate-500">
+                      ${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' → '}
+                      <span className={priceDirection === 'down' ? 'text-red-600 font-bold' : 'text-teal-700 font-bold'}>
+                        ${totalCostAfter.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {priceError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
+                  {priceError}
+                </div>
+              )}
+
+              {priceConfirming ? (
+                <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 space-y-3">
+                  <p className="text-sm text-amber-900 font-medium">
+                    Se va a {priceDirection === 'down' ? 'BAJAR' : 'SUBIR'} un{' '}
+                    <strong>{Math.abs(priceSignedPercent)}%</strong> el precio de{' '}
+                    <strong>{totalProducts}</strong> {totalProducts === 1 ? 'producto' : 'productos'} de{' '}
+                    <strong>{effectiveStore?.name}</strong>. Se puede deshacer desde este mismo modal.
+                  </p>
+                  <div className="flex flex-wrap justify-end gap-3">
+                    <button
+                      type="button"
+                      disabled={priceApplying}
+                      onClick={() => setPriceConfirming(false)}
+                      className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-50"
+                    >
+                      Volver
+                    </button>
+                    <button
+                      type="button"
+                      disabled={priceApplying}
+                      onClick={applyBulkPriceUpdate}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition cursor-pointer disabled:opacity-50"
+                    >
+                      {priceApplying ? 'Aplicando…' : 'Sí, aplicar a toda la tienda'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setPriceModalOpen(false)}
+                    className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={priceSignedPercent === 0 || totalProducts === 0}
+                    onClick={() => { setPriceError(null); setPriceConfirming(true); }}
+                    className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Revisar y aplicar
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </Modal>
 
         {/* MODAL: VINCULAR A PRODUCTO PADRE */}

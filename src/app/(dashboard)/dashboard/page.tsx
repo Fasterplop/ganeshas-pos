@@ -161,6 +161,14 @@ const chunks = <T,>(arr: T[], size: number): T[][] => {
   return out;
 };
 
+// Lo que necesita la ficha de "referencia de pago completa" del historial.
+type RefSale = {
+  created_at: string;
+  payment_ref: string | null;
+  total_amount: number | string;
+  customers?: { full_name?: string | null } | null;
+};
+
 // Cantidad total de artículos vendidos en una venta.
 const saleItemCount = (sale: any) =>
   sale.sale_items?.reduce((acc: number, it: any) => acc + (it.quantity || 0), 0) || 0;
@@ -221,6 +229,9 @@ export default function DashboardPage() {
   const [sourceSaleDates, setSourceSaleDates] = useState<Record<string, string>>({});
   // Venta sobre la que se abre el modal de cambio (null = cerrado).
   const [exchangeSaleId, setExchangeSaleId] = useState<string | null>(null);
+  // Venta cuya referencia de pago se está viendo COMPLETA (null = cerrado).
+  // En la tabla la referencia va recortada; el botón "ver" abre esta ficha.
+  const [refSale, setRefSale] = useState<RefSale | null>(null);
   // Se incrementa tras registrar un cambio para recargar métricas, gráfico e historial.
   const [refreshKey, setRefreshKey] = useState(0);
   // El historial arranca en el DÍA ACTUAL (calculado en zona horaria de Caracas
@@ -1154,7 +1165,18 @@ export default function DashboardPage() {
                           </div>
                         )}
                         {sale.payment_ref && (
-                          <span className="block text-[11px] text-slate-400 mt-1 truncate max-w-[100px]">Ref: {sale.payment_ref}</span>
+                          <div className="flex items-center gap-1 mt-1 max-w-[150px]">
+                            <span className="text-[11px] text-slate-400 truncate">Ref: {sale.payment_ref}</span>
+                            <button
+                              type="button"
+                              onClick={() => setRefSale(sale)}
+                              title="Ver la referencia completa"
+                              aria-label="Ver la referencia completa"
+                              className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5 hover:bg-teal-100 transition cursor-pointer"
+                            >
+                              ver
+                            </button>
+                          </div>
                         )}
                       </td>
                       <td className="p-3 text-center text-slate-700 font-semibold whitespace-nowrap">
@@ -1249,6 +1271,46 @@ export default function DashboardPage() {
         initialSaleId={exchangeSaleId}
         onDone={() => setRefreshKey(k => k + 1)}
       />
+
+      {/* --- REFERENCIA DE PAGO COMPLETA --- */}
+      {/* En la tabla la referencia va recortada (una columna angosta no puede
+          crecer sin desarmar el resto del historial): aquí se ve entera y se
+          puede copiar para cotejarla contra el banco. */}
+      <Modal isOpen={refSale !== null} onClose={() => setRefSale(null)} title="Referencia de pago">
+        {refSale && (
+          <div className="space-y-4">
+            <div className="text-sm text-slate-500">
+              {parseSupabaseDate(refSale.created_at).toLocaleString('es-VE', {
+                timeZone: 'America/Caracas',
+                day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+              })}
+              {' · '}
+              <span className="text-slate-700 font-medium">{refSale.customers?.full_name || 'Anónimo'}</span>
+              {' · '}
+              <span className="text-slate-700 font-medium">${Number(refSale.total_amount).toFixed(2)}</span>
+            </div>
+
+            <p className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
+              {paymentToText(refSale)}
+            </p>
+
+            {/* break-all: una referencia larga baja de línea en vez de recortarse. */}
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 font-mono text-base md:text-lg text-slate-800 break-all">
+              {refSale.payment_ref}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setRefSale(null)}
+                className="px-4 py-2 text-white bg-[#0f5c5c] rounded-lg hover:bg-[#0a4545] transition font-medium cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* --- MODALES "VER MÁS" --- */}
       {role !== 'cashier' && (
