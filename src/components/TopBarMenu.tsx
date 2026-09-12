@@ -32,6 +32,7 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
+    { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
   ];
 
