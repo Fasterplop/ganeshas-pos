@@ -230,9 +230,17 @@ export default function ResumenPage() {
       .filter((b) => b.kind === 'tarjeta_credito')
       .reduce((a, b) => a + Number(b.balance_usd), 0);
 
+    // Dos lecturas distintas y las dos utiles:
+    //   salio  = lo que COSTO el periodo (devengado)
+    //   pagado = lo que de verdad SALIO de las cuentas en el periodo (caja)
+    // Una compra a 30 dias entra en `salio` el dia que se compra y en
+    // `pagado` el dia que se paga. Mostrar solo una escondia media verdad.
+    const pagado = payments.reduce((a, p) => a + Number(p.amount_usd), 0);
+
     return {
       entro: round2(entro),
       salio,
+      pagado: round2(pagado),
       compras: round2(compras),
       gastos: round2(gastos),
       envios: round2(envios),
@@ -245,7 +253,7 @@ export default function ResumenPage() {
       tarjetas: round2(tarjetas),
       ventasCount: sales.length,
     };
-  }, [sales, delPeriodo, expenses, balances, hoy]);
+  }, [sales, delPeriodo, expenses, balances, payments, hoy]);
 
   // Serie diaria de entradas y salidas para el gráfico.
   const chartData = useMemo(() => {
@@ -511,13 +519,13 @@ export default function ResumenPage() {
                 label="Salió"
                 value={fmtUSD(kpi.salio)}
                 tone="amber"
-                sub="Compras, gastos y fletes"
+                sub={`Compras, gastos y fletes · Pagado: ${fmtUSD(kpi.pagado)}`}
               />
               <FinStatCard
                 label="Queda"
                 value={fmtUSD(kpi.queda)}
                 tone={kpi.queda < 0 ? 'red' : 'teal'}
-                sub="Entró menos salió"
+                sub="Margen del período, no tu efectivo"
               />
               <FinStatCard
                 label="Se debe"
@@ -663,8 +671,11 @@ export default function ResumenPage() {
             </div>
 
             <p className="text-xs text-slate-400">
-              Los ingresos se leen de las ventas del POS y suman todas las sucursales. &quot;Salió&quot; es lo
-              comprado y gastado en el período, no lo pagado: lo pagado mueve el saldo de cada cuenta.
+              Los ingresos se leen de las ventas del POS y suman todas las sucursales.{' '}
+              <strong>&quot;Salió&quot;</strong> es lo que costó el período: una compra a 30 días cuenta el
+              día que la haces. <strong>&quot;Pagado&quot;</strong> es el dinero que de verdad salió de tus
+              cuentas en el período. Por eso <strong>&quot;Queda&quot; no es tu efectivo</strong>: es el margen
+              del período. Lo que tienes de verdad es <strong>&quot;Efectivo disponible&quot;</strong>.
             </p>
           </>
         )}
