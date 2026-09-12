@@ -5,10 +5,11 @@
 // Esto es lo que el cliente pidió con más énfasis: hoy envía varias cajas en
 // días distintos, anota en notas sueltas qué llevó cada una y se le pierde.
 //
-// En esta entrega el contenido se escribe a mano y se le puede poner la marca.
-// La columna expense_id ya existe en la tabla y queda en NULL: cuando llegue el
-// registro de compras, estas MISMAS filas se enlazan a su compra y no hay que
-// recargar nada.
+// El contenido se puede escribir a mano (con su marca) y, cuando la compra
+// existe, ENLAZARLO a ella. El enlace no mueve dinero: el gasto vive en
+// fin_expenses y los reportes suman de ahí, así que una compra repartida en
+// tres cajas se cuenta UNA vez. `allocated_usd` es solo informativo, para
+// saber cuánta mercancía viaja en cada caja.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Modal from '@/components/Modal';
@@ -16,10 +17,11 @@ import { createClient } from '@/lib/supabase/client';
 import { finErrorMessage } from '@/lib/finanzas/errors';
 import { caracasToday, formatDate } from '@/lib/finanzas/dates';
 import { fetchAllPages } from '@/lib/finanzas/queries';
-import { fmtUSD } from '@/lib/finanzas/money';
+import { fmtUSD, round2 } from '@/lib/finanzas/money';
 import type { Supplier } from './SupplierFormModal';
 import type { Shipment } from './ShipmentFormModal';
 import type { Account } from './AccountFormModal';
+import type { Expense } from './ExpenseFormModal';
 import ShipmentCostSection from './ShipmentCostSection';
 import {
   FinNotice,
@@ -72,14 +74,20 @@ export default function ShipmentDetailModal({
   const supabase = useMemo(() => createClient(), []);
 
   const [items, setItems] = useState<ShipmentItem[]>([]);
+  const [purchases, setPurchases] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Alta de una línea de contenido.
   const [newSupplier, setNewSupplier] = useState('');
+  const [newExpense, setNewExpense] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPieces, setNewPieces] = useState('');
+  const [newAmount, setNewAmount] = useState('');
+
+  // Enlace de una línea ya existente a su compra.
+  const [linking, setLinking] = useState<string | null>(null);
 
   // Modo recepción.
   const [receiving, setReceiving] = useState(false);
@@ -90,10 +98,15 @@ export default function ShipmentDetailModal({
     (id: string | null) => suppliers.find((s) => s.id === id)?.name ?? null,
     [suppliers],
   );
+  const purchaseOf = useCallback(
+    (id: string | null) => purchases.find((p) => p.id === id) ?? null,
+    [purchases],
+  );
 
   const load = useCallback(async () => {
     if (!shipment) return;
     setLoading(true);
+
     const { rows, error } = await fetchAllPages<ShipmentItem>((from, to) =>
       supabase
         .from('fin_shipment_items')
@@ -106,6 +119,22 @@ export default function ShipmentDetailModal({
     );
     if (error) setNotice({ type: 'error', text: finErrorMessage(error) });
     setItems(rows);
+
+    // Las compras de la misma tienda, para poder enlazar el contenido.
+    const { rows: comp } = await fetchAllPages<Expense>((from, to) =>
+      supabase
+        .from('fin_expenses')
+        .select(
+          'id, store_id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
+        )
+        .eq('kind', 'compra')
+        .eq('is_personal', false)
+        .eq('store_id', shipment.store_id)
+        .order('expense_date', { ascending: false })
+        .range(from, to),
+    );
+    setPurchases(comp);
+
     setLoading(false);
   }, [shipment, supabase]);
 
@@ -113,26 +142,69 @@ export default function ShipmentDetailModal({
     if (!isOpen || !shipment) return;
     setReceiving(false);
     setNotice(null);
+    setLinking(null);
     setNewSupplier('');
+    setNewExpense('');
     setNewDesc('');
     setNewPieces('');
+    setNewAmount('');
     load();
   }, [isOpen, shipment, load]);
 
+  /** Cuánto de esa compra ya está repartido en otras cajas. */
+  const allocatedElsewhere = useCallback(
+    async (expenseId: string, exceptItemId?: string) => {
+      const { data } = await supabase
+        .from('fin_shipment_items')
+        .select('id, allocated_usd')
+        .eq('expense_id', expenseId);
+      return (data ?? [])
+        .filter((r) => r.id !== exceptItemId)
+        .reduce((a, r) => a + Number(r.allocated_usd ?? 0), 0);
+    },
+    [supabase],
+  );
+
+  /**
+   * Avisa si lo repartido pasa del total de la compra. Es un aviso, no un
+   * bloqueo: el reparto es informativo y el gasto real nunca depende de él.
+   */
+  const checkAllocation = async (expenseId: string, amount: number, exceptItemId?: string) => {
+    const exp = purchaseOf(expenseId);
+    if (!exp || amount <= 0) return true;
+    const otros = await allocatedElsewhere(expenseId, exceptItemId);
+    const total = round2(otros + amount);
+    if (total > Number(exp.amount_usd) + 0.005) {
+      return window.confirm(
+        `Estás repartiendo ${fmtUSD(total)} de una compra de ${fmtUSD(exp.amount_usd)}.\n\n` +
+          'El gasto del mes no cambia (se cuenta una sola vez), pero el reparto por caja quedaría mal. ¿Guardar igual?',
+      );
+    }
+    return true;
+  };
+
   const addItem = async () => {
     if (!shipment) return;
-    if (!newDesc.trim()) {
+    const exp = newExpense ? purchaseOf(newExpense) : null;
+    const desc = newDesc.trim() || (exp ? exp.description || 'Mercancía de la compra' : '');
+    if (!desc) {
       setNotice({ type: 'error', text: 'Escribe qué va dentro (por ejemplo: 10 blusas Kancan).' });
       return;
     }
+
+    const monto = toNum(newAmount) ?? 0;
+    if (newExpense && monto > 0 && !(await checkAllocation(newExpense, monto))) return;
+
     setBusy(true);
     const { data, error } = await supabase
       .from('fin_shipment_items')
       .insert({
         shipment_id: shipment.id,
-        supplier_id: newSupplier || null,
-        description: newDesc.trim(),
+        expense_id: newExpense || null,
+        supplier_id: newSupplier || exp?.supplier_id || null,
+        description: desc,
         pieces: toNum(newPieces),
+        allocated_usd: monto > 0 ? monto : null,
       })
       .select()
       .single();
@@ -145,8 +217,38 @@ export default function ShipmentDetailModal({
     setItems((prev) => [...prev, data as ShipmentItem]);
     setNewDesc('');
     setNewPieces('');
+    setNewAmount('');
+    setNewExpense('');
     // La marca se deja puesta: casi siempre se cargan varias líneas seguidas
     // del mismo proveedor.
+  };
+
+  const linkToPurchase = async (item: ShipmentItem, expenseId: string, amountRaw: string) => {
+    const monto = toNum(amountRaw) ?? 0;
+    if (expenseId && monto > 0 && !(await checkAllocation(expenseId, monto, item.id))) return;
+
+    const exp = expenseId ? purchaseOf(expenseId) : null;
+    const { data, error } = await supabase
+      .from('fin_shipment_items')
+      .update({
+        expense_id: expenseId || null,
+        supplier_id: item.supplier_id ?? exp?.supplier_id ?? null,
+        allocated_usd: monto > 0 ? monto : null,
+      })
+      .eq('id', item.id)
+      .select()
+      .single();
+
+    if (error) {
+      setNotice({ type: 'error', text: finErrorMessage(error) });
+      return;
+    }
+    setItems((prev) => prev.map((i) => (i.id === item.id ? (data as ShipmentItem) : i)));
+    setLinking(null);
+    setNotice({
+      type: 'success',
+      text: expenseId ? 'Línea enlazada a su compra.' : 'Enlace quitado.',
+    });
   };
 
   const deleteItem = async (item: ShipmentItem) => {
@@ -167,7 +269,12 @@ export default function ShipmentDetailModal({
           i.id,
           {
             ok: i.is_received,
-            got: i.received_pieces != null ? String(i.received_pieces) : i.pieces != null ? String(i.pieces) : '',
+            got:
+              i.received_pieces != null
+                ? String(i.received_pieces)
+                : i.pieces != null
+                  ? String(i.pieces)
+                  : '',
           },
         ]),
       ),
@@ -240,6 +347,11 @@ export default function ShipmentDetailModal({
   const totalPieces = items.reduce((acc, i) => acc + (i.pieces ?? 0), 0);
   const totalAllocated = items.reduce((acc, i) => acc + Number(i.allocated_usd ?? 0), 0);
 
+  const purchaseOptions = useMemo(() => {
+    const list = newSupplier ? purchases.filter((p) => p.supplier_id === newSupplier) : purchases;
+    return list;
+  }, [purchases, newSupplier]);
+
   if (!shipment) return null;
 
   return (
@@ -267,9 +379,7 @@ export default function ShipmentDetailModal({
             <span className="text-slate-400">Enviada:</span> {formatDate(shipment.sent_date)}
           </span>
           <span className="text-slate-600">
-            <span className="text-slate-400">
-              {isReceived ? 'Llegó:' : 'Llegada estimada:'}
-            </span>{' '}
+            <span className="text-slate-400">{isReceived ? 'Llegó:' : 'Llegada estimada:'}</span>{' '}
             {formatDate(isReceived ? shipment.received_date : shipment.eta_date)}
           </span>
         </div>
@@ -294,29 +404,81 @@ export default function ShipmentDetailModal({
             />
           ) : (
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
-              <table className="w-full text-sm min-w-[560px]">
+              <table className="w-full text-sm min-w-[680px]">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
                     <th className="text-left font-semibold px-3 py-2">Marca</th>
                     <th className="text-left font-semibold px-3 py-2">Qué es</th>
-                    <th className="text-center font-semibold px-3 py-2 w-24">Piezas</th>
+                    <th className="text-left font-semibold px-3 py-2">Compra</th>
+                    <th className="text-center font-semibold px-3 py-2 w-20">Piezas</th>
                     {(receiving || isReceived) && (
                       <th className="text-center font-semibold px-3 py-2 w-36">Llegó</th>
                     )}
-                    {!receiving && <th className="px-3 py-2 w-16" />}
+                    {!receiving && <th className="px-3 py-2 w-10" />}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item) => {
                     const d = draft[item.id];
                     const short =
-                      item.pieces != null && (item.received_pieces ?? 0) < item.pieces && item.is_received;
+                      item.pieces != null &&
+                      (item.received_pieces ?? 0) < item.pieces &&
+                      item.is_received;
+                    const exp = purchaseOf(item.expense_id);
                     return (
-                      <tr key={item.id} className="hover:bg-slate-50">
+                      <tr key={item.id} className="hover:bg-slate-50 align-top">
                         <td className="px-3 py-2 text-slate-600">
                           {supplierName(item.supplier_id) || <span className="text-slate-300">—</span>}
                         </td>
                         <td className="px-3 py-2 text-slate-800">{item.description}</td>
+
+                        <td className="px-3 py-2">
+                          {linking === item.id ? (
+                            <LinkEditor
+                              item={item}
+                              purchases={purchases.filter(
+                                (p) => !item.supplier_id || p.supplier_id === item.supplier_id,
+                              )}
+                              onCancel={() => setLinking(null)}
+                              onSave={(expenseId, amount) => linkToPurchase(item, expenseId, amount)}
+                            />
+                          ) : exp ? (
+                            <div>
+                              <div className="text-slate-700">
+                                {formatDate(exp.expense_date)} · {fmtUSD(exp.amount_usd)}
+                              </div>
+                              <div className="text-xs text-slate-400">
+                                {item.allocated_usd != null
+                                  ? `${fmtUSD(item.allocated_usd)} en esta caja`
+                                  : 'sin repartir'}
+                                {!receiving && (
+                                  <button
+                                    onClick={() => setLinking(item.id)}
+                                    className="ml-2 text-teal-700 hover:underline cursor-pointer"
+                                  >
+                                    cambiar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ) : receiving ? (
+                            <span className="text-slate-300">—</span>
+                          ) : (
+                            <button
+                              onClick={() => setLinking(item.id)}
+                              className="text-xs text-teal-700 hover:underline cursor-pointer"
+                              disabled={purchases.length === 0}
+                              title={
+                                purchases.length === 0
+                                  ? 'Todavía no hay compras registradas'
+                                  : undefined
+                              }
+                            >
+                              Enlazar a compra
+                            </button>
+                          )}
+                        </td>
+
                         <td className="px-3 py-2 text-center text-slate-600">{item.pieces ?? '—'}</td>
 
                         {receiving && (
@@ -386,45 +548,83 @@ export default function ShipmentDetailModal({
 
         {/* --- Agregar línea --- */}
         {!receiving && (
-          <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_90px_auto] gap-2 items-end">
-            <select
-              value={newSupplier}
-              onChange={(e) => setNewSupplier(e.target.value)}
-              className={inputClass}
-            >
-              <option value="">Sin marca</option>
-              {suppliers
-                .filter((s) => s.is_active)
-                .map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select
+                value={newSupplier}
+                onChange={(e) => {
+                  setNewSupplier(e.target.value);
+                  setNewExpense('');
+                }}
+                className={inputClass}
+              >
+                <option value="">Sin marca</option>
+                {suppliers
+                  .filter((s) => s.is_active)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+              <select
+                value={newExpense}
+                onChange={(e) => setNewExpense(e.target.value)}
+                className={inputClass}
+                disabled={purchaseOptions.length === 0}
+              >
+                <option value="">
+                  {purchaseOptions.length === 0 ? 'Sin compras registradas' : 'Sin enlazar a una compra'}
+                </option>
+                {purchaseOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {formatDate(p.expense_date)} · {fmtUSD(p.amount_usd)}
+                    {p.description ? ` · ${p.description}` : ''}
                   </option>
                 ))}
-            </select>
-            <input
-              value={newDesc}
-              onChange={(e) => setNewDesc(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  addItem();
+              </select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,2fr)_80px_110px_auto] gap-2">
+              <input
+                value={newDesc}
+                onChange={(e) => setNewDesc(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addItem();
+                  }
+                }}
+                placeholder="10 blusas talla M"
+                className={inputClass}
+              />
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={newPieces}
+                onChange={(e) => setNewPieces(e.target.value)}
+                placeholder="Pzs"
+                className={inputClass}
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={newAmount}
+                onChange={(e) => setNewAmount(e.target.value)}
+                placeholder="$ en caja"
+                className={inputClass}
+                disabled={!newExpense}
+                title={
+                  newExpense
+                    ? 'Cuánto de esa compra viaja en esta caja (informativo)'
+                    : 'Solo aplica si enlazas la línea a una compra'
                 }
-              }}
-              placeholder="10 blusas talla M"
-              className={inputClass}
-            />
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={newPieces}
-              onChange={(e) => setNewPieces(e.target.value)}
-              placeholder="Pzs"
-              className={inputClass}
-            />
-            <button type="button" onClick={addItem} disabled={busy} className={btnSecondary}>
-              Agregar
-            </button>
+              />
+              <button type="button" onClick={addItem} disabled={busy} className={btnSecondary}>
+                Agregar
+              </button>
+            </div>
           </div>
         )}
 
@@ -493,5 +693,56 @@ export default function ShipmentDetailModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Selector en línea para enlazar una fila de contenido a su compra. */
+function LinkEditor({
+  item,
+  purchases,
+  onCancel,
+  onSave,
+}: {
+  item: ShipmentItem;
+  purchases: Expense[];
+  onCancel: () => void;
+  onSave: (expenseId: string, amount: string) => void;
+}) {
+  const [expenseId, setExpenseId] = useState(item.expense_id ?? '');
+  const [amount, setAmount] = useState(item.allocated_usd != null ? String(item.allocated_usd) : '');
+
+  return (
+    <div className="space-y-1.5 min-w-[220px]">
+      <select value={expenseId} onChange={(e) => setExpenseId(e.target.value)} className={`${inputClass} py-1`}>
+        <option value="">Sin enlazar</option>
+        {purchases.map((p) => (
+          <option key={p.id} value={p.id}>
+            {formatDate(p.expense_date)} · {fmtUSD(p.amount_usd)}
+            {p.description ? ` · ${p.description}` : ''}
+          </option>
+        ))}
+      </select>
+      <div className="flex gap-1.5">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="$ en esta caja"
+          className={`${inputClass} py-1`}
+          disabled={!expenseId}
+        />
+        <button
+          onClick={() => onSave(expenseId, amount)}
+          className="text-xs font-semibold text-teal-700 px-2 cursor-pointer hover:underline"
+        >
+          Guardar
+        </button>
+        <button onClick={onCancel} className="text-xs text-slate-400 px-1 cursor-pointer hover:text-slate-700">
+          ✕
+        </button>
+      </div>
+    </div>
   );
 }

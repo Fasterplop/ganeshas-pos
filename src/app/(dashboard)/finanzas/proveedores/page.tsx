@@ -1,42 +1,55 @@
 'use client';
 
-// Proveedores del negocio.
+// Proveedores del negocio y sus cuentas por pagar.
 //
 // Son GLOBALES, sin store_id: LC Lizette le vende al negocio, no a una
 // sucursal. Por eso esta pantalla no depende de la tienda activa.
 //
-// El estado de cuenta por proveedor (facturas abiertas, saldo, vencimientos)
-// llega con el registro de compras; aquí está la ficha, que es lo que hace
-// falta para poder decir de qué marca es cada caja.
+// Los saldos vienen de la vista fin_v_supplier_balance, que ya excluye lo
+// personal: el dinero de la tienda y el personal no se mezclan.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import FinShell from '@/components/finanzas/FinShell';
 import SupplierFormModal, { Supplier } from '@/components/finanzas/SupplierFormModal';
+import SupplierStatementModal from '@/components/finanzas/SupplierStatementModal';
 import {
   FinNotice,
   FinStatCard,
   Notice,
   EmptyState,
+  DueBadge,
   btnPrimary,
   btnSecondary,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
-import { PAYMENT_TERMS_LABEL } from '@/lib/finanzas/money';
+import { PAYMENT_TERMS_LABEL, fmtUSD } from '@/lib/finanzas/money';
+
+interface BalanceRow {
+  supplier_id: string;
+  open_invoices: number;
+  balance_usd: number;
+  next_due_date: string | null;
+  total_purchased_usd: number;
+  last_purchase_date: string | null;
+}
 
 export default function ProveedoresPage() {
   const supabase = useMemo(() => createClient(), []);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [balances, setBalances] = useState<Map<string, BalanceRow>>(new Map());
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [search, setSearch] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  const [onlyDebt, setOnlyDebt] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Supplier | null>(null);
+  const [statement, setStatement] = useState<Supplier | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,8 +61,21 @@ export default function ProveedoresPage() {
         .order('name')
         .range(from, to),
     );
-    if (error) setNotice({ type: 'error', text: finErrorMessage(error) });
+    if (error) {
+      setNotice({ type: 'error', text: finErrorMessage(error) });
+      setLoading(false);
+      return;
+    }
+
+    const { rows: bal } = await fetchAllPages<BalanceRow>((from, to) =>
+      supabase
+        .from('fin_v_supplier_balance')
+        .select('supplier_id, open_invoices, balance_usd, next_due_date, total_purchased_usd, last_purchase_date')
+        .range(from, to),
+    );
+
     setSuppliers(rows);
+    setBalances(new Map(bal.map((b) => [b.supplier_id, b])));
     setLoading(false);
   }, [supabase]);
 
@@ -57,10 +83,13 @@ export default function ProveedoresPage() {
     load();
   }, [load]);
 
+  const bal = useCallback((id: string) => balances.get(id), [balances]);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return suppliers.filter((s) => {
       if (!showInactive && !s.is_active) return false;
+      if (onlyDebt && Number(bal(s.id)?.balance_usd ?? 0) <= 0) return false;
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
@@ -68,9 +97,17 @@ export default function ProveedoresPage() {
         (s.phone ?? '').toLowerCase().includes(q)
       );
     });
-  }, [suppliers, search, showInactive]);
+  }, [suppliers, search, showInactive, onlyDebt, bal]);
 
   const activeCount = suppliers.filter((s) => s.is_active).length;
+  const deudaTotal = useMemo(
+    () => [...balances.values()].reduce((a, b) => a + Number(b.balance_usd), 0),
+    [balances],
+  );
+  const conDeuda = useMemo(
+    () => [...balances.values()].filter((b) => Number(b.balance_usd) > 0).length,
+    [balances],
+  );
 
   const toggleActive = async (supplier: Supplier) => {
     const next = !supplier.is_active;
@@ -95,9 +132,7 @@ export default function ProveedoresPage() {
       setNotice({ type: 'error', text: finErrorMessage(error) });
       return;
     }
-    setSuppliers((prev) =>
-      prev.map((s) => (s.id === supplier.id ? { ...s, is_active: next } : s)),
-    );
+    setSuppliers((prev) => prev.map((s) => (s.id === supplier.id ? { ...s, is_active: next } : s)));
     setNotice({
       type: 'success',
       text: next ? `"${supplier.name}" reactivado.` : `"${supplier.name}" desactivado.`,
@@ -118,7 +153,7 @@ export default function ProveedoresPage() {
   return (
     <FinShell
       title="Proveedores"
-      subtitle="Las marcas a las que le compras. Son del negocio completo, no de una sucursal."
+      subtitle="Las marcas a las que le compras, con lo que les debes y cuándo vence."
       actions={
         <button
           className={btnPrimary}
@@ -134,7 +169,15 @@ export default function ProveedoresPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <FinStatCard
+            label="Les debes"
+            value={fmtUSD(deudaTotal)}
+            tone={deudaTotal > 0 ? 'amber' : 'default'}
+            sub={`${conDeuda} ${conDeuda === 1 ? 'marca con saldo' : 'marcas con saldo'}`}
+            active={onlyDebt}
+            onClick={() => setOnlyDebt(!onlyDebt)}
+          />
           <FinStatCard label="Proveedores activos" value={activeCount} tone="teal" />
           <FinStatCard
             label="Inactivos"
@@ -159,6 +202,15 @@ export default function ProveedoresPage() {
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
               <input
                 type="checkbox"
+                checked={onlyDebt}
+                onChange={(e) => setOnlyDebt(e.target.checked)}
+                className="rounded border-slate-300"
+              />
+              Solo con saldo
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={showInactive}
                 onChange={(e) => setShowInactive(e.target.checked)}
                 className="rounded border-slate-300"
@@ -174,60 +226,98 @@ export default function ProveedoresPage() {
             <div className="py-16 text-center text-slate-400 text-sm">Cargando proveedores…</div>
           ) : visible.length === 0 ? (
             <EmptyState
-              title={search ? 'Ningún proveedor coincide con la búsqueda.' : 'Todavía no hay proveedores.'}
+              title={
+                search || onlyDebt
+                  ? 'Ningún proveedor coincide con el filtro.'
+                  : 'Todavía no hay proveedores.'
+              }
               hint={
-                search
+                search || onlyDebt
                   ? undefined
                   : 'Empieza por las marcas que más compras: LC Lizette Collection, Kancan, THML, Blu Blush, Rubienn.'
               }
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
+              <table className="w-full text-sm min-w-[900px]">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
                     <th className="text-left font-semibold px-4 py-3">Marca</th>
                     <th className="text-left font-semibold px-4 py-3">Contacto</th>
-                    <th className="text-left font-semibold px-4 py-3">Teléfono</th>
                     <th className="text-left font-semibold px-4 py-3">Condiciones</th>
+                    <th className="text-right font-semibold px-4 py-3">Saldo</th>
+                    <th className="text-center font-semibold px-4 py-3">Vence</th>
                     <th className="text-right font-semibold px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visible.map((s) => (
-                    <tr key={s.id} className={`hover:bg-slate-50 ${!s.is_active ? 'opacity-55' : ''}`}>
-                      <td className="px-4 py-3">
-                        <div className="font-semibold text-slate-800">{s.name}</div>
-                        {s.email && <div className="text-xs text-slate-400">{s.email}</div>}
-                        {!s.is_active && (
-                          <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">
-                            Inactivo
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{s.contact_name || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{s.phone || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {PAYMENT_TERMS_LABEL[s.payment_terms] ?? s.payment_terms}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-2">
+                  {visible.map((s) => {
+                    const b = bal(s.id);
+                    const saldo = Number(b?.balance_usd ?? 0);
+                    return (
+                      <tr key={s.id} className={`hover:bg-slate-50 ${!s.is_active ? 'opacity-55' : ''}`}>
+                        <td className="px-4 py-3">
                           <button
-                            className={btnSecondary}
-                            onClick={() => {
-                              setEditing(s);
-                              setModalOpen(true);
-                            }}
+                            onClick={() => setStatement(s)}
+                            className="font-semibold text-slate-800 hover:text-teal-700 cursor-pointer text-left"
                           >
-                            Editar
+                            {s.name}
                           </button>
-                          <button className={btnSecondary} onClick={() => toggleActive(s)}>
-                            {s.is_active ? 'Desactivar' : 'Reactivar'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                          {s.email && <div className="text-xs text-slate-400">{s.email}</div>}
+                          {!s.is_active && (
+                            <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">
+                              Inactivo
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          {s.contact_name || '—'}
+                          {s.phone && <div className="text-xs text-slate-400">{s.phone}</div>}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          {PAYMENT_TERMS_LABEL[s.payment_terms] ?? s.payment_terms}
+                        </td>
+                        <td
+                          className={`px-4 py-3 text-right font-semibold ${
+                            saldo > 0 ? 'text-red-600' : 'text-slate-300'
+                          }`}
+                        >
+                          {saldo > 0 ? fmtUSD(saldo) : '—'}
+                          {saldo > 0 && b && (
+                            <div className="text-[10px] text-slate-400 font-normal">
+                              {b.open_invoices} {b.open_invoices === 1 ? 'factura' : 'facturas'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {b?.next_due_date ? (
+                            <DueBadge dueDate={b.next_due_date} />
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-2">
+                            <button className={btnSecondary} onClick={() => setStatement(s)}>
+                              Estado de cuenta
+                            </button>
+                            <button
+                              className={btnSecondary}
+                              onClick={() => {
+                                setEditing(s);
+                                setModalOpen(true);
+                              }}
+                            >
+                              Editar
+                            </button>
+                            <button className={btnSecondary} onClick={() => toggleActive(s)}>
+                              {s.is_active ? 'Desactivar' : 'Reactivar'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -240,6 +330,15 @@ export default function ProveedoresPage() {
         onClose={() => setModalOpen(false)}
         supplier={editing}
         onSaved={handleSaved}
+      />
+
+      <SupplierStatementModal
+        isOpen={!!statement}
+        onClose={() => {
+          setStatement(null);
+          load();
+        }}
+        supplier={statement}
       />
     </FinShell>
   );
