@@ -142,7 +142,6 @@ export default function ShipmentCostSection({
     const { data: expense, error: expError } = await supabase
       .from('fin_expenses')
       .insert({
-        store_id: shipment.store_id,
         kind: 'envio',
         shipment_id: shipment.id,
         category_id: envioCategoryId,

@@ -27,7 +27,6 @@ import {
 
 export interface Shipment {
   id: string;
-  store_id: string;
   box_number: string;
   alias: string | null;
   status: string;
@@ -97,13 +96,11 @@ export default function ShipmentFormModal({
   isOpen,
   onClose,
   shipment,
-  storeId,
   onSaved,
 }: {
   isOpen: boolean;
   onClose: () => void;
   shipment?: Shipment | null;
-  storeId: string;
   onSaved: (shipment: Shipment, isNew: boolean) => void;
 }) {
   const {
@@ -167,7 +164,6 @@ export default function ShipmentFormModal({
     const supabase = createClient();
 
     const payload = {
-      store_id: storeId,
       box_number: values.box_number,
       alias: values.alias || null,
       status: values.status,
@@ -194,7 +190,7 @@ export default function ShipmentFormModal({
         .single();
       if (error) {
         if (error.code === '23505') {
-          setError('box_number', { message: 'Ya existe una caja con ese número en esta tienda.' });
+          setError('box_number', { message: 'Ya existe una caja con ese número.' });
           return;
         }
         setError('root', { message: finErrorMessage(error) });
@@ -216,7 +212,7 @@ export default function ShipmentFormModal({
         .single();
       if (error) {
         if (error.code === '23505') {
-          setError('box_number', { message: 'Ya existe una caja con ese número en esta tienda.' });
+          setError('box_number', { message: 'Ya existe una caja con ese número.' });
           return;
         }
         setError('root', { message: finErrorMessage(error) });

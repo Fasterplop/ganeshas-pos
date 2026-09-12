@@ -23,7 +23,6 @@ import { FinField, inputClass, btnPrimary, btnSecondary } from './ui';
 
 export interface Expense {
   id: string;
-  store_id: string;
   kind: string;
   supplier_id: string | null;
   category_id: string | null;
@@ -78,7 +77,7 @@ export default function ExpenseFormModal({
   onClose,
   expense,
   kind,
-  storeId,
+  defaultPersonal = false,
   suppliers,
   accounts,
   categories,
@@ -89,7 +88,8 @@ export default function ExpenseFormModal({
   onClose: () => void;
   expense?: Expense | null;
   kind: 'compra' | 'gasto';
-  storeId: string;
+  /** Arranca marcado como personal (pestaña Personal). */
+  defaultPersonal?: boolean;
   suppliers: Supplier[];
   accounts: Account[];
   categories: Category[];
@@ -170,7 +170,7 @@ export default function ExpenseFormModal({
       setExpenseDate(caracasToday());
       setDueDate('');
       setNotes('');
-      setIsPersonal(false);
+      setIsPersonal(defaultPersonal);
       setReceiptPath(null);
       setPayMode('pendiente');
       setAccountId('');
@@ -178,7 +178,7 @@ export default function ExpenseFormModal({
       setLines([]);
       setShowLines(false);
     }
-  }, [isOpen, expense]);
+  }, [isOpen, expense, defaultPersonal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +298,6 @@ export default function ExpenseFormModal({
     }
 
     const payload = {
-      store_id: storeId,
       kind,
       supplier_id: supplierId || null,
       category_id: categoryId || null,

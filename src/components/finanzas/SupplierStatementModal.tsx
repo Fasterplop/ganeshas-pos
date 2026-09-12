@@ -41,7 +41,7 @@ export default function SupplierStatementModal({
       supabase
         .from('fin_expenses')
         .select(
-          'id, store_id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
+          'id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
         )
         .eq('supplier_id', supplier.id)
         .eq('is_personal', false)
@@ -97,7 +97,6 @@ export default function SupplierStatementModal({
         filename: `estado_cuenta_${supplier.name.replace(/\s+/g, '_').toLowerCase()}.xlsx`,
         cover: {
           title: `Estado de cuenta — ${supplier.name}`,
-          storeName: 'Todas las sucursales',
           extra: [
             ['Condiciones de pago', PAYMENT_TERMS_LABEL[supplier.payment_terms] ?? supplier.payment_terms],
             ['Total comprado', fmtUSD(resumen.comprado)],

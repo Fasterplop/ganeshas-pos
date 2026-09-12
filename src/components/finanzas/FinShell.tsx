@@ -1,7 +1,9 @@
 'use client';
 
-// Envoltorio común de todas las pantallas de Finanzas: pestañas, selector de
-// alcance y la comprobación de que el módulo esté instalado en la base.
+// Envoltorio común de todas las pantallas de Finanzas: pestañas y la
+// comprobación de que el módulo esté instalado en la base.
+//
+// No hay selector de tienda: las finanzas son del negocio completo.
 //
 // Las ocho secciones van como PESTAÑAS y no como ocho ítems en la barra
 // lateral: el menú del POS tiene seis entradas y meterle ocho más lo volvería
@@ -12,8 +14,6 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { isMissingTableError } from '@/lib/finanzas/errors';
-import { usePOSStore } from '@/store/usePOSStore';
-import { useFinanceFilters } from '@/store/useFinanceFilters';
 
 const TABS = [
   { name: 'Resumen', path: '/finanzas' },
@@ -33,21 +33,11 @@ interface FinShellProps {
   subtitle?: string;
   /** Botones de la esquina superior derecha (exportar, crear, etc.). */
   actions?: React.ReactNode;
-  /** La sección usa el alcance por tienda: muestra el selector Tienda/Todas. */
-  showScope?: boolean;
   children: React.ReactNode;
 }
 
-export default function FinShell({
-  title,
-  subtitle,
-  actions,
-  showScope = false,
-  children,
-}: FinShellProps) {
+export default function FinShell({ title, subtitle, actions, children }: FinShellProps) {
   const pathname = usePathname();
-  const { currentStore } = usePOSStore();
-  const { scope, setScope } = useFinanceFilters();
   const [install, setInstall] = useState<InstallState>('checking');
 
   // Las migraciones se aplican A MANO en Supabase, así que el front puede
@@ -74,31 +64,7 @@ export default function FinShell({
             <h1 className="text-2xl font-bold text-slate-800">{title}</h1>
             {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
           </div>
-          <div className="flex items-center gap-3">
-            {showScope && (
-              <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 text-xs font-medium">
-                <button
-                  onClick={() => setScope('tienda')}
-                  className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                    scope === 'tienda'
-                      ? 'bg-teal-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {currentStore?.name || 'Tienda actual'}
-                </button>
-                <button
-                  onClick={() => setScope('todas')}
-                  className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                    scope === 'todas' ? 'bg-teal-700 text-white' : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  Todas
-                </button>
-              </div>
-            )}
-            {actions}
-          </div>
+          <div className="flex items-center gap-3">{actions}</div>
         </div>
 
         <nav className="mt-5 -mx-1 overflow-x-auto">

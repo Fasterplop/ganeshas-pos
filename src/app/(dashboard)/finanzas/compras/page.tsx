@@ -12,7 +12,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { usePOSStore } from '@/store/usePOSStore';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
 import FinShell from '@/components/finanzas/FinShell';
 import ExpenseFormModal, { Expense, Category } from '@/components/finanzas/ExpenseFormModal';
@@ -41,14 +40,12 @@ type EstadoFiltro = 'todas' | 'pendiente' | 'parcial' | 'pagada' | 'vencidas';
 
 export default function ComprasPage() {
   const supabase = useMemo(() => createClient(), []);
-  const { currentStore } = usePOSStore();
-  const { scope, dateRange, setDateRange } = useFinanceFilters();
+  const { dateRange, setDateRange } = useFinanceFilters();
 
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [stores, setStores] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -62,20 +59,19 @@ export default function ComprasPage() {
   const [paying, setPaying] = useState<Expense | null>(null);
 
   const load = useCallback(async () => {
-    if (scope === 'tienda' && !currentStore) return;
     setLoading(true);
 
-    const { rows, error } = await fetchAllPages<Expense>((from, to) => {
-      let q = supabase
+    const { rows, error } = await fetchAllPages<Expense>((from, to) =>
+      supabase
         .from('fin_expenses')
         .select(
-          'id, store_id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
+          'id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
         )
         .eq('kind', 'compra')
-        .eq('is_personal', false);
-      if (scope === 'tienda' && currentStore) q = q.eq('store_id', currentStore.id);
-      return q.order('expense_date', { ascending: false }).range(from, to);
-    });
+        .eq('is_personal', false)
+        .order('expense_date', { ascending: false })
+        .range(from, to),
+    );
 
     if (error) {
       setNotice({ type: 'error', text: finErrorMessage(error) });
@@ -83,7 +79,7 @@ export default function ComprasPage() {
       return;
     }
 
-    const [sup, acc, cat, st] = await Promise.all([
+    const [sup, acc, cat] = await Promise.all([
       fetchAllPages<Supplier>((from, to) =>
         supabase
           .from('fin_suppliers')
@@ -103,16 +99,14 @@ export default function ComprasPage() {
       fetchAllPages<Category>((from, to) =>
         supabase.from('fin_categories').select('id, name, kind, is_active').order('sort_order').range(from, to),
       ),
-      supabase.from('stores').select('id, name').order('name'),
     ]);
 
     setExpenses(rows);
     setSuppliers(sup.rows);
     setAccounts(acc.rows);
     setCategories(cat.rows);
-    setStores(st.data ?? []);
     setLoading(false);
-  }, [supabase, scope, currentStore]);
+  }, [supabase]);
 
   useEffect(() => {
     load();
@@ -122,7 +116,6 @@ export default function ComprasPage() {
     (id: string | null) => suppliers.find((s) => s.id === id)?.name ?? '—',
     [suppliers],
   );
-  const storeName = useCallback((id: string) => stores.find((s) => s.id === id)?.name ?? '—', [stores]);
   const saldoDe = (e: Expense) => round2(Number(e.amount_usd) - Number(e.paid_usd));
 
   // La deuda es SIEMPRE total, no del período: es lo que de verdad se debe hoy.
@@ -206,7 +199,6 @@ export default function ComprasPage() {
       const rows = visible.map((e) => ({
         fecha: formatDate(e.expense_date),
         proveedor: supplierName(e.supplier_id),
-        tienda: storeName(e.store_id),
         concepto: e.description ?? '',
         moneda: e.currency === 'VES' ? `Bs @ ${e.bcv_rate}` : 'USD',
         total: Number(e.amount_usd),
@@ -220,22 +212,16 @@ export default function ComprasPage() {
       const abiertas = rows.filter((r) => r.saldo > 0);
 
       await downloadFinWorkbook({
-        filename: finFilename(
-          'compras',
-          scope === 'todas' ? 'todas' : currentStore?.name ?? 'tienda',
-          dateRange.start,
-          dateRange.end,
-        ),
+        filename: finFilename('compras', dateRange.start, dateRange.end),
         cover: {
           title: 'Compras y cuentas por pagar',
-          storeName: scope === 'todas' ? 'Todas las sucursales' : currentStore?.name ?? '—',
           periodStart: dateRange.start,
           periodEnd: dateRange.end,
           extra: [
             ['Comprado en el período', fmtUSD(compradoPeriodo)],
             ['Deuda abierta total', fmtUSD(deuda.total)],
             ['Vencido', fmtUSD(deuda.vencido)],
-            ['Alcance', 'Compras del período, más todas las que siguen debiéndose'],
+            ['Incluye', 'Compras del período, más todas las que siguen debiéndose'],
           ],
         },
         sheets: [
@@ -244,7 +230,6 @@ export default function ComprasPage() {
             columns: [
               { header: 'Fecha', key: 'fecha', width: 13 },
               { header: 'Proveedor', key: 'proveedor', width: 24 },
-              { header: 'Sucursal', key: 'tienda', width: 16 },
               { header: 'Concepto', key: 'concepto', width: 30, wrap: true },
               { header: 'Moneda', key: 'moneda', width: 14 },
               { header: 'Total USD', key: 'total', width: 14, numFmt: FMT_USD },
@@ -290,14 +275,6 @@ export default function ComprasPage() {
     }
   };
 
-  if (scope === 'tienda' && !currentStore) {
-    return (
-      <FinShell title="Compras" subtitle="Registro de compras y cuentas por pagar" showScope>
-        <p className="text-slate-500 text-sm">Selecciona una sucursal para ver sus compras.</p>
-      </FinShell>
-    );
-  }
-
   const FILTROS: Array<{ key: EstadoFiltro; label: string }> = [
     { key: 'todas', label: 'Todas' },
     { key: 'pendiente', label: 'Pendientes' },
@@ -310,7 +287,6 @@ export default function ComprasPage() {
     <FinShell
       title="Compras"
       subtitle="Qué compraste, a quién, con qué se pagó y cuánto queda debiendo."
-      showScope
       actions={
         <>
           <button onClick={handleExport} disabled={exporting} className={btnSecondary}>
@@ -318,7 +294,6 @@ export default function ComprasPage() {
           </button>
           <button
             className={btnPrimary}
-            disabled={!currentStore}
             onClick={() => {
               setEditing(null);
               setFormOpen(true);
@@ -451,11 +426,6 @@ export default function ComprasPage() {
                       <tr key={e.id} className="hover:bg-slate-50 align-top">
                         <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
                           {formatDate(e.expense_date)}
-                          {scope === 'todas' && (
-                            <div className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">
-                              {storeName(e.store_id)}
-                            </div>
-                          )}
                         </td>
                         <td className="px-4 py-3 font-semibold text-slate-800">
                           {supplierName(e.supplier_id)}
@@ -534,7 +504,6 @@ export default function ComprasPage() {
         onClose={() => setFormOpen(false)}
         expense={editing}
         kind="compra"
-        storeId={editing?.store_id ?? currentStore?.id ?? ''}
         suppliers={suppliers}
         accounts={accounts}
         categories={categories.filter((c) => c.kind === 'compra')}

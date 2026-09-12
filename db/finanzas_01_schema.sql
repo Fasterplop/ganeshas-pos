@@ -18,6 +18,11 @@
 -- !! NO DEJAR ESTE ARCHIVO A MEDIAS. Si hay que parar, correr al menos hasta
 -- el final del Bloque 4. Lo ideal es correrlo entero de una vez.
 --
+-- ALCANCE: todo el modulo es DEL NEGOCIO, no de una sucursal. No hay store_id
+-- en ninguna tabla: el dueno ve las mismas finanzas este en la tienda que
+-- este. La Amex paga para cualquier sucursal, LC Lizette le vende al negocio y
+-- una caja que llega es la misma caja desde donde se mire.
+--
 -- Aislamiento: ninguna tabla existente del POS recibe FK hacia fin_*, y este
 -- archivo no modifica ni una sola tabla del POS. Se puede revertir entero con
 -- db/finanzas_99_rollback.sql sin tocar ventas, productos ni stock.
@@ -30,9 +35,8 @@
 -- ----------------------------------------------------------------------------
 -- BLOQUE 1 - Maestros del negocio: proveedores, categorias, cuentas y tarjetas.
 --
--- Son GLOBALES (sin store_id): la Amex paga para cualquier sucursal y LC
--- Lizette le vende al negocio, no a una tienda. Lo que si distingue sucursal
--- es el movimiento: compras, gastos, cajas y presupuestos.
+-- Como todo el modulo, son del negocio y no de una sucursal: la Amex paga para
+-- cualquier tienda y LC Lizette le vende al negocio, no a un local.
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS public.fin_suppliers (
@@ -163,7 +167,6 @@ $seed$;
 
 CREATE TABLE IF NOT EXISTS public.fin_shipments (
   id            uuid NOT NULL DEFAULT uuid_generate_v4(),
-  store_id      uuid NOT NULL,
   box_number    text NOT NULL,
   alias         text,
   status        text NOT NULL DEFAULT 'preparada'
@@ -181,16 +184,15 @@ CREATE TABLE IF NOT EXISTS public.fin_shipments (
   created_by    uuid NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT fin_shipments_pkey PRIMARY KEY (id),
-  CONSTRAINT fin_shipments_store_fkey  FOREIGN KEY (store_id)   REFERENCES public.stores(id),
   CONSTRAINT fin_shipments_author_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fin_shipments_number_uniq
-  ON public.fin_shipments (store_id, lower(box_number));
+  ON public.fin_shipments (lower(box_number));
 
 -- "Que esta en camino" es la consulta que la app hace al abrir la seccion.
 CREATE INDEX IF NOT EXISTS idx_fin_shipments_incoming
-  ON public.fin_shipments (store_id, eta_date)
+  ON public.fin_shipments (eta_date)
   WHERE status IN ('enviada','en_transito');
 
 
@@ -249,7 +251,6 @@ CREATE INDEX IF NOT EXISTS idx_fin_shipment_items_expense
 
 CREATE TABLE IF NOT EXISTS public.fin_expenses (
   id           uuid NOT NULL DEFAULT uuid_generate_v4(),
-  store_id     uuid NOT NULL,
   kind         text NOT NULL CHECK (kind IN ('compra','gasto','envio')),
   supplier_id  uuid,
   category_id  uuid,
@@ -278,7 +279,6 @@ CREATE TABLE IF NOT EXISTS public.fin_expenses (
   created_at   timestamptz NOT NULL DEFAULT now(),
 
   CONSTRAINT fin_expenses_pkey PRIMARY KEY (id),
-  CONSTRAINT fin_expenses_store_fkey    FOREIGN KEY (store_id)    REFERENCES public.stores(id),
   CONSTRAINT fin_expenses_supplier_fkey FOREIGN KEY (supplier_id) REFERENCES public.fin_suppliers(id),
   CONSTRAINT fin_expenses_category_fkey FOREIGN KEY (category_id) REFERENCES public.fin_categories(id),
   CONSTRAINT fin_expenses_shipment_fkey FOREIGN KEY (shipment_id) REFERENCES public.fin_shipments(id) ON DELETE SET NULL,
@@ -337,15 +337,13 @@ CREATE TABLE IF NOT EXISTS public.fin_payments (
 
 CREATE TABLE IF NOT EXISTS public.fin_budgets (
   id           uuid NOT NULL DEFAULT uuid_generate_v4(),
-  store_id     uuid NOT NULL,
   category_id  uuid NOT NULL,
   period_month date NOT NULL CHECK (period_month = date_trunc('month', period_month)::date),
   amount_usd   numeric NOT NULL CHECK (amount_usd >= 0),
   created_by   uuid NOT NULL,
   updated_at   timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT fin_budgets_pkey PRIMARY KEY (id),
-  CONSTRAINT fin_budgets_uniq UNIQUE (store_id, category_id, period_month),
-  CONSTRAINT fin_budgets_store_fkey    FOREIGN KEY (store_id)    REFERENCES public.stores(id),
+  CONSTRAINT fin_budgets_uniq UNIQUE (category_id, period_month),
   CONSTRAINT fin_budgets_category_fkey FOREIGN KEY (category_id) REFERENCES public.fin_categories(id),
   CONSTRAINT fin_budgets_author_fkey   FOREIGN KEY (created_by)  REFERENCES public.profiles(id)
 );
@@ -380,8 +378,8 @@ $fks$;
 
 
 -- Indices de las consultas que la app hace todo el tiempo.
-CREATE INDEX IF NOT EXISTS idx_fin_expenses_store_date
-  ON public.fin_expenses (store_id, expense_date DESC);
+CREATE INDEX IF NOT EXISTS idx_fin_expenses_date
+  ON public.fin_expenses (expense_date DESC);
 
 -- El calendario de pagos: "que vence y todavia no esta pagado".
 CREATE INDEX IF NOT EXISTS idx_fin_expenses_due
@@ -404,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_fin_payments_expense ON public.fin_payments (expe
 CREATE INDEX IF NOT EXISTS idx_fin_payments_account ON public.fin_payments (account_id, paid_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_fin_budgets_lookup
-  ON public.fin_budgets (store_id, period_month);
+  ON public.fin_budgets (period_month);
 
 
 -- Trigger que mantiene paid_usd y status de una compra a partir de sus pagos.
@@ -633,8 +631,7 @@ SELECT s.id   AS supplier_id,
 -- Presupuesto vs. gastado por categoria, mes y tienda.
 CREATE OR REPLACE VIEW public.fin_v_budget_vs_actual
 WITH (security_invoker = on) AS
-SELECT b.store_id,
-       b.category_id,
+SELECT b.category_id,
        c.name                                   AS category_name,
        b.period_month,
        b.amount_usd                             AS budget_usd,
@@ -649,8 +646,7 @@ SELECT b.store_id,
   LEFT JOIN LATERAL (
     SELECT SUM(e.amount_usd) AS spent_usd
       FROM public.fin_expenses e
-     WHERE e.store_id    = b.store_id
-       AND e.category_id = b.category_id
+     WHERE e.category_id = b.category_id
        AND e.is_personal = false
        AND date_trunc('month', e.expense_date)::date = b.period_month
   ) g ON true;

@@ -31,16 +31,3 @@ export async function fetchAllPages<T>(
   }
   return { rows, error: null };
 }
-
-/**
- * Filtro de tienda del módulo.
- *
- * El scope 'todas' es el "consolidado" de la propuesta. Devuelve null cuando
- * no hay que filtrar, para que quien llama simplemente omita el .eq().
- */
-export function storeFilter(
-  scope: 'tienda' | 'todas',
-  storeId: string | null | undefined,
-): string | null {
-  return scope === 'todas' ? null : storeId ?? null;
-}

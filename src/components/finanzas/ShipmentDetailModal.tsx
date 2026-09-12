@@ -120,16 +120,15 @@ export default function ShipmentDetailModal({
     if (error) setNotice({ type: 'error', text: finErrorMessage(error) });
     setItems(rows);
 
-    // Las compras de la misma tienda, para poder enlazar el contenido.
+    // Todas las compras del negocio, para poder enlazar el contenido.
     const { rows: comp } = await fetchAllPages<Expense>((from, to) =>
       supabase
         .from('fin_expenses')
         .select(
-          'id, store_id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
+          'id, kind, supplier_id, category_id, shipment_id, description, currency, amount, bcv_rate, amount_usd, expense_date, due_date, paid_usd, status, is_personal, receipt_path, notes, created_at',
         )
         .eq('kind', 'compra')
         .eq('is_personal', false)
-        .eq('store_id', shipment.store_id)
         .order('expense_date', { ascending: false })
         .range(from, to),
     );

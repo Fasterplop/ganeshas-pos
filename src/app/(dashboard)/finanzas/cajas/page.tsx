@@ -12,7 +12,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { usePOSStore } from '@/store/usePOSStore';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
 import FinShell from '@/components/finanzas/FinShell';
 import ShipmentFormModal, { Shipment } from '@/components/finanzas/ShipmentFormModal';
@@ -40,13 +39,11 @@ type StatusFilter = 'todas' | 'en_camino' | 'preparada' | 'recibida' | 'incomple
 
 export default function CajasPage() {
   const supabase = useMemo(() => createClient(), []);
-  const { currentStore } = usePOSStore();
-  const { scope, dateRange, setDateRange } = useFinanceFilters();
+  const { dateRange, setDateRange } = useFinanceFilters();
 
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [items, setItems] = useState<ShipmentItem[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [stores, setStores] = useState<Array<{ id: string; name: string }>>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [envioCategoryId, setEnvioCategoryId] = useState<string | null>(null);
   // Costo de envio por caja: suma de sus egresos kind='envio'.
@@ -63,18 +60,17 @@ export default function CajasPage() {
   const [detail, setDetail] = useState<Shipment | null>(null);
 
   const load = useCallback(async () => {
-    if (scope === 'tienda' && !currentStore) return;
     setLoading(true);
 
-    const { rows: ship, error: shipError } = await fetchAllPages<Shipment>((from, to) => {
-      let q = supabase
+    const { rows: ship, error: shipError } = await fetchAllPages<Shipment>((from, to) =>
+      supabase
         .from('fin_shipments')
         .select(
-          'id, store_id, box_number, alias, status, courier, tracking_code, sent_date, eta_date, received_date, pieces, weight, weight_unit, document_path, notes, created_at',
-        );
-      if (scope === 'tienda' && currentStore) q = q.eq('store_id', currentStore.id);
-      return q.order('created_at', { ascending: false }).range(from, to);
-    });
+          'id, box_number, alias, status, courier, tracking_code, sent_date, eta_date, received_date, pieces, weight, weight_unit, document_path, notes, created_at',
+        )
+        .order('created_at', { ascending: false })
+        .range(from, to),
+    );
 
     if (shipError) {
       setNotice({ type: 'error', text: finErrorMessage(shipError) });
@@ -107,8 +103,6 @@ export default function CajasPage() {
         .order('name')
         .range(from, to),
     );
-
-    const { data: storeRows } = await supabase.from('stores').select('id, name').order('name');
 
     const { rows: acc } = await fetchAllPages<Account>((from, to) =>
       supabase
@@ -151,12 +145,11 @@ export default function CajasPage() {
     setShipments(ship);
     setItems(content);
     setSuppliers(sup);
-    setStores(storeRows ?? []);
     setAccounts(acc);
     setEnvioCategoryId(cat?.id ?? null);
     setCostByShipment(costs);
     setLoading(false);
-  }, [supabase, scope, currentStore]);
+  }, [supabase]);
 
   useEffect(() => {
     load();
@@ -176,11 +169,6 @@ export default function CajasPage() {
     (id: string | null) => suppliers.find((s) => s.id === id)?.name ?? null,
     [suppliers],
   );
-  const storeName = useCallback(
-    (id: string) => stores.find((s) => s.id === id)?.name ?? '—',
-    [stores],
-  );
-
   const brandsOf = useCallback(
     (shipmentId: string) => {
       const list = itemsByShipment.get(shipmentId) ?? [];
@@ -279,7 +267,6 @@ export default function CajasPage() {
         return {
           caja: s.box_number,
           alias: s.alias ?? '',
-          tienda: storeName(s.store_id),
           estado: SHIPMENT_STATUS_LABEL[s.status] ?? s.status,
           agencia: s.courier ?? '',
           guia: s.tracking_code ?? '',
@@ -304,10 +291,9 @@ export default function CajasPage() {
       });
 
       await downloadFinWorkbook({
-        filename: finFilename('cajas', scope === 'todas' ? 'todas' : currentStore?.name ?? 'tienda', dateRange.start, dateRange.end),
+        filename: finFilename('cajas', dateRange.start, dateRange.end),
         cover: {
           title: 'Envío de cajas',
-          storeName: scope === 'todas' ? 'Todas las sucursales' : currentStore?.name ?? '—',
           periodStart: dateRange.start,
           periodEnd: dateRange.end,
           extra: [
@@ -321,7 +307,6 @@ export default function CajasPage() {
             columns: [
               { header: 'Caja', key: 'caja', width: 10 },
               { header: 'Alias', key: 'alias', width: 22 },
-              { header: 'Sucursal', key: 'tienda', width: 18 },
               { header: 'Estado', key: 'estado', width: 20 },
               { header: 'Agencia', key: 'agencia', width: 16 },
               { header: 'Guía', key: 'guia', width: 20 },
@@ -352,14 +337,6 @@ export default function CajasPage() {
     }
   };
 
-  if (scope === 'tienda' && !currentStore) {
-    return (
-      <FinShell title="Cajas" subtitle="Control de envío de cajas" showScope>
-        <p className="text-slate-500 text-sm">Selecciona una sucursal para ver sus cajas.</p>
-      </FinShell>
-    );
-  }
-
   const FILTERS: Array<{ key: StatusFilter; label: string }> = [
     { key: 'todas', label: `Todas (${counts.total})` },
     { key: 'en_camino', label: `En camino (${counts.enCamino})` },
@@ -372,7 +349,6 @@ export default function CajasPage() {
     <FinShell
       title="Cajas"
       subtitle="Qué lleva cada caja, dónde va y qué llegó de verdad."
-      showScope
       actions={
         <>
           <button onClick={handleExport} disabled={exporting} className={btnSecondary}>
@@ -380,7 +356,6 @@ export default function CajasPage() {
           </button>
           <button
             className={btnPrimary}
-            disabled={!currentStore}
             onClick={() => {
               setEditing(null);
               setFormOpen(true);
@@ -511,11 +486,6 @@ export default function CajasPage() {
                             Caja {s.box_number}
                           </button>
                           {s.alias && <div className="text-xs text-slate-500">{s.alias}</div>}
-                          {scope === 'todas' && (
-                            <div className="text-[10px] uppercase tracking-wide text-slate-400 font-bold mt-0.5">
-                              {storeName(s.store_id)}
-                            </div>
-                          )}
                         </td>
                         <td className="px-4 py-3">
                           <ShipmentStatusBadge status={s.status} />
@@ -601,7 +571,6 @@ export default function CajasPage() {
         isOpen={formOpen}
         onClose={() => setFormOpen(false)}
         shipment={editing}
-        storeId={editing?.store_id ?? currentStore?.id ?? ''}
         onSaved={upsertShipment}
       />
 

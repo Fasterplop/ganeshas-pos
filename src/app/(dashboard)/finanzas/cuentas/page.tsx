@@ -25,6 +25,7 @@ import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
 import { fmtUSD, ACCOUNT_KIND_LABEL } from '@/lib/finanzas/money';
 import { formatDate } from '@/lib/finanzas/dates';
+import { downloadFinWorkbook, finFilename, FMT_USD } from '@/lib/finanzas/excel';
 
 type ViewRow = {
   account_id: string;
@@ -45,6 +46,7 @@ export default function CuentasPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -141,6 +143,64 @@ export default function CuentasPage() {
     // El saldo lo calcula la vista: hay que releerla para reflejar un cambio de
     // saldo inicial.
     load();
+  };
+
+  // De las tarjetas salen SOLO los ultimos 4 digitos, igual que en pantalla:
+  // el archivo se comparte y no puede llevar mas que eso.
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await downloadFinWorkbook({
+        filename: finFilename(tab === 'personal' ? 'cuentas_personales' : 'cuentas_y_tarjetas'),
+        cover: {
+          title: tab === 'personal' ? 'Cuentas personales' : 'Cuentas y tarjetas del negocio',
+          extra: [
+            ['Efectivo y bancos', fmtUSD(totals.disponible)],
+            ['Deuda en tarjetas', fmtUSD(totals.deuda)],
+            ['Cupo disponible', fmtUSD(totals.cupo)],
+            ['Nota', 'De las tarjetas solo se guardan los ultimos 4 digitos'],
+          ],
+        },
+        sheets: [
+          {
+            name: 'Cuentas y tarjetas',
+            columns: [
+              { header: 'Cuenta', key: 'cuenta', width: 26 },
+              { header: 'Tipo', key: 'tipo', width: 20 },
+              { header: 'Banco', key: 'banco', width: 20 },
+              { header: 'Ultimos 4', key: 'last4', width: 11, align: 'center' },
+              { header: 'Saldo / Consumo', key: 'saldo', width: 16, numFmt: FMT_USD },
+              { header: 'Limite', key: 'limite', width: 14, numFmt: FMT_USD },
+              { header: 'Disponible', key: 'disponible', width: 14, numFmt: FMT_USD },
+              { header: 'Corte', key: 'corte', width: 9, align: 'center' },
+              { header: 'Pago', key: 'pago', width: 9, align: 'center' },
+              { header: 'Activa', key: 'activa', width: 9, align: 'center' },
+            ],
+            rows: visible.map((a) => {
+              const b = bal(a.id);
+              return {
+                cuenta: a.name,
+                tipo: ACCOUNT_KIND_LABEL[a.kind] ?? a.kind,
+                banco: a.bank_name ?? '',
+                last4: a.last4 ?? '',
+                saldo: Number(b?.balance_usd ?? a.opening_balance_usd ?? 0),
+                limite: Number(a.credit_limit_usd ?? 0),
+                disponible: Number(b?.available_usd ?? 0),
+                corte: a.statement_day ?? '',
+                pago: a.due_day ?? '',
+                activa: a.is_active ? 'Si' : 'No',
+              };
+            }),
+            note: 'Nunca se guarda el numero completo de la tarjeta, ni el CVV, ni las claves.',
+          },
+        ],
+      });
+    } catch (err) {
+      setNotice({ type: 'error', text: err instanceof Error ? err.message : 'Error al exportar.' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const renderTable = (list: Account[], title: string, isCardTable: boolean) => {
@@ -253,15 +313,20 @@ export default function CuentasPage() {
       title="Cuentas y tarjetas"
       subtitle="Bancos, Zelle, efectivo en caja y tarjetas de crédito en un solo lugar."
       actions={
-        <button
-          className={btnPrimary}
-          onClick={() => {
-            setEditing(null);
-            setModalOpen(true);
-          }}
-        >
-          + Nueva cuenta
-        </button>
+        <>
+          <button onClick={handleExport} disabled={exporting} className={btnSecondary}>
+            {exporting ? 'Exportando…' : '📥 Exportar a .xlsx'}
+          </button>
+          <button
+            className={btnPrimary}
+            onClick={() => {
+              setEditing(null);
+              setModalOpen(true);
+            }}
+          >
+            + Nueva cuenta
+          </button>
+        </>
       }
     >
       <div className="space-y-5">

@@ -48,7 +48,6 @@ export interface FinSheet {
 
 export interface FinCover {
   title: string;
-  storeName: string;
   periodStart?: string;
   periodEnd?: string;
   extra?: Array<[string, string]>;
@@ -71,7 +70,8 @@ function addCoverSheet(wb: ExcelJS.Workbook, cover: FinCover, sheets: FinSheet[]
       : 'Todo el histórico';
 
   const meta: Array<[string, string]> = [
-    ['Sucursal', cover.storeName],
+    // Las finanzas son del negocio completo, no de una sucursal.
+    ['Alcance', 'Todo el negocio'],
     ['Período', periodo],
     ['Generado', formatDate(caracasToday())],
     ...(cover.extra ?? []),
@@ -176,9 +176,8 @@ export async function downloadFinWorkbook(opts: {
   URL.revokeObjectURL(url);
 }
 
-/** "cajas_tienda_a_2026-09-01_al_2026-09-30" */
-export function finFilename(base: string, storeName: string, start?: string, end?: string): string {
-  const store = (storeName || 'tienda').replace(/\s+/g, '_').toLowerCase();
+/** "cajas_2026-09-01_al_2026-09-30" */
+export function finFilename(base: string, start?: string, end?: string): string {
   const range = start && end ? `_${start}_al_${end}` : '';
-  return `${base}_${store}${range}.xlsx`;
+  return `${base}${range}.xlsx`;
 }

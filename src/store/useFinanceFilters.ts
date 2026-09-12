@@ -1,18 +1,17 @@
-// Filtros del módulo de Finanzas: rango de fechas y alcance por tienda.
+// Filtros del módulo de Finanzas: el rango de fechas.
 //
-// POR QUÉ UN STORE APARTE Y NO usePOSStore:
-// la propuesta pide poder ver el "consolidado" de todas las sucursales, pero
-// el POS exige SIEMPRE una tienda activa (StoreGuard bloquea la pantalla hasta
-// elegirla, y cambiarla vacía el carrito). Meter un scope 'todas' en
-// usePOSStore filtraría ese concepto al punto de venta y al inventario, que no
-// saben qué hacer con él. Aquí queda contenido: Finanzas lee `currentStore` del
-// store del POS, pero nunca lo modifica.
+// NO hay filtro por tienda. Las finanzas son DEL NEGOCIO: el dueño ve lo mismo
+// esté parado en la tienda que esté. La Amex paga para cualquier sucursal, LC
+// Lizette le vende al negocio y una caja en camino es la misma caja desde donde
+// se mire.
+//
+// POR QUÉ UN STORE APARTE Y NO usePOSStore: el POS exige siempre una tienda
+// activa (StoreGuard bloquea la pantalla hasta elegirla, y cambiarla vacía el
+// carrito). Finanzas no depende de eso, y meterle su rango de fechas al store
+// del POS mezclaría dos cosas que no tienen nada que ver.
 
 import { create } from 'zustand';
 import { caracasMonthStart, caracasToday } from '@/lib/finanzas/dates';
-
-/** 'tienda' = la sucursal activa del POS. 'todas' = el consolidado. */
-export type FinScope = 'tienda' | 'todas';
 
 export interface FinDateRange {
   start: string; // 'YYYY-MM-DD'
@@ -20,9 +19,6 @@ export interface FinDateRange {
 }
 
 interface FinanceFiltersState {
-  scope: FinScope;
-  setScope: (scope: FinScope) => void;
-
   dateRange: FinDateRange;
   setDateRange: (range: FinDateRange) => void;
   setRangeCurrentMonth: () => void;
@@ -38,9 +34,6 @@ function currentMonthRange(): FinDateRange {
 }
 
 export const useFinanceFilters = create<FinanceFiltersState>((set) => ({
-  scope: 'tienda',
-  setScope: (scope) => set({ scope }),
-
   dateRange: currentMonthRange(),
   setDateRange: (dateRange) => set({ dateRange }),
   setRangeCurrentMonth: () => set({ dateRange: currentMonthRange() }),
