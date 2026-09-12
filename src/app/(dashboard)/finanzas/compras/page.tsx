@@ -307,7 +307,7 @@ export default function ComprasPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard
             label="Comprado en el período"
             value={fmtUSD(compradoPeriodo)}
@@ -334,17 +334,17 @@ export default function ComprasPage() {
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">
+          <div className="p-3 sm:p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar por proveedor, concepto o nota…"
-              className={`${inputClass} max-w-xs`}
+              className={`${inputClass} sm:max-w-xs`}
             />
             <select
               value={supplierFilter}
               onChange={(e) => setSupplierFilter(e.target.value)}
-              className={`${inputClass} w-auto`}
+              className={`${inputClass} sm:w-auto`}
             >
               <option value="">Todos los proveedores</option>
               {suppliers.map((s) => (
@@ -353,24 +353,24 @@ export default function ComprasPage() {
                 </option>
               ))}
             </select>
-            <div className="flex items-center gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-sm w-full sm:w-auto">
               <input
                 type="date"
                 value={dateRange.start}
                 onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-                className={`${inputClass} w-auto`}
+                className={`${inputClass} flex-1 min-w-[130px] sm:w-auto sm:flex-none`}
               />
               <span className="text-slate-400">al</span>
               <input
                 type="date"
                 value={dateRange.end}
                 onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-                className={`${inputClass} w-auto`}
+                className={`${inputClass} flex-1 min-w-[130px] sm:w-auto sm:flex-none`}
               />
             </div>
           </div>
 
-          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
+          <div className="px-3 sm:px-4 py-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
             {FILTROS.map((f) => (
               <button
                 key={f.key}
@@ -384,7 +384,7 @@ export default function ComprasPage() {
                 {f.label}
               </button>
             ))}
-            <span className="ml-auto text-xs text-slate-400">
+            <span className="w-full sm:w-auto sm:ml-auto text-xs text-slate-400">
               El período filtra el historial. Lo que sigue debiéndose se muestra siempre.
             </span>
           </div>
@@ -406,17 +406,17 @@ export default function ComprasPage() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[980px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Fecha</th>
-                    <th className="text-left font-semibold px-4 py-3">Proveedor</th>
-                    <th className="text-left font-semibold px-4 py-3">Concepto</th>
-                    <th className="text-right font-semibold px-4 py-3">Total</th>
-                    <th className="text-right font-semibold px-4 py-3">Saldo</th>
-                    <th className="text-center font-semibold px-4 py-3">Estado</th>
-                    <th className="text-center font-semibold px-4 py-3">Vence</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Proveedor</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Fecha</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Concepto</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Total</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Vence</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -424,24 +424,42 @@ export default function ComprasPage() {
                     const saldo = saldoDe(e);
                     return (
                       <tr key={e.id} className="hover:bg-slate-50 align-top">
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                          {formatDate(e.expense_date)}
-                        </td>
-                        <td className="px-4 py-3 font-semibold text-slate-800">
-                          {supplierName(e.supplier_id)}
-                        </td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {e.description || <span className="text-slate-300">—</span>}
+                        <td className="px-3 sm:px-4 py-3">
+                          <span className="font-semibold text-slate-800">
+                            {supplierName(e.supplier_id)}
+                          </span>
+                          <div className="lg:hidden text-xs text-slate-500 mt-0.5">
+                            {e.description}
+                          </div>
+                          {/* En móvil lo que se esconde arriba se pliega aquí. */}
+                          <div className="sm:hidden mt-1.5 space-y-1">
+                            <PaymentStatusBadge status={e.status} />
+                            <div className="text-xs text-slate-400">
+                              {formatDate(e.expense_date)} · Total {fmtUSD(e.amount_usd)}
+                            </div>
+                            {e.status !== 'pagada' && e.due_date && (
+                              <DueBadge dueDate={e.due_date} />
+                            )}
+                          </div>
+                          <div className="hidden sm:block md:hidden text-xs text-slate-400 mt-0.5">
+                            {formatDate(e.expense_date)}
+                          </div>
                           {e.receipt_path && (
                             <button
                               onClick={() => openReceipt(e)}
-                              className="block text-xs text-teal-700 hover:underline cursor-pointer mt-0.5"
+                              className="block text-xs text-teal-700 hover:underline cursor-pointer mt-1"
                             >
                               📎 Ver recibo
                             </button>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap">
+                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
+                          {formatDate(e.expense_date)}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
+                          {e.description || <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap hidden sm:table-cell">
                           {fmtUSD(e.amount_usd)}
                           {e.currency === 'VES' && (
                             <div className="text-[10px] text-slate-400 font-normal">
@@ -450,29 +468,29 @@ export default function ComprasPage() {
                           )}
                         </td>
                         <td
-                          className={`px-4 py-3 text-right font-semibold ${
+                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
                             saldo > 0 ? 'text-red-600' : 'text-slate-300'
                           }`}
                         >
                           {saldo > 0 ? fmtUSD(saldo) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center hidden sm:table-cell">
                           <PaymentStatusBadge status={e.status} />
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center hidden md:table-cell">
                           {e.status === 'pagada' ? (
                             <span className="text-slate-300">—</span>
                           ) : (
                             <DueBadge dueDate={e.due_date} />
                           )}
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
+                        <td className="px-3 sm:px-4 py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
                             <button className={btnSecondary} onClick={() => setPaying(e)}>
                               Abonos
                             </button>
                             <button
-                              className={btnSecondary}
+                              className={`${btnSecondary} hidden sm:inline-block`}
                               onClick={() => {
                                 setEditing(e);
                                 setFormOpen(true);

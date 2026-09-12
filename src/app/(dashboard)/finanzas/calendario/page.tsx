@@ -270,7 +270,7 @@ export default function CalendarioPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard
             label="Vencido"
             value={fmtUSD(resumen.vencido)}
@@ -294,11 +294,13 @@ export default function CalendarioPage() {
 
         {/* --- Cuadrícula del mes --- */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-3">
+          <div className="px-3 sm:px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-2 sm:gap-3">
             <button onClick={() => setMonth(shiftMonth(month, -1))} className={btnSecondary}>
               ←
             </button>
-            <h3 className="font-bold text-slate-800 min-w-[170px] text-center">{monthLabel(month)}</h3>
+            <h3 className="font-bold text-slate-800 flex-1 sm:flex-none sm:min-w-[170px] text-center">
+              {monthLabel(month)}
+            </h3>
             <button onClick={() => setMonth(shiftMonth(month, 1))} className={btnSecondary}>
               →
             </button>
@@ -312,24 +314,28 @@ export default function CalendarioPage() {
               type="month"
               value={month.slice(0, 7)}
               onChange={(e) => setMonth(e.target.value ? `${e.target.value}-01` : caracasMonthStart())}
-              className={`${inputClass} w-auto ml-auto`}
+              className={`${inputClass} w-full sm:w-auto sm:ml-auto`}
             />
           </div>
 
           {loading ? (
             <div className="py-16 text-center text-slate-400 text-sm">Cargando vencimientos…</div>
           ) : (
-            <div className="p-3">
-              <div className="grid grid-cols-7 gap-1 mb-1">
+            <div className="p-2 sm:p-3">
+              <div className="grid grid-cols-7 gap-0.5 sm:gap-1 mb-1">
                 {DOW.map((d) => (
-                  <div key={d} className="text-center text-[11px] font-bold uppercase tracking-wide text-slate-400 py-1">
-                    {d}
+                  <div
+                    key={d}
+                    className="text-center text-[10px] sm:text-[11px] font-bold uppercase tracking-wide text-slate-400 py-1"
+                  >
+                    <span className="sm:hidden">{d.charAt(0)}</span>
+                    <span className="hidden sm:inline">{d}</span>
                   </div>
                 ))}
               </div>
-              <div className="grid grid-cols-7 gap-1">
+              <div className="grid grid-cols-7 gap-0.5 sm:gap-1">
                 {Array.from({ length: blanks }, (_, i) => (
-                  <div key={`b${i}`} className="min-h-[84px] rounded-lg bg-slate-50/50" />
+                  <div key={`b${i}`} className="min-h-[52px] sm:min-h-[84px] rounded-lg bg-slate-50/50" />
                 ))}
                 {days.map((day) => {
                   const items = byDay.get(day) ?? [];
@@ -345,7 +351,7 @@ export default function CalendarioPage() {
                     <button
                       key={day}
                       onClick={() => setSelected(selected === day ? null : day)}
-                      className={`min-h-[84px] rounded-lg border p-1.5 text-left transition-colors cursor-pointer ${
+                      className={`min-h-[52px] sm:min-h-[84px] rounded-md sm:rounded-lg border p-1 sm:p-1.5 text-left transition-colors cursor-pointer ${
                         selected === day
                           ? 'border-teal-500 ring-1 ring-teal-200 bg-teal-50/40'
                           : vencido
@@ -368,13 +374,26 @@ export default function CalendarioPage() {
                           {Number(day.slice(8, 10))}
                         </span>
                         {total > 0 && (
-                          <span className={`text-[10px] font-bold ${vencido ? 'text-red-700' : 'text-slate-600'}`}>
+                          <span
+                            className={`hidden sm:inline text-[10px] font-bold ${vencido ? 'text-red-700' : 'text-slate-600'}`}
+                          >
                             {fmtUSD(total)}
                           </span>
                         )}
                       </div>
 
-                      <div className="mt-1 space-y-0.5">
+                      {/* En movil no cabe el detalle: se resume en puntos y el
+                          dia se toca para verlo abajo. */}
+                      <div className="sm:hidden mt-1 flex flex-wrap gap-0.5">
+                        {items.length > 0 && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${vencido ? 'bg-red-500' : urgente ? 'bg-amber-500' : 'bg-teal-600'}`}
+                          />
+                        )}
+                        {cards.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
+                      </div>
+
+                      <div className="hidden sm:block mt-1 space-y-0.5">
                         {items.slice(0, 2).map((e) => (
                           <div
                             key={e.id}
@@ -428,7 +447,7 @@ export default function CalendarioPage() {
                     key={e.id}
                     className="flex flex-wrap items-center gap-3 border border-slate-100 rounded-lg px-3 py-2"
                   >
-                    <div className="flex-1 min-w-[160px]">
+                    <div className="flex-1 min-w-[140px]">
                       <p className="font-semibold text-slate-800">{labelDe(e)}</p>
                       <p className="text-xs text-slate-400">
                         {{ compra: 'Compra', gasto: 'Gasto', envio: 'Envío' }[e.kind] ?? e.kind}
@@ -485,34 +504,42 @@ export default function CalendarioPage() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[720px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Vence</th>
-                    <th className="text-left font-semibold px-4 py-3">A quién</th>
-                    <th className="text-left font-semibold px-4 py-3">Tipo</th>
-                    <th className="text-right font-semibold px-4 py-3">Saldo</th>
-                    <th className="text-center font-semibold px-4 py-3">Estado</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">A quién</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden sm:table-cell">Vence</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Tipo</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Estado</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {proximos.map((e) => (
-                    <tr key={e.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3">
+                    <tr key={e.id} className="hover:bg-slate-50 align-top">
+                      <td className="px-3 sm:px-4 py-3">
+                        <span className="font-semibold text-slate-800">{labelDe(e)}</span>
+                        <div className="sm:hidden mt-1.5">
+                          <DueBadge dueDate={e.due_date} />
+                        </div>
+                        <div className="lg:hidden text-xs text-slate-400 mt-1">
+                          {{ compra: 'Compra', gasto: 'Gasto', envio: 'Envío' }[e.kind] ?? e.kind}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 hidden sm:table-cell">
                         <DueBadge dueDate={e.due_date} />
                       </td>
-                      <td className="px-4 py-3 font-semibold text-slate-800">{labelDe(e)}</td>
-                      <td className="px-4 py-3 text-slate-600">
+                      <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
                         {{ compra: 'Compra', gasto: 'Gasto', envio: 'Envío' }[e.kind] ?? e.kind}
                       </td>
-                      <td className="px-4 py-3 text-right font-semibold text-red-600">
+                      <td className="px-3 sm:px-4 py-3 text-right font-semibold text-red-600 whitespace-nowrap">
                         {fmtUSD(saldoDe(e))}
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center hidden md:table-cell">
                         <PaymentStatusBadge status={e.status} />
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-3 sm:px-4 py-3 text-right">
                         <button className={btnSecondary} onClick={() => setPaying(e)}>
                           Abonar
                         </button>

@@ -282,7 +282,7 @@ export default function PersonalPage() {
           ni en el estado de cuenta de un proveedor.
         </p>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard
             label="Efectivo y bancos"
             value={fmtUSD(resumen.efectivo)}
@@ -316,14 +316,16 @@ export default function PersonalPage() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[700px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Cuenta</th>
-                    <th className="text-left font-semibold px-4 py-3">Tipo</th>
-                    <th className="text-right font-semibold px-4 py-3">Saldo / Consumo</th>
-                    <th className="text-right font-semibold px-4 py-3">Disponible</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Cuenta</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Tipo</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">
+                      Disponible
+                    </th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -333,26 +335,29 @@ export default function PersonalPage() {
                     const card = a.kind === 'tarjeta_credito';
                     return (
                       <tr key={a.id} className={`hover:bg-slate-50 ${!a.is_active ? 'opacity-55' : ''}`}>
-                        <td className="px-4 py-3">
+                        <td className="px-3 sm:px-4 py-3">
                           <span className="font-semibold text-slate-800">{a.name}</span>
                           {a.last4 && <span className="text-slate-400"> ···· {a.last4}</span>}
                           {a.bank_name && <div className="text-xs text-slate-400">{a.bank_name}</div>}
+                          <div className="md:hidden text-xs text-slate-500 mt-0.5">
+                            {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
+                          </div>
                         </td>
-                        <td className="px-4 py-3 text-slate-600">
+                        <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                           {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
                         </td>
                         <td
-                          className={`px-4 py-3 text-right font-semibold ${
+                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
                             card ? 'text-amber-700' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'
                           }`}
                         >
                           {fmtUSD(saldo)}
                         </td>
-                        <td className="px-4 py-3 text-right text-slate-600">
+                        <td className="px-4 py-3 text-right text-slate-600 hidden sm:table-cell">
                           {b?.available_usd != null ? fmtUSD(b.available_usd) : '—'}
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
+                        <td className="px-3 sm:px-4 py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
                             <button
                               className={btnSecondary}
                               onClick={() => {
@@ -362,7 +367,10 @@ export default function PersonalPage() {
                             >
                               Editar
                             </button>
-                            <button className={btnSecondary} onClick={() => toggleAccount(a)}>
+                            <button
+                              className={`${btnSecondary} hidden sm:inline-block`}
+                              onClick={() => toggleAccount(a)}
+                            >
                               {a.is_active ? 'Desactivar' : 'Reactivar'}
                             </button>
                           </div>
@@ -378,13 +386,13 @@ export default function PersonalPage() {
 
         {/* --- Movimientos personales --- */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-3">
+          <div className="px-3 sm:px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-3">
             <h3 className="font-bold text-slate-800 text-sm">Movimientos personales</h3>
             <input
               type="month"
               value={month.slice(0, 7)}
               onChange={(e) => setMonth(e.target.value ? `${e.target.value}-01` : caracasMonthStart())}
-              className={`${inputClass} w-auto ml-auto`}
+              className={`${inputClass} w-auto sm:ml-auto`}
             />
             <span className="text-xs text-slate-400">
               Del mes, más lo que siga pendiente.
@@ -397,56 +405,76 @@ export default function PersonalPage() {
             <EmptyState title="No hay movimientos personales en este mes." />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[820px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Fecha</th>
-                    <th className="text-left font-semibold px-4 py-3">Concepto</th>
-                    <th className="text-left font-semibold px-4 py-3">Categoría</th>
-                    <th className="text-right font-semibold px-4 py-3">Monto</th>
-                    <th className="text-right font-semibold px-4 py-3">Saldo</th>
-                    <th className="text-center font-semibold px-4 py-3">Estado</th>
-                    <th className="text-center font-semibold px-4 py-3">Vence</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Concepto</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Fecha</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">
+                      Categoría
+                    </th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Monto</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden lg:table-cell">Vence</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibles.map((e) => {
                     const saldo = saldoDe(e);
                     return (
-                      <tr key={e.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
+                      <tr key={e.id} className="hover:bg-slate-50 align-top">
+                        <td className="px-3 sm:px-4 py-3">
+                          <span className="text-slate-800">{e.description || '—'}</span>
+                          <div className="sm:hidden mt-1.5 space-y-1">
+                            <PaymentStatusBadge status={e.status} />
+                            <div className="text-xs text-slate-400">
+                              {formatDate(e.expense_date)} · {categoryName(e.category_id)}
+                            </div>
+                            {saldo > 0 && (
+                              <div className="text-xs font-semibold text-red-600">
+                                Saldo {fmtUSD(saldo)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="hidden sm:block md:hidden text-xs text-slate-400 mt-0.5">
+                            {formatDate(e.expense_date)}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
                           {formatDate(e.expense_date)}
                         </td>
-                        <td className="px-4 py-3 text-slate-800">{e.description || '—'}</td>
-                        <td className="px-4 py-3 text-slate-600">{categoryName(e.category_id)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-slate-800">
+                        <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
+                          {categoryName(e.category_id)}
+                        </td>
+                        <td className="px-3 sm:px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap">
                           {fmtUSD(e.amount_usd)}
                         </td>
                         <td
-                          className={`px-4 py-3 text-right font-semibold ${
+                          className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                             saldo > 0 ? 'text-red-600' : 'text-slate-300'
                           }`}
                         >
                           {saldo > 0 ? fmtUSD(saldo) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center hidden sm:table-cell">
                           <PaymentStatusBadge status={e.status} />
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center hidden lg:table-cell">
                           {e.status === 'pagada' ? (
                             <span className="text-slate-300">—</span>
                           ) : (
                             <DueBadge dueDate={e.due_date} />
                           )}
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
+                        <td className="px-3 sm:px-4 py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
                             <button className={btnSecondary} onClick={() => setPaying(e)}>
                               Abonos
                             </button>
                             <button
-                              className={btnSecondary}
+                              className={`${btnSecondary} hidden sm:inline-block`}
                               onClick={() => {
                                 setEditingExpense(e);
                                 setExpenseOpen(true);

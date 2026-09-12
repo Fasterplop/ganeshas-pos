@@ -146,6 +146,7 @@ BEGIN
             ('Alquiler',    'gasto',  30),
             ('Nomina',      'gasto',  40),
             ('Servicios',   'gasto',  50),
+            ('Suscripciones','gasto',  55),
             ('Publicidad',  'gasto',  60),
             ('Transporte',  'gasto',  70),
             ('Papeleria',   'gasto',  80)
@@ -165,20 +166,21 @@ $seed$;
 -- compras.
 -- ----------------------------------------------------------------------------
 
+-- Se pide lo minimo: como se llama la caja, cuando salio, su guia y que lleva
+-- dentro. Numero de caja, agencia, llegada estimada, piezas y peso se quitaron
+-- porque no se llenaban nunca (db/finanzas_04_cajas_simples.sql), y un
+-- formulario con campos que nadie llena es un formulario que se deja de usar.
+--
+-- received_date SI se queda: no se pide al crear, lo pone sola la app cuando
+-- se marca la caja como recibida.
 CREATE TABLE IF NOT EXISTS public.fin_shipments (
   id            uuid NOT NULL DEFAULT uuid_generate_v4(),
-  box_number    text NOT NULL,
-  alias         text,
+  alias         text NOT NULL,
   status        text NOT NULL DEFAULT 'preparada'
                 CHECK (status IN ('preparada','enviada','en_transito','recibida','recibida_incompleta')),
-  courier       text,
   tracking_code text,
   sent_date     date,
-  eta_date      date,
   received_date date,
-  pieces        integer CHECK (pieces IS NULL OR pieces >= 0),
-  weight        numeric CHECK (weight IS NULL OR weight >= 0),
-  weight_unit   text NOT NULL DEFAULT 'kg' CHECK (weight_unit IN ('kg','lb')),
   document_path text,
   notes         text,
   created_by    uuid NOT NULL,
@@ -187,12 +189,9 @@ CREATE TABLE IF NOT EXISTS public.fin_shipments (
   CONSTRAINT fin_shipments_author_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fin_shipments_number_uniq
-  ON public.fin_shipments (lower(box_number));
-
 -- "Que esta en camino" es la consulta que la app hace al abrir la seccion.
 CREATE INDEX IF NOT EXISTS idx_fin_shipments_incoming
-  ON public.fin_shipments (eta_date)
+  ON public.fin_shipments (sent_date)
   WHERE status IN ('enviada','en_transito');
 
 

@@ -4,7 +4,11 @@
 //
 // El problema real: se envían varias cajas en días distintos y no se sabe qué
 // llevó cada una; se anota en notas sueltas y se pierde. Aquí cada caja guarda
-// su contenido, su guía y su estado, y al llegar se marca qué llegó y qué no.
+// su contenido y su estado, y al llegar se marca qué llegó y qué no.
+//
+// La caja pide lo mínimo: un nombre, cuándo salió, la guía si la hay, y qué
+// lleva dentro. Número de caja, agencia, piezas y peso se quitaron porque no
+// se llenaban nunca.
 //
 // Esta pantalla NO toca inventario: recibir una caja no suma stock. El stock se
 // sigue cargando desde /inventory como siempre. Es una decisión, no un
@@ -31,11 +35,14 @@ import {
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
-import { formatDate, daysUntil } from '@/lib/finanzas/dates';
-import { downloadFinWorkbook, finFilename, FMT_INT, FMT_USD } from '@/lib/finanzas/excel';
+import { formatDate } from '@/lib/finanzas/dates';
+import { downloadFinWorkbook, finFilename, FMT_USD } from '@/lib/finanzas/excel';
 import { fmtUSD } from '@/lib/finanzas/money';
 
 type StatusFilter = 'todas' | 'en_camino' | 'preparada' | 'recibida' | 'incompleta';
+
+const SHIPMENT_SELECT =
+  'id, alias, status, tracking_code, sent_date, received_date, document_path, notes, created_at';
 
 export default function CajasPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -46,7 +53,6 @@ export default function CajasPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [envioCategoryId, setEnvioCategoryId] = useState<string | null>(null);
-  // Costo de envio por caja: suma de sus egresos kind='envio'.
   const [costByShipment, setCostByShipment] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -65,9 +71,7 @@ export default function CajasPage() {
     const { rows: ship, error: shipError } = await fetchAllPages<Shipment>((from, to) =>
       supabase
         .from('fin_shipments')
-        .select(
-          'id, box_number, alias, status, courier, tracking_code, sent_date, eta_date, received_date, pieces, weight, weight_unit, document_path, notes, created_at',
-        )
+        .select(SHIPMENT_SELECT)
         .order('created_at', { ascending: false })
         .range(from, to),
     );
@@ -81,6 +85,8 @@ export default function CajasPage() {
     // El contenido de todas las cajas en una sola consulta: la lista muestra de
     // qué marcas viene cada caja, y el export lo necesita completo.
     let content: ShipmentItem[] = [];
+    const costs = new Map<string, number>();
+
     if (ship.length > 0) {
       const ids = ship.map((s) => s.id);
       const { rows } = await fetchAllPages<ShipmentItem>((from, to) =>
@@ -94,6 +100,21 @@ export default function CajasPage() {
           .range(from, to),
       );
       content = rows;
+
+      // Costo real por caja: la suma de sus fletes. Vive en fin_expenses, no en
+      // la caja, para que el dinero tenga un solo camino.
+      const { rows: costRows } = await fetchAllPages<{ shipment_id: string; amount_usd: number }>(
+        (from, to) =>
+          supabase
+            .from('fin_expenses')
+            .select('shipment_id, amount_usd')
+            .eq('kind', 'envio')
+            .in('shipment_id', ids)
+            .range(from, to),
+      );
+      for (const c of costRows) {
+        costs.set(c.shipment_id, (costs.get(c.shipment_id) ?? 0) + Number(c.amount_usd));
+      }
     }
 
     const { rows: sup } = await fetchAllPages<Supplier>((from, to) =>
@@ -114,7 +135,7 @@ export default function CajasPage() {
         .range(from, to),
     );
 
-    // La categoria del flete se resuelve una vez y se reutiliza al registrar el
+    // La categoría del flete se resuelve una vez y se reutiliza al registrar el
     // costo, para que entre en el presupuesto y en los reportes del mes.
     const { data: cat } = await supabase
       .from('fin_categories')
@@ -123,24 +144,6 @@ export default function CajasPage() {
       .ilike('name', 'env%')
       .limit(1)
       .maybeSingle();
-
-    // Costo real por caja: la suma de sus fletes. Vive en fin_expenses, no en
-    // la caja, para que el dinero tenga un solo camino.
-    const costs = new Map<string, number>();
-    if (ship.length > 0) {
-      const { rows: costRows } = await fetchAllPages<{ shipment_id: string; amount_usd: number }>(
-        (from, to) =>
-          supabase
-            .from('fin_expenses')
-            .select('shipment_id, amount_usd')
-            .eq('kind', 'envio')
-            .in('shipment_id', ship.map((x) => x.id))
-            .range(from, to),
-      );
-      for (const c of costRows) {
-        costs.set(c.shipment_id, (costs.get(c.shipment_id) ?? 0) + Number(c.amount_usd));
-      }
-    }
 
     setShipments(ship);
     setItems(content);
@@ -169,11 +172,11 @@ export default function CajasPage() {
     (id: string | null) => suppliers.find((s) => s.id === id)?.name ?? null,
     [suppliers],
   );
+
   const brandsOf = useCallback(
     (shipmentId: string) => {
       const list = itemsByShipment.get(shipmentId) ?? [];
-      const names = [...new Set(list.map((i) => supplierName(i.supplier_id)).filter(Boolean))];
-      return names as string[];
+      return [...new Set(list.map((i) => supplierName(i.supplier_id)).filter(Boolean))] as string[];
     },
     [itemsByShipment, supplierName],
   );
@@ -182,12 +185,12 @@ export default function CajasPage() {
   //
   // Una caja que todavía no ha llegado se muestra siempre, esté cuando esté su
   // fecha de envío. Si no, una caja despachada hace seis semanas y aún en
-  // tránsito desaparecería de "en camino" al filtrar por el mes en curso, que
-  // es exactamente lo que este módulo existe para evitar.
+  // tránsito desaparecería al filtrar por el mes en curso, que es exactamente
+  // lo que este módulo existe para evitar.
   const inPeriod = useCallback(
     (s: Shipment) => {
-      const llegó = s.status === 'recibida' || s.status === 'recibida_incompleta';
-      if (!llegó) return true;
+      const llego = s.status === 'recibida' || s.status === 'recibida_incompleta';
+      if (!llego) return true;
       if (!s.sent_date) return true;
       return s.sent_date >= dateRange.start && s.sent_date <= dateRange.end;
     },
@@ -217,9 +220,7 @@ export default function CajasPage() {
       if (statusFilter === 'incompleta' && s.status !== 'recibida_incompleta') return false;
       if (!q) return true;
       return (
-        s.box_number.toLowerCase().includes(q) ||
-        (s.alias ?? '').toLowerCase().includes(q) ||
-        (s.courier ?? '').toLowerCase().includes(q) ||
+        s.alias.toLowerCase().includes(q) ||
         (s.tracking_code ?? '').toLowerCase().includes(q) ||
         brandsOf(s.id).some((b) => b.toLowerCase().includes(q)) ||
         (itemsByShipment.get(s.id) ?? []).some((i) =>
@@ -230,18 +231,20 @@ export default function CajasPage() {
   }, [periodShipments, statusFilter, search, brandsOf, itemsByShipment]);
 
   const upsertShipment = (saved: Shipment, isNew: boolean) => {
-    setShipments((prev) => (isNew ? [saved, ...prev] : prev.map((s) => (s.id === saved.id ? saved : s))));
+    setShipments((prev) =>
+      isNew ? [saved, ...prev] : prev.map((s) => (s.id === saved.id ? saved : s)),
+    );
     if (detail?.id === saved.id) setDetail(saved);
     setNotice({
       type: 'success',
-      text: isNew ? `Caja ${saved.box_number} creada.` : `Caja ${saved.box_number} actualizada.`,
+      text: isNew ? `Caja "${saved.alias}" creada.` : `"${saved.alias}" actualizada.`,
     });
   };
 
   const deleteShipment = async (s: Shipment) => {
     if (
       !window.confirm(
-        `¿Eliminar la caja ${s.box_number}?\n\nSe borra también su contenido. Esta acción no se puede deshacer.`,
+        `¿Eliminar la caja "${s.alias}"?\n\nSe borra también su contenido. Esta acción no se puede deshacer.`,
       )
     )
       return;
@@ -251,7 +254,7 @@ export default function CajasPage() {
       return;
     }
     setShipments((prev) => prev.filter((x) => x.id !== s.id));
-    setNotice({ type: 'success', text: `Caja ${s.box_number} eliminada.` });
+    setNotice({ type: 'success', text: `Caja "${s.alias}" eliminada.` });
   };
 
   const handleExport = async () => {
@@ -265,16 +268,11 @@ export default function CajasPage() {
       const rows = visible.map((s) => {
         const list = itemsByShipment.get(s.id) ?? [];
         return {
-          caja: s.box_number,
-          alias: s.alias ?? '',
+          caja: s.alias,
           estado: SHIPMENT_STATUS_LABEL[s.status] ?? s.status,
-          agencia: s.courier ?? '',
           guia: s.tracking_code ?? '',
           enviada: formatDate(s.sent_date),
-          estimada: formatDate(s.eta_date),
           llegada: formatDate(s.received_date),
-          piezas: s.pieces ?? 0,
-          peso: s.weight != null ? `${s.weight} ${s.weight_unit}` : '',
           marcas: brandsOf(s.id).join(', '),
           contenido: list
             .map((i) => {
@@ -305,16 +303,11 @@ export default function CajasPage() {
           {
             name: 'Cajas',
             columns: [
-              { header: 'Caja', key: 'caja', width: 10 },
-              { header: 'Alias', key: 'alias', width: 22 },
+              { header: 'Caja', key: 'caja', width: 26 },
               { header: 'Estado', key: 'estado', width: 20 },
-              { header: 'Agencia', key: 'agencia', width: 16 },
               { header: 'Guía', key: 'guia', width: 20 },
               { header: 'Enviada', key: 'enviada', width: 13 },
-              { header: 'Llegada estimada', key: 'estimada', width: 16 },
-              { header: 'Llegada real', key: 'llegada', width: 14 },
-              { header: 'Piezas', key: 'piezas', width: 9, numFmt: FMT_INT, align: 'center' },
-              { header: 'Peso', key: 'peso', width: 12 },
+              { header: 'Llegó', key: 'llegada', width: 13 },
               { header: 'Marcas', key: 'marcas', width: 26, wrap: true },
               { header: 'Contenido', key: 'contenido', width: 46, wrap: true },
               { header: 'Costo del envío', key: 'costo', width: 15, numFmt: FMT_USD },
@@ -348,11 +341,11 @@ export default function CajasPage() {
   return (
     <FinShell
       title="Cajas"
-      subtitle="Qué lleva cada caja, dónde va y qué llegó de verdad."
+      subtitle="Qué lleva cada caja y qué llegó de verdad."
       actions={
         <>
           <button onClick={handleExport} disabled={exporting} className={btnSecondary}>
-            {exporting ? 'Exportando…' : '📥 Exportar a .xlsx'}
+            {exporting ? 'Exportando…' : '📥 Exportar'}
           </button>
           <button
             className={btnPrimary}
@@ -369,7 +362,7 @@ export default function CajasPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard
             label="En camino"
             value={counts.enCamino}
@@ -386,7 +379,7 @@ export default function CajasPage() {
             onClick={() => setStatusFilter(statusFilter === 'preparada' ? 'todas' : 'preparada')}
           />
           <FinStatCard
-            label="Recibidas incompletas"
+            label="Incompletas"
             value={counts.incompletas}
             tone={counts.incompletas > 0 ? 'amber' : 'default'}
             sub="Con algo pendiente"
@@ -397,35 +390,35 @@ export default function CajasPage() {
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">
+          <div className="p-3 sm:p-4 border-b border-slate-100 space-y-3">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por caja, alias, guía, marca o contenido…"
-              className={`${inputClass} max-w-sm`}
+              placeholder="Buscar por nombre, guía, marca o contenido…"
+              className={`${inputClass} sm:max-w-sm`}
             />
-            <div className="flex items-center gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <input
                 type="date"
                 value={dateRange.start}
                 onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-                className={`${inputClass} w-auto`}
+                className={`${inputClass} flex-1 min-w-[130px] sm:w-auto sm:flex-none`}
               />
               <span className="text-slate-400">al</span>
               <input
                 type="date"
                 value={dateRange.end}
                 onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-                className={`${inputClass} w-auto`}
+                className={`${inputClass} flex-1 min-w-[130px] sm:w-auto sm:flex-none`}
               />
             </div>
-            <span className="text-xs text-slate-400">
+            <p className="text-xs text-slate-400">
               El período filtra el historial. Las cajas que todavía no han llegado se muestran
               siempre.
-            </span>
+            </p>
           </div>
 
-          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap gap-2">
+          <div className="px-3 sm:px-4 py-3 border-b border-slate-100 flex flex-wrap gap-2">
             {FILTERS.map((f) => (
               <button
                 key={f.key}
@@ -452,52 +445,77 @@ export default function CajasPage() {
               }
               hint={
                 shipments.length === 0
-                  ? 'Crea la primera con su número, la agencia y qué va dentro. Nunca más hará falta la libreta.'
+                  ? 'Crea la primera con su nombre y qué va dentro. Nunca más hará falta la libreta.'
                   : undefined
               }
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[900px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Caja</th>
-                    <th className="text-left font-semibold px-4 py-3">Estado</th>
-                    <th className="text-left font-semibold px-4 py-3">Contenido</th>
-                    <th className="text-left font-semibold px-4 py-3">Agencia / Guía</th>
-                    <th className="text-left font-semibold px-4 py-3">Fechas</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Caja</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">
+                      Contenido
+                    </th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Guía</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Fechas</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visible.map((s) => {
                     const list = itemsByShipment.get(s.id) ?? [];
                     const brands = brandsOf(s.id);
-                    const eta = daysUntil(s.eta_date);
                     const costo = costByShipment.get(s.id) ?? 0;
-                    const enCamino = s.status === 'enviada' || s.status === 'en_transito';
                     return (
                       <tr key={s.id} className="hover:bg-slate-50 align-top">
-                        <td className="px-4 py-3">
+                        <td className="px-3 sm:px-4 py-3">
                           <button
                             onClick={() => setDetail(s)}
                             className="font-semibold text-slate-800 hover:text-teal-700 cursor-pointer text-left"
                           >
-                            Caja {s.box_number}
+                            {s.alias}
                           </button>
-                          {s.alias && <div className="text-xs text-slate-500">{s.alias}</div>}
+
+                          {/* En móvil el resumen se pliega aquí, donde sí hay sitio. */}
+                          <div className="sm:hidden mt-1.5 space-y-1">
+                            <ShipmentStatusBadge status={s.status} />
+                            <div className="text-xs text-slate-500">
+                              {list.length > 0
+                                ? `${list.length} ${list.length === 1 ? 'línea' : 'líneas'}`
+                                : 'Sin contenido'}
+                              {brands.length > 0 && ` · ${brands.join(', ')}`}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {s.received_date
+                                ? `Llegó ${formatDate(s.received_date)}`
+                                : s.sent_date
+                                  ? `Enviada ${formatDate(s.sent_date)}`
+                                  : 'Sin fecha'}
+                              {costo > 0 && ` · Envío ${fmtUSD(costo)}`}
+                            </div>
+                          </div>
+
+                          <div className="hidden sm:block md:hidden text-xs text-slate-500 mt-1">
+                            {list.length > 0
+                              ? `${list.length} ${list.length === 1 ? 'línea' : 'líneas'}`
+                              : 'Sin contenido'}
+                          </div>
                         </td>
-                        <td className="px-4 py-3">
+
+                        <td className="px-4 py-3 hidden sm:table-cell">
                           <ShipmentStatusBadge status={s.status} />
                         </td>
-                        <td className="px-4 py-3">
+
+                        <td className="px-4 py-3 hidden md:table-cell">
                           {list.length === 0 ? (
                             <span className="text-slate-300">Sin contenido</span>
                           ) : (
                             <>
                               <div className="text-slate-700">
                                 {list.length} {list.length === 1 ? 'línea' : 'líneas'}
-                                {s.pieces ? ` · ${s.pieces} pzs` : ''}
                               </div>
                               {brands.length > 0 && (
                                 <div className="text-xs text-slate-500">{brands.join(', ')}</div>
@@ -510,37 +528,34 @@ export default function CajasPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {s.courier || '—'}
-                          {s.tracking_code && (
-                            <div className="text-xs text-slate-400 font-mono">{s.tracking_code}</div>
+
+                        <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
+                          {s.tracking_code ? (
+                            <span className="text-xs font-mono">{s.tracking_code}</span>
+                          ) : (
+                            <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
+
+                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden lg:table-cell">
                           <div className="text-xs">
                             <span className="text-slate-400">Envío:</span> {formatDate(s.sent_date)}
                           </div>
-                          <div className="text-xs">
-                            <span className="text-slate-400">
-                              {s.received_date ? 'Llegó:' : 'Estimada:'}
-                            </span>{' '}
-                            {formatDate(s.received_date ?? s.eta_date)}
-                            {enCamino && eta !== null && (
-                              <span
-                                className={`ml-1 font-semibold ${eta < 0 ? 'text-red-600' : 'text-slate-500'}`}
-                              >
-                                ({eta < 0 ? `${-eta} d de retraso` : eta === 0 ? 'hoy' : `en ${eta} d`})
-                              </span>
-                            )}
-                          </div>
+                          {s.received_date && (
+                            <div className="text-xs">
+                              <span className="text-slate-400">Llegó:</span>{' '}
+                              {formatDate(s.received_date)}
+                            </div>
+                          )}
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
+
+                        <td className="px-3 sm:px-4 py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
                             <button className={btnSecondary} onClick={() => setDetail(s)}>
                               Contenido
                             </button>
                             <button
-                              className={btnSecondary}
+                              className={`${btnSecondary} hidden sm:inline-block`}
                               onClick={() => {
                                 setEditing(s);
                                 setFormOpen(true);

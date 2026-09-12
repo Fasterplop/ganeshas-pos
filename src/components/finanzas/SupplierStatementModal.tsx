@@ -191,15 +191,15 @@ export default function SupplierStatementModal({
           />
         ) : (
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
-            <table className="w-full text-sm min-w-[640px]">
+            <table className="w-full text-sm">
               <thead className="bg-slate-100 text-slate-600">
                 <tr>
-                  <th className="text-left font-semibold px-3 py-2">Fecha</th>
-                  <th className="text-left font-semibold px-3 py-2">Concepto</th>
-                  <th className="text-right font-semibold px-3 py-2">Total</th>
-                  <th className="text-right font-semibold px-3 py-2">Saldo</th>
-                  <th className="text-center font-semibold px-3 py-2">Estado</th>
-                  <th className="text-center font-semibold px-3 py-2">Vence</th>
+                  <th className="text-left font-semibold px-2 sm:px-3 py-2">Fecha</th>
+                  <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">Concepto</th>
+                  <th className="text-right font-semibold px-2 sm:px-3 py-2">Total</th>
+                  <th className="text-right font-semibold px-2 sm:px-3 py-2">Saldo</th>
+                  <th className="text-center font-semibold px-3 py-2 hidden sm:table-cell">Estado</th>
+                  <th className="text-center font-semibold px-3 py-2 hidden lg:table-cell">Vence</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -207,18 +207,30 @@ export default function SupplierStatementModal({
                   const saldo = saldoDe(e);
                   return (
                     <tr key={e.id} className={`hover:bg-slate-50 ${e.status === 'pagada' ? 'opacity-60' : ''}`}>
-                      <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{formatDate(e.expense_date)}</td>
-                      <td className="px-3 py-2 text-slate-800">{e.description || '—'}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-slate-800">
+                      <td className="px-2 sm:px-3 py-2 text-slate-600 whitespace-nowrap align-top">
+                        {formatDate(e.expense_date)}
+                        <div className="md:hidden text-xs text-slate-400 max-w-[120px] truncate">
+                          {e.description}
+                        </div>
+                        <div className="sm:hidden mt-1">
+                          <PaymentStatusBadge status={e.status} />
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-slate-800 hidden md:table-cell">
+                        {e.description || '—'}
+                      </td>
+                      <td className="px-2 sm:px-3 py-2 text-right font-semibold text-slate-800 whitespace-nowrap align-top">
                         {fmtUSD(e.amount_usd)}
                       </td>
-                      <td className={`px-3 py-2 text-right font-semibold ${saldo > 0 ? 'text-red-600' : 'text-slate-300'}`}>
+                      <td
+                        className={`px-2 sm:px-3 py-2 text-right font-semibold whitespace-nowrap align-top ${saldo > 0 ? 'text-red-600' : 'text-slate-300'}`}
+                      >
                         {saldo > 0 ? fmtUSD(saldo) : '—'}
                       </td>
-                      <td className="px-3 py-2 text-center">
+                      <td className="px-3 py-2 text-center hidden sm:table-cell align-top">
                         <PaymentStatusBadge status={e.status} />
                       </td>
-                      <td className="px-3 py-2 text-center">
+                      <td className="px-3 py-2 text-center hidden lg:table-cell align-top">
                         {e.status === 'pagada' ? <span className="text-slate-300">—</span> : <DueBadge dueDate={e.due_date} />}
                       </td>
                     </tr>

@@ -229,12 +229,16 @@ export default function ExpensePaymentsModal({
           <p className="text-sm text-slate-500 py-2">Todavía no hay abonos registrados.</p>
         ) : (
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
-            <table className="w-full text-sm min-w-[520px]">
+            <table className="w-full text-sm">
               <thead className="bg-slate-100 text-slate-600">
                 <tr>
-                  <th className="text-left font-semibold px-3 py-2">Fecha</th>
-                  <th className="text-left font-semibold px-3 py-2">Cuenta</th>
-                  <th className="text-left font-semibold px-3 py-2">Referencia</th>
+                  <th className="text-left font-semibold px-2 sm:px-3 py-2 hidden sm:table-cell">
+                    Fecha
+                  </th>
+                  <th className="text-left font-semibold px-2 sm:px-3 py-2">Cuenta</th>
+                  <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">
+                    Referencia
+                  </th>
                   <th className="text-right font-semibold px-3 py-2">Monto</th>
                   <th className="px-3 py-2 w-10" />
                 </tr>
@@ -242,11 +246,16 @@ export default function ExpensePaymentsModal({
               <tbody className="divide-y divide-slate-100">
                 {payments.map((p) => (
                   <tr key={p.id} className="hover:bg-slate-50">
-                    <td className="px-3 py-2 text-slate-600">{formatDate(p.paid_at)}</td>
-                    <td className="px-3 py-2 text-slate-800">
-                      {accountLabel(accounts.find((a) => a.id === p.account_id))}
+                    <td className="px-2 sm:px-3 py-2 text-slate-600 hidden sm:table-cell">
+                      {formatDate(p.paid_at)}
                     </td>
-                    <td className="px-3 py-2 text-slate-500">{p.reference || '—'}</td>
+                    <td className="px-2 sm:px-3 py-2 text-slate-800">
+                      {accountLabel(accounts.find((a) => a.id === p.account_id))}
+                      <div className="sm:hidden text-xs text-slate-400">{formatDate(p.paid_at)}</div>
+                    </td>
+                    <td className="px-3 py-2 text-slate-500 hidden md:table-cell">
+                      {p.reference || '—'}
+                    </td>
                     <td className="px-3 py-2 text-right font-semibold text-slate-800">
                       {fmtUSD(p.amount_usd)}
                       {p.currency === 'VES' && (

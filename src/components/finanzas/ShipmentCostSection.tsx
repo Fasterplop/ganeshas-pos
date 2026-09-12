@@ -220,11 +220,11 @@ export default function ShipmentCostSection({
       ) : (
         costs.length > 0 && (
           <div className="overflow-x-auto border border-slate-200 rounded-lg mb-3">
-            <table className="w-full text-sm min-w-[520px]">
+            <table className="w-full text-sm">
               <thead className="bg-slate-100 text-slate-600">
                 <tr>
-                  <th className="text-left font-semibold px-3 py-2">Concepto</th>
-                  <th className="text-left font-semibold px-3 py-2">Fecha</th>
+                  <th className="text-left font-semibold px-2 sm:px-3 py-2">Concepto</th>
+                  <th className="text-left font-semibold px-3 py-2 hidden sm:table-cell">Fecha</th>
                   <th className="text-right font-semibold px-3 py-2">Monto</th>
                   <th className="text-center font-semibold px-3 py-2">Estado</th>
                   <th className="px-3 py-2 w-10" />
@@ -233,8 +233,15 @@ export default function ShipmentCostSection({
               <tbody className="divide-y divide-slate-100">
                 {costs.map((c) => (
                   <tr key={c.id} className="hover:bg-slate-50">
-                    <td className="px-3 py-2 text-slate-800">{c.description}</td>
-                    <td className="px-3 py-2 text-slate-600">{formatDate(c.expense_date)}</td>
+                    <td className="px-2 sm:px-3 py-2 text-slate-800">
+                      {c.description}
+                      <div className="sm:hidden text-xs text-slate-400">
+                        {formatDate(c.expense_date)}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-slate-600 hidden sm:table-cell">
+                      {formatDate(c.expense_date)}
+                    </td>
                     <td className="px-3 py-2 text-right font-semibold text-slate-800">
                       {fmtUSD(c.amount_usd)}
                       {c.currency === 'VES' && (

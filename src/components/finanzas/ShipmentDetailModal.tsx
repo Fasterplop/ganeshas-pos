@@ -357,18 +357,13 @@ export default function ShipmentDetailModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`Caja ${shipment.box_number}${shipment.alias ? ` — ${shipment.alias}` : ''}`}
+      title={shipment.alias}
     >
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 sm:px-4 py-3">
           <ShipmentStatusBadge status={shipment.status} />
-          {shipment.courier && (
-            <span className="text-slate-600">
-              <span className="text-slate-400">Agencia:</span> {shipment.courier}
-            </span>
-          )}
           {shipment.tracking_code && (
             <span className="text-slate-600">
               <span className="text-slate-400">Guía:</span> {shipment.tracking_code}
@@ -377,10 +372,11 @@ export default function ShipmentDetailModal({
           <span className="text-slate-600">
             <span className="text-slate-400">Enviada:</span> {formatDate(shipment.sent_date)}
           </span>
-          <span className="text-slate-600">
-            <span className="text-slate-400">{isReceived ? 'Llegó:' : 'Llegada estimada:'}</span>{' '}
-            {formatDate(isReceived ? shipment.received_date : shipment.eta_date)}
-          </span>
+          {isReceived && (
+            <span className="text-slate-600">
+              <span className="text-slate-400">Llegó:</span> {formatDate(shipment.received_date)}
+            </span>
+          )}
         </div>
 
         {/* --- Contenido --- */}
@@ -403,13 +399,15 @@ export default function ShipmentDetailModal({
             />
           ) : (
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
-              <table className="w-full text-sm min-w-[680px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-3 py-2">Marca</th>
-                    <th className="text-left font-semibold px-3 py-2">Qué es</th>
-                    <th className="text-left font-semibold px-3 py-2">Compra</th>
-                    <th className="text-center font-semibold px-3 py-2 w-20">Piezas</th>
+                    <th className="text-left font-semibold px-2 sm:px-3 py-2 hidden sm:table-cell">
+                      Marca
+                    </th>
+                    <th className="text-left font-semibold px-2 sm:px-3 py-2">Qué es</th>
+                    <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">Compra</th>
+                    <th className="text-center font-semibold px-2 sm:px-3 py-2 w-14 sm:w-20">Pzs</th>
                     {(receiving || isReceived) && (
                       <th className="text-center font-semibold px-3 py-2 w-36">Llegó</th>
                     )}
@@ -426,12 +424,19 @@ export default function ShipmentDetailModal({
                     const exp = purchaseOf(item.expense_id);
                     return (
                       <tr key={item.id} className="hover:bg-slate-50 align-top">
-                        <td className="px-3 py-2 text-slate-600">
+                        <td className="px-2 sm:px-3 py-2 text-slate-600 hidden sm:table-cell">
                           {supplierName(item.supplier_id) || <span className="text-slate-300">—</span>}
                         </td>
-                        <td className="px-3 py-2 text-slate-800">{item.description}</td>
+                        <td className="px-2 sm:px-3 py-2 text-slate-800">
+                          {item.description}
+                          {supplierName(item.supplier_id) && (
+                            <div className="sm:hidden text-xs text-slate-400">
+                              {supplierName(item.supplier_id)}
+                            </div>
+                          )}
+                        </td>
 
-                        <td className="px-3 py-2">
+                        <td className="px-3 py-2 hidden md:table-cell">
                           {linking === item.id ? (
                             <LinkEditor
                               item={item}
@@ -478,7 +483,9 @@ export default function ShipmentDetailModal({
                           )}
                         </td>
 
-                        <td className="px-3 py-2 text-center text-slate-600">{item.pieces ?? '—'}</td>
+                        <td className="px-2 sm:px-3 py-2 text-center text-slate-600">
+                          {item.pieces ?? '—'}
+                        </td>
 
                         {receiving && (
                           <td className="px-3 py-2">
@@ -583,7 +590,7 @@ export default function ShipmentDetailModal({
                 ))}
               </select>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,2fr)_80px_110px_auto] gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-[minmax(0,2fr)_80px_110px_auto] gap-2">
               <input
                 value={newDesc}
                 onChange={(e) => setNewDesc(e.target.value)}

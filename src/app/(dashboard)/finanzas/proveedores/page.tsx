@@ -169,7 +169,7 @@ export default function ProveedoresPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard
             label="Les debes"
             value={fmtUSD(deudaTotal)}
@@ -192,12 +192,12 @@ export default function ProveedoresPage() {
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">
+          <div className="p-3 sm:p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar por marca, contacto o teléfono…"
-              className={`${inputClass} max-w-sm`}
+              className={`${inputClass} sm:max-w-sm`}
             />
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
               <input
@@ -239,15 +239,17 @@ export default function ProveedoresPage() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[900px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Marca</th>
-                    <th className="text-left font-semibold px-4 py-3">Contacto</th>
-                    <th className="text-left font-semibold px-4 py-3">Condiciones</th>
-                    <th className="text-right font-semibold px-4 py-3">Saldo</th>
-                    <th className="text-center font-semibold px-4 py-3">Vence</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Marca</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Contacto</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">
+                      Condiciones
+                    </th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Vence</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -256,29 +258,40 @@ export default function ProveedoresPage() {
                     const saldo = Number(b?.balance_usd ?? 0);
                     return (
                       <tr key={s.id} className={`hover:bg-slate-50 ${!s.is_active ? 'opacity-55' : ''}`}>
-                        <td className="px-4 py-3">
+                        <td className="px-3 sm:px-4 py-3">
                           <button
                             onClick={() => setStatement(s)}
                             className="font-semibold text-slate-800 hover:text-teal-700 cursor-pointer text-left"
                           >
                             {s.name}
                           </button>
-                          {s.email && <div className="text-xs text-slate-400">{s.email}</div>}
+                          {s.email && (
+                            <div className="text-xs text-slate-400 hidden md:block">{s.email}</div>
+                          )}
+                          <div className="lg:hidden text-xs text-slate-500 mt-0.5">
+                            {PAYMENT_TERMS_LABEL[s.payment_terms] ?? s.payment_terms}
+                            {s.phone && <span className="md:hidden"> · {s.phone}</span>}
+                          </div>
+                          {b?.next_due_date && saldo > 0 && (
+                            <div className="sm:hidden mt-1">
+                              <DueBadge dueDate={b.next_due_date} />
+                            </div>
+                          )}
                           {!s.is_active && (
                             <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">
                               Inactivo
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-slate-600">
+                        <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                           {s.contact_name || '—'}
                           {s.phone && <div className="text-xs text-slate-400">{s.phone}</div>}
                         </td>
-                        <td className="px-4 py-3 text-slate-600">
+                        <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
                           {PAYMENT_TERMS_LABEL[s.payment_terms] ?? s.payment_terms}
                         </td>
                         <td
-                          className={`px-4 py-3 text-right font-semibold ${
+                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
                             saldo > 0 ? 'text-red-600' : 'text-slate-300'
                           }`}
                         >
@@ -289,20 +302,21 @@ export default function ProveedoresPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center hidden sm:table-cell">
                           {b?.next_due_date ? (
                             <DueBadge dueDate={b.next_due_date} />
                           ) : (
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
+                        <td className="px-3 sm:px-4 py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
                             <button className={btnSecondary} onClick={() => setStatement(s)}>
-                              Estado de cuenta
+                              <span className="sm:hidden">Cuenta</span>
+                              <span className="hidden sm:inline">Estado de cuenta</span>
                             </button>
                             <button
-                              className={btnSecondary}
+                              className={`${btnSecondary} hidden sm:inline-block`}
                               onClick={() => {
                                 setEditing(s);
                                 setModalOpen(true);
@@ -310,7 +324,10 @@ export default function ProveedoresPage() {
                             >
                               Editar
                             </button>
-                            <button className={btnSecondary} onClick={() => toggleActive(s)}>
+                            <button
+                              className={`${btnSecondary} hidden lg:inline-block`}
+                              onClick={() => toggleActive(s)}
+                            >
                               {s.is_active ? 'Desactivar' : 'Reactivar'}
                             </button>
                           </div>

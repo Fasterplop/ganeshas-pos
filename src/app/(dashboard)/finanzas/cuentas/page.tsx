@@ -211,23 +211,29 @@ export default function CuentasPage() {
           {title}
         </h3>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[780px]">
+          <table className="w-full text-sm">
             <thead className="bg-slate-100 text-slate-600">
               <tr>
-                <th className="text-left font-semibold px-4 py-3">Cuenta</th>
-                <th className="text-left font-semibold px-4 py-3">Tipo</th>
-                <th className="text-right font-semibold px-4 py-3">
+                <th className="text-left font-semibold px-3 sm:px-4 py-3">Cuenta</th>
+                <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Tipo</th>
+                <th className="text-right font-semibold px-3 sm:px-4 py-3">
                   {isCardTable ? 'Consumo' : 'Saldo'}
                 </th>
                 {isCardTable && (
                   <>
-                    <th className="text-right font-semibold px-4 py-3">Límite</th>
-                    <th className="text-right font-semibold px-4 py-3">Disponible</th>
-                    <th className="text-center font-semibold px-4 py-3">Corte / Pago</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden lg:table-cell">Límite</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">
+                      Disponible
+                    </th>
+                    <th className="text-center font-semibold px-4 py-3 hidden lg:table-cell">
+                      Corte / Pago
+                    </th>
                   </>
                 )}
-                {!isCardTable && <th className="text-left font-semibold px-4 py-3">Desde</th>}
-                <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                {!isCardTable && (
+                  <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Desde</th>
+                )}
+                <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -238,23 +244,27 @@ export default function CuentasPage() {
                 const sobregiro = a.credit_limit_usd != null && disp != null && disp < 0;
                 return (
                   <tr key={a.id} className={`hover:bg-slate-50 ${!a.is_active ? 'opacity-55' : ''}`}>
-                    <td className="px-4 py-3">
+                    <td className="px-3 sm:px-4 py-3">
                       <div className="font-semibold text-slate-800">
                         {a.name}
                         {a.last4 && <span className="text-slate-400 font-normal"> ···· {a.last4}</span>}
                       </div>
                       {a.bank_name && <div className="text-xs text-slate-400">{a.bank_name}</div>}
+                      <div className="md:hidden text-xs text-slate-500 mt-0.5">
+                        {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
+                        {isCardTable && a.due_day && ` · Pago el ${a.due_day}`}
+                      </div>
                       {!a.is_active && (
                         <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500">
                           Inactiva
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-slate-600">
+                    <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                       {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
                     </td>
                     <td
-                      className={`px-4 py-3 text-right font-semibold ${
+                      className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
                         isCardTable ? 'text-slate-800' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'
                       }`}
                     >
@@ -262,28 +272,28 @@ export default function CuentasPage() {
                     </td>
                     {isCardTable && (
                       <>
-                        <td className="px-4 py-3 text-right text-slate-600">
+                        <td className="px-4 py-3 text-right text-slate-600 hidden lg:table-cell">
                           {a.credit_limit_usd != null ? fmtUSD(a.credit_limit_usd) : '—'}
                         </td>
                         <td
-                          className={`px-4 py-3 text-right font-semibold ${
+                          className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                             sobregiro ? 'text-red-600' : 'text-emerald-700'
                           }`}
                         >
                           {disp != null ? fmtUSD(disp) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-center text-slate-600">
+                        <td className="px-4 py-3 text-center text-slate-600 hidden lg:table-cell">
                           {a.statement_day ?? '—'} / {a.due_day ?? '—'}
                         </td>
                       </>
                     )}
                     {!isCardTable && (
-                      <td className="px-4 py-3 text-slate-500 text-xs">
+                      <td className="px-4 py-3 text-slate-500 text-xs hidden lg:table-cell">
                         {formatDate(a.opening_balance_date)}
                       </td>
                     )}
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
+                    <td className="px-3 sm:px-4 py-3">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <button
                           className={btnSecondary}
                           onClick={() => {
@@ -293,7 +303,10 @@ export default function CuentasPage() {
                         >
                           Editar
                         </button>
-                        <button className={btnSecondary} onClick={() => toggleActive(a)}>
+                        <button
+                          className={`${btnSecondary} hidden sm:inline-block`}
+                          onClick={() => toggleActive(a)}
+                        >
                           {a.is_active ? 'Desactivar' : 'Reactivar'}
                         </button>
                       </div>
@@ -364,7 +377,7 @@ export default function CuentasPage() {
           </p>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
           <FinStatCard
             label="Efectivo y bancos"
             value={fmtUSD(totals.disponible)}

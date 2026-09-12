@@ -348,7 +348,7 @@ export default function GastosPage() {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <FinStatCard label="Presupuestado" value={fmtUSD(totales.presupuesto)} sub="Para este mes" />
           <FinStatCard
             label="Gastado"
@@ -391,8 +391,8 @@ export default function GastosPage() {
                 const pct = r.pct ?? 0;
                 return (
                   <div key={r.id} className="px-4 py-3">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex-1 min-w-[140px]">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <div className="w-full sm:flex-1 sm:min-w-[140px]">
                         <span className="font-semibold text-slate-800">{r.name}</span>
                         {r.kind === 'compra' && (
                           <span className="ml-2 text-[10px] uppercase tracking-wide font-bold text-slate-400">
@@ -491,46 +491,62 @@ export default function GastosPage() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[820px]">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
-                    <th className="text-left font-semibold px-4 py-3">Fecha</th>
-                    <th className="text-left font-semibold px-4 py-3">Concepto</th>
-                    <th className="text-left font-semibold px-4 py-3">Categoría</th>
-                    <th className="text-right font-semibold px-4 py-3">Monto</th>
-                    <th className="text-center font-semibold px-4 py-3">Estado</th>
-                    <th className="text-center font-semibold px-4 py-3">Vence</th>
-                    <th className="text-right font-semibold px-4 py-3">Acciones</th>
+                    <th className="text-left font-semibold px-3 sm:px-4 py-3">Concepto</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Fecha</th>
+                    <th className="text-left font-semibold px-4 py-3 hidden sm:table-cell">
+                      Categoría
+                    </th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Monto</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
+                    <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Vence</th>
+                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {operativos.map((e) => (
-                    <tr key={e.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
+                    <tr key={e.id} className="hover:bg-slate-50 align-top">
+                      <td className="px-3 sm:px-4 py-3">
+                        <span className="text-slate-800">{e.description || '—'}</span>
+                        <div className="sm:hidden mt-1.5 space-y-1">
+                          <PaymentStatusBadge status={e.status} />
+                          <div className="text-xs text-slate-400">
+                            {formatDate(e.expense_date)} · {categoryName(e.category_id)}
+                          </div>
+                          {e.status !== 'pagada' && e.due_date && <DueBadge dueDate={e.due_date} />}
+                        </div>
+                        <div className="hidden sm:block md:hidden text-xs text-slate-400 mt-0.5">
+                          {formatDate(e.expense_date)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
                         {formatDate(e.expense_date)}
                       </td>
-                      <td className="px-4 py-3 text-slate-800">{e.description || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{categoryName(e.category_id)}</td>
-                      <td className="px-4 py-3 text-right font-semibold text-slate-800">
+                      <td className="px-4 py-3 text-slate-600 hidden sm:table-cell">
+                        {categoryName(e.category_id)}
+                      </td>
+                      <td className="px-3 sm:px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap">
                         {fmtUSD(e.amount_usd)}
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center hidden sm:table-cell">
                         <PaymentStatusBadge status={e.status} />
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center hidden md:table-cell">
                         {e.status === 'pagada' ? (
                           <span className="text-slate-300">—</span>
                         ) : (
                           <DueBadge dueDate={e.due_date} />
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-2">
+                      <td className="px-3 sm:px-4 py-3">
+                        <div className="flex flex-wrap justify-end gap-2">
                           <button className={btnSecondary} onClick={() => setPaying(e)}>
                             Abonos
                           </button>
                           <button
-                            className={btnSecondary}
+                            className={`${btnSecondary} hidden sm:inline-block`}
                             onClick={() => {
                               setEditing(e);
                               setFormOpen(true);

@@ -71,13 +71,15 @@ export function FinStatCard({
   return (
     <Tag
       onClick={onClick}
-      className={`bg-white p-5 rounded-xl shadow-sm border text-left w-full transition-colors ${
+      className={`bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border text-left w-full transition-colors ${
         active ? 'border-teal-500 ring-1 ring-teal-200' : 'border-slate-200'
       } ${onClick ? 'hover:border-teal-400 cursor-pointer' : ''}`}
     >
-      <p className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">{label}</p>
-      <p className={`text-2xl font-bold mt-1 ${toneClass}`}>{value}</p>
-      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+      <p className="text-[10px] sm:text-[11px] uppercase tracking-widest text-slate-400 font-bold leading-tight">
+        {label}
+      </p>
+      <p className={`text-lg sm:text-2xl font-bold mt-1 break-words ${toneClass}`}>{value}</p>
+      {sub && <p className="text-[11px] sm:text-xs text-slate-500 mt-1 leading-snug">{sub}</p>}
     </Tag>
   );
 }
@@ -192,17 +194,19 @@ export const inputClass =
   'focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 ' +
   'disabled:bg-slate-50 disabled:text-slate-400';
 
+// Los botones no encogen ni parten su texto: en un telefono, un boton de dos
+// lineas se lee como dos botones.
 export const btnPrimary =
-  'bg-teal-700 hover:bg-teal-800 text-white font-semibold px-4 py-2 rounded-lg text-sm ' +
-  'transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  'bg-teal-700 hover:bg-teal-800 text-white font-semibold px-3 sm:px-4 py-2 rounded-lg text-sm ' +
+  'whitespace-nowrap transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 
 export const btnSecondary =
-  'bg-white hover:bg-slate-50 text-slate-700 font-medium px-4 py-2 rounded-lg text-sm ' +
-  'border border-slate-300 transition-colors disabled:opacity-50 cursor-pointer';
+  'bg-white hover:bg-slate-50 text-slate-700 font-medium px-3 sm:px-4 py-2 rounded-lg text-sm ' +
+  'whitespace-nowrap border border-slate-300 transition-colors disabled:opacity-50 cursor-pointer';
 
 export const btnDanger =
-  'bg-white hover:bg-red-50 text-red-600 font-medium px-4 py-2 rounded-lg text-sm ' +
-  'border border-red-200 transition-colors disabled:opacity-50 cursor-pointer';
+  'bg-white hover:bg-red-50 text-red-600 font-medium px-3 sm:px-4 py-2 rounded-lg text-sm ' +
+  'whitespace-nowrap border border-red-200 transition-colors disabled:opacity-50 cursor-pointer';
 
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (

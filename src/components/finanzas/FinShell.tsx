@@ -59,12 +59,13 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
   return (
     <div className="font-sans">
       <header className="mb-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800">{title}</h1>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-800">{title}</h1>
             {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
           </div>
-          <div className="flex items-center gap-3">{actions}</div>
+          {/* En movil los botones se envuelven en vez de desbordarse. */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">{actions}</div>
         </div>
 
         <nav className="mt-5 -mx-1 overflow-x-auto">

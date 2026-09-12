@@ -27,69 +27,32 @@ import {
 
 export interface Shipment {
   id: string;
-  box_number: string;
-  alias: string | null;
+  alias: string;
   status: string;
-  courier: string | null;
   tracking_code: string | null;
   sent_date: string | null;
-  eta_date: string | null;
   received_date: string | null;
-  pieces: number | null;
-  weight: number | null;
-  weight_unit: string;
   document_path: string | null;
   notes: string | null;
   created_at: string;
 }
 
-const schema = z
-  .object({
-    box_number: z.string().trim().min(1, 'El número de caja es obligatorio'),
-    alias: z.string().trim().optional(),
-    status: z.enum(SHIPMENT_STATUS_ORDER),
-    courier: z.string().trim().optional(),
-    tracking_code: z.string().trim().optional(),
-    sent_date: z.string().optional(),
-    eta_date: z.string().optional(),
-    received_date: z.string().optional(),
-    pieces: z.string().optional(),
-    weight: z.string().optional(),
-    weight_unit: z.enum(['kg', 'lb']),
-    notes: z.string().trim().optional(),
-  })
-  // Una caja que llega antes de salir es un dedazo de fechas, y descuadra el
-  // "qué está en camino" sin que se note.
-  .refine((v) => !v.sent_date || !v.eta_date || v.eta_date >= v.sent_date, {
-    message: 'La llegada estimada no puede ser anterior al envío.',
-    path: ['eta_date'],
-  })
-  .refine((v) => !v.sent_date || !v.received_date || v.received_date >= v.sent_date, {
-    message: 'La llegada real no puede ser anterior al envío.',
-    path: ['received_date'],
-  });
+const schema = z.object({
+  alias: z.string().trim().min(2, 'Ponle un nombre para reconocerla'),
+  status: z.enum(SHIPMENT_STATUS_ORDER),
+  tracking_code: z.string().trim().optional(),
+  sent_date: z.string().optional(),
+  notes: z.string().trim().optional(),
+});
 
 type FormValues = z.infer<typeof schema>;
 
 const EMPTY: FormValues = {
-  box_number: '',
   alias: '',
   status: 'preparada',
-  courier: '',
   tracking_code: '',
   sent_date: '',
-  eta_date: '',
-  received_date: '',
-  pieces: '',
-  weight: '',
-  weight_unit: 'kg',
   notes: '',
-};
-
-const toNum = (s?: string) => {
-  if (!s || s.trim() === '') return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
 };
 
 export default function ShipmentFormModal({
@@ -107,7 +70,6 @@ export default function ShipmentFormModal({
     register,
     handleSubmit,
     reset,
-    watch,
     setError,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: EMPTY });
@@ -117,8 +79,6 @@ export default function ShipmentFormModal({
   const [docUrl, setDocUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  const status = watch('status');
-
   useEffect(() => {
     if (!isOpen) return;
     setFile(null);
@@ -127,17 +87,10 @@ export default function ShipmentFormModal({
     reset(
       shipment
         ? {
-            box_number: shipment.box_number,
-            alias: shipment.alias ?? '',
+            alias: shipment.alias,
             status: (shipment.status as FormValues['status']) ?? 'preparada',
-            courier: shipment.courier ?? '',
             tracking_code: shipment.tracking_code ?? '',
             sent_date: shipment.sent_date ?? '',
-            eta_date: shipment.eta_date ?? '',
-            received_date: shipment.received_date ?? '',
-            pieces: shipment.pieces != null ? String(shipment.pieces) : '',
-            weight: shipment.weight != null ? String(shipment.weight) : '',
-            weight_unit: (shipment.weight_unit as 'kg' | 'lb') ?? 'kg',
             notes: shipment.notes ?? '',
           }
         : { ...EMPTY, sent_date: caracasToday() },
@@ -164,17 +117,10 @@ export default function ShipmentFormModal({
     const supabase = createClient();
 
     const payload = {
-      box_number: values.box_number,
-      alias: values.alias || null,
+      alias: values.alias,
       status: values.status,
-      courier: values.courier || null,
       tracking_code: values.tracking_code || null,
       sent_date: values.sent_date || null,
-      eta_date: values.eta_date || null,
-      received_date: values.received_date || null,
-      pieces: toNum(values.pieces),
-      weight: toNum(values.weight),
-      weight_unit: values.weight_unit,
       notes: values.notes || null,
     };
 
@@ -189,10 +135,6 @@ export default function ShipmentFormModal({
         .select()
         .single();
       if (error) {
-        if (error.code === '23505') {
-          setError('box_number', { message: 'Ya existe una caja con ese número.' });
-          return;
-        }
         setError('root', { message: finErrorMessage(error) });
         return;
       }
@@ -211,10 +153,6 @@ export default function ShipmentFormModal({
         .select()
         .single();
       if (error) {
-        if (error.code === '23505') {
-          setError('box_number', { message: 'Ya existe una caja con ese número.' });
-          return;
-        }
         setError('root', { message: finErrorMessage(error) });
         return;
       }
@@ -264,23 +202,22 @@ export default function ShipmentFormModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={shipment ? `Caja ${shipment.box_number}` : 'Nueva caja'}
+      title={shipment ? shipment.alias : 'Nueva caja'}
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <FinField label="Número de caja" required error={errors.box_number?.message}>
-            <input {...register('box_number')} className={inputClass} placeholder="14" autoFocus />
-          </FinField>
-
-          <FinField
-            label="Alias"
-            className="sm:col-span-2"
-            hint="Para reconocerla rápido."
-            error={errors.alias?.message}
-          >
-            <input {...register('alias')} className={inputClass} placeholder="Las grandes de Kancan" />
-          </FinField>
-        </div>
+        <FinField
+          label="Nombre de la caja"
+          required
+          hint="Como la reconoces tú: la marca, el pedido, lo que sea."
+          error={errors.alias?.message}
+        >
+          <input
+            {...register('alias')}
+            className={inputClass}
+            placeholder="Las grandes de Kancan"
+            autoFocus
+          />
+        </FinField>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <FinField label="Estado" required error={errors.status?.message}>
@@ -293,8 +230,8 @@ export default function ShipmentFormModal({
             </select>
           </FinField>
 
-          <FinField label="Agencia / Courier" error={errors.courier?.message}>
-            <input {...register('courier')} className={inputClass} placeholder="Zoom, MRW, DHL…" />
+          <FinField label="Fecha de envío" error={errors.sent_date?.message}>
+            <input type="date" {...register('sent_date')} className={inputClass} />
           </FinField>
 
           <FinField label="Guía / Tracking" error={errors.tracking_code?.message}>
@@ -302,44 +239,9 @@ export default function ShipmentFormModal({
           </FinField>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <FinField label="Fecha de envío" error={errors.sent_date?.message}>
-            <input type="date" {...register('sent_date')} className={inputClass} />
-          </FinField>
-
-          <FinField label="Llegada estimada" error={errors.eta_date?.message}>
-            <input type="date" {...register('eta_date')} className={inputClass} />
-          </FinField>
-
-          <FinField
-            label="Llegada real"
-            hint={
-              status === 'recibida' || status === 'recibida_incompleta'
-                ? undefined
-                : 'Se llena sola al recibir la caja.'
-            }
-            error={errors.received_date?.message}
-          >
-            <input type="date" {...register('received_date')} className={inputClass} />
-          </FinField>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <FinField label="Piezas" hint="Para cruzarlo al recibir." error={errors.pieces?.message}>
-            <input type="number" min="0" step="1" {...register('pieces')} className={inputClass} />
-          </FinField>
-
-          <FinField label="Peso declarado" error={errors.weight?.message}>
-            <input type="number" min="0" step="0.01" {...register('weight')} className={inputClass} />
-          </FinField>
-
-          <FinField label="Unidad" error={errors.weight_unit?.message}>
-            <select {...register('weight_unit')} className={inputClass}>
-              <option value="kg">Kilogramos</option>
-              <option value="lb">Libras</option>
-            </select>
-          </FinField>
-        </div>
+        <p className="text-xs text-slate-400 -mt-1">
+          La fecha de llegada no se pide aquí: se guarda sola cuando marcas la caja como recibida.
+        </p>
 
         <FinField label="Notas" error={errors.notes?.message}>
           <textarea {...register('notes')} rows={2} className={inputClass} />

@@ -117,18 +117,18 @@ export default function CategoriesModal({
         </p>
 
         <div className="overflow-x-auto border border-slate-200 rounded-lg">
-          <table className="w-full text-sm min-w-[440px]">
+          <table className="w-full text-sm">
             <thead className="bg-slate-100 text-slate-600">
               <tr>
-                <th className="text-left font-semibold px-3 py-2">Nombre</th>
-                <th className="text-left font-semibold px-3 py-2 w-28">Tipo</th>
+                <th className="text-left font-semibold px-2 sm:px-3 py-2">Nombre</th>
+                <th className="text-left font-semibold px-3 py-2 w-28 hidden sm:table-cell">Tipo</th>
                 <th className="text-right font-semibold px-3 py-2 w-32">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {rows.map((c) => (
                 <tr key={c.id} className={`hover:bg-slate-50 ${!c.is_active ? 'opacity-55' : ''}`}>
-                  <td className="px-3 py-2">
+                  <td className="px-2 sm:px-3 py-2">
                     <input
                       defaultValue={c.name}
                       onBlur={(e) => rename(c, e.target.value)}
@@ -138,7 +138,7 @@ export default function CategoriesModal({
                       className={`${inputClass} py-1`}
                     />
                   </td>
-                  <td className="px-3 py-2 text-slate-600">
+                  <td className="px-3 py-2 text-slate-600 hidden sm:table-cell">
                     {c.kind === 'compra' ? 'Compra' : 'Gasto'}
                   </td>
                   <td className="px-3 py-2 text-right">
