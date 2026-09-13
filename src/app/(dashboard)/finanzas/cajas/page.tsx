@@ -277,12 +277,34 @@ export default function CajasPage() {
   };
 
   const deleteShipment = async (s: Shipment) => {
+    const flete = costByShipment.get(s.id) ?? 0;
     if (
       !window.confirm(
-        `¿Eliminar la caja "${s.alias}"?\n\nSe borra también su contenido. Esta acción no se puede deshacer.`,
+        `¿Eliminar la caja "${s.alias}"?\n\n` +
+          'Se borra también su contenido' +
+          (flete > 0
+            ? ` y su costo de envío (${fmtUSD(flete)}). Si ese flete estaba pagado, el saldo de la cuenta con que se pagó vuelve a como estaba.`
+            : '.') +
+          '\n\nEsta acción no se puede deshacer.',
       )
     )
       return;
+
+    // Los fletes van PRIMERO. Su vínculo con la caja es ON DELETE SET NULL, así
+    // que borrar solo la caja los dejaba huérfanos: seguían sumando en el
+    // resumen y restando del saldo de la cuenta, pero sin caja no quedaba
+    // ninguna pantalla desde donde verlos ni borrarlos. Sus pagos se van solos
+    // (fin_payments tiene ON DELETE CASCADE).
+    const { error: fleteError } = await supabase
+      .from('fin_expenses')
+      .delete()
+      .eq('shipment_id', s.id)
+      .eq('kind', 'envio');
+    if (fleteError) {
+      setNotice({ type: 'error', text: finErrorMessage(fleteError) });
+      return;
+    }
+
     const { error } = await supabase.from('fin_shipments').delete().eq('id', s.id);
     if (error) {
       setNotice({ type: 'error', text: finErrorMessage(error) });
