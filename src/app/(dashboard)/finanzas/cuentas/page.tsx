@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import FinShell from '@/components/finanzas/FinShell';
 import AccountFormModal, { Account } from '@/components/finanzas/AccountFormModal';
+import AccountMovementsModal from '@/components/finanzas/AccountMovementsModal';
 import {
   FinNotice,
   FinStatCard,
@@ -47,6 +48,7 @@ export default function CuentasPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [moving, setMoving] = useState<Account | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -294,8 +296,11 @@ export default function CuentasPage() {
                     )}
                     <td className="px-3 sm:px-4 py-3">
                       <div className="flex flex-wrap justify-end gap-2">
+                        <button className={btnPrimary} onClick={() => setMoving(a)}>
+                          {isCardTable ? 'Abonar' : 'Movimiento'}
+                        </button>
                         <button
-                          className={btnSecondary}
+                          className={`${btnSecondary} hidden sm:inline-block`}
                           onClick={() => {
                             setEditing(a);
                             setModalOpen(true);
@@ -417,11 +422,26 @@ export default function CuentasPage() {
           </div>
         )}
 
-        <p className="text-xs text-slate-400">
-          De las tarjetas se guardan solo el alias, el banco y los últimos 4 dígitos. Nunca el número
-          completo, el CVV ni las claves.
-        </p>
+        <div className="text-xs text-slate-400 space-y-1">
+          <p>
+            <strong>Qué mueve el saldo:</strong> las compras a proveedores y los fletes, más los
+            abonos y cargos que registres con el botón de arriba. Los <strong>gastos operativos no
+            lo mueven</strong>: guardan con qué cuenta los pagaste, pero solo como información.
+          </p>
+          <p>
+            De las tarjetas se guardan solo el alias, el banco y los últimos 4 dígitos. Nunca el
+            número completo, el CVV ni las claves.
+          </p>
+        </div>
       </div>
+
+      <AccountMovementsModal
+        isOpen={!!moving}
+        onClose={() => setMoving(null)}
+        account={moving}
+        balance={moving ? Number(bal(moving.id)?.balance_usd ?? moving.opening_balance_usd ?? 0) : 0}
+        onChanged={load}
+      />
 
       <AccountFormModal
         isOpen={modalOpen}

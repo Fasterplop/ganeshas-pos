@@ -16,6 +16,8 @@ import ExpensePaymentsModal from '@/components/finanzas/ExpensePaymentsModal';
 import type { Expense } from '@/components/finanzas/ExpenseFormModal';
 import type { Account } from '@/components/finanzas/AccountFormModal';
 import type { Supplier } from '@/components/finanzas/SupplierFormModal';
+import type { Subscription } from '@/components/finanzas/SubscriptionsPanel';
+import { SUBSCRIPTION_SELECT } from '@/components/finanzas/SubscriptionsPanel';
 import {
   FinNotice,
   FinStatCard,
@@ -73,6 +75,7 @@ export default function CalendarioPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [subs, setSubs] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -105,7 +108,7 @@ export default function CalendarioPage() {
       return;
     }
 
-    const [acc, sup] = await Promise.all([
+    const [acc, sup, sus] = await Promise.all([
       fetchAllPages<Account>((from, to) =>
         supabase
           .from('fin_accounts')
@@ -122,11 +125,21 @@ export default function CalendarioPage() {
           .order('name')
           .range(from, to),
       ),
+      fetchAllPages<Subscription>((from, to) =>
+        supabase
+          .from('fin_subscriptions')
+          .select(SUBSCRIPTION_SELECT)
+          .eq('is_active', true)
+          .eq('is_personal', false)
+          .order('billing_day')
+          .range(from, to),
+      ),
     ]);
 
     setExpenses(rows);
     setAccounts(acc.rows);
     setSuppliers(sup.rows);
+    setSubs(sus.rows);
     setLoading(false);
   }, [supabase]);
 
@@ -175,6 +188,25 @@ export default function CalendarioPage() {
     return m;
   }, [accounts]);
 
+  // Las suscripciones tampoco son filas de vencimiento: son una regla mensual
+  // que se proyecta sobre el mes que se mira, igual que las tarjetas. Un corte
+  // el 31 en un mes de 30 cae el ultimo dia, no desaparece.
+  const subsByDayNumber = useMemo(() => {
+    const y = Number(month.slice(0, 4));
+    const m = Number(month.slice(5, 7));
+    const ultimoDia = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const map = new Map<number, Subscription[]>();
+    for (const sub of subs) {
+      const dia = Math.min(sub.billing_day, ultimoDia);
+      const list = map.get(dia) ?? [];
+      list.push(sub);
+      map.set(dia, list);
+    }
+    return map;
+  }, [subs, month]);
+
+  const totalSubs = useMemo(() => subs.reduce((a, x) => a + Number(x.amount_usd), 0), [subs]);
+
   const resumen = useMemo(() => {
     const vencidas = expenses.filter((e) => e.due_date && e.due_date < hoy);
     const enSemana = expenses.filter((e) => {
@@ -205,6 +237,7 @@ export default function CalendarioPage() {
   const blanks = leadingBlanks(month);
   const selectedItems = selected ? (byDay.get(selected) ?? []) : [];
   const selectedCards = selected ? (cardsByDayNumber.get(Number(selected.slice(8, 10))) ?? []) : [];
+  const selectedSubs = selected ? (subsByDayNumber.get(Number(selected.slice(8, 10))) ?? []) : [];
 
   const handleExport = async () => {
     if (exporting) return;
@@ -289,7 +322,11 @@ export default function CalendarioPage() {
             tone={resumen.tresCount > 0 ? 'amber' : 'default'}
             sub="Lo más urgente"
           />
-          <FinStatCard label="Deuda abierta" value={fmtUSD(resumen.totalAbierto)} />
+          <FinStatCard
+            label="Suscripciones"
+            value={fmtUSD(totalSubs)}
+            sub={`${subs.length} al mes`}
+          />
         </div>
 
         {/* --- Cuadrícula del mes --- */}
@@ -340,6 +377,7 @@ export default function CalendarioPage() {
                 {days.map((day) => {
                   const items = byDay.get(day) ?? [];
                   const cards = cardsByDayNumber.get(Number(day.slice(8, 10))) ?? [];
+                  const daySubs = subsByDayNumber.get(Number(day.slice(8, 10))) ?? [];
                   const total = items.reduce((a, e) => a + saldoDe(e), 0);
                   const vencido = day < hoy && items.length > 0;
                   const esHoy = day === hoy;
@@ -391,6 +429,7 @@ export default function CalendarioPage() {
                           />
                         )}
                         {cards.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
+                        {daySubs.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />}
                       </div>
 
                       <div className="hidden sm:block mt-1 space-y-0.5">
@@ -419,6 +458,14 @@ export default function CalendarioPage() {
                             {c.kind === 'pago' ? '💳 Pago' : '✂ Corte'} {c.account.name}
                           </div>
                         ))}
+                        {daySubs.map((sub) => (
+                          <div
+                            key={sub.id}
+                            className="text-[10px] truncate px-1 py-0.5 rounded bg-violet-100 text-violet-800"
+                          >
+                            🔁 {sub.name}
+                          </div>
+                        ))}
                       </div>
                     </button>
                   );
@@ -438,7 +485,7 @@ export default function CalendarioPage() {
               </button>
             </div>
 
-            {selectedItems.length === 0 && selectedCards.length === 0 ? (
+            {selectedItems.length === 0 && selectedCards.length === 0 && selectedSubs.length === 0 ? (
               <p className="text-sm text-slate-400">Nada vence este día.</p>
             ) : (
               <div className="space-y-2">
@@ -464,6 +511,22 @@ export default function CalendarioPage() {
                     <button className={btnSecondary} onClick={() => setPaying(e)}>
                       Abonar
                     </button>
+                  </div>
+                ))}
+
+                {selectedSubs.map((sub) => (
+                  <div
+                    key={sub.id}
+                    className="flex items-center gap-3 border border-slate-100 rounded-lg px-3 py-2 bg-violet-50/50"
+                  >
+                    <span className="text-lg">🔁</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-slate-800">{sub.name}</p>
+                      <p className="text-xs text-slate-400">
+                        Suscripción · se cobra el {sub.billing_day} de cada mes
+                      </p>
+                    </div>
+                    <p className="font-bold text-slate-800">{fmtUSD(sub.amount_usd)}</p>
                   </div>
                 ))}
 

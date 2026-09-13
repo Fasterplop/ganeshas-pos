@@ -632,7 +632,15 @@ export default function ExpenseFormModal({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {payMode !== 'pendiente' && (
-                <FinField label="Con qué cuenta se pagó" required>
+                <FinField
+                  label="Con qué cuenta se pagó"
+                  required
+                  hint={
+                    kind === 'gasto'
+                      ? 'Solo para tenerlo anotado: un gasto no descuenta del saldo de la cuenta.'
+                      : undefined
+                  }
+                >
                   <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
                     <option value="">Selecciona…</option>
                     {usableAccounts.map((a) => (

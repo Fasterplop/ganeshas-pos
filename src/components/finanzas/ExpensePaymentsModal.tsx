@@ -353,6 +353,14 @@ export default function ExpensePaymentsModal({
             cuenta con la misma fecha.
           </p>
 
+          {current.kind === 'gasto' && (
+            <p className="text-xs text-slate-500">
+              La cuenta queda anotada como información: los gastos operativos{' '}
+              <strong>no descuentan del saldo</strong>. Para mover un saldo, usa el botón de la
+              pestaña Cuentas.
+            </p>
+          )}
+
           <div className="flex justify-end gap-2">
             <button onClick={onClose} className={btnSecondary} disabled={busy}>
               Cerrar

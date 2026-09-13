@@ -14,6 +14,7 @@ import FinShell from '@/components/finanzas/FinShell';
 import ExpenseFormModal, { Expense, Category } from '@/components/finanzas/ExpenseFormModal';
 import ExpensePaymentsModal from '@/components/finanzas/ExpensePaymentsModal';
 import CategoriesModal from '@/components/finanzas/CategoriesModal';
+import SubscriptionsPanel from '@/components/finanzas/SubscriptionsPanel';
 import type { Account } from '@/components/finanzas/AccountFormModal';
 import {
   FinNotice,
@@ -183,6 +184,13 @@ export default function GastosPage() {
   }, [budgetRows, expenses]);
 
   const operativos = useMemo(() => expenses.filter((e) => e.kind === 'gasto'), [expenses]);
+
+  // La categoría Suscripciones queda puesta al crear una: así lo que se
+  // registre después cae en el presupuesto correcto.
+  const suscripcionesCat = useMemo(
+    () => categories.find((c) => c.name.toLowerCase() === 'suscripciones')?.id ?? null,
+    [categories],
+  );
 
   const saveBudget = async (categoryId: string, raw: string) => {
     const value = raw.trim() === '' ? 0 : Number(raw);
@@ -472,6 +480,8 @@ export default function GastosPage() {
             fletes.
           </p>
         </div>
+
+        <SubscriptionsPanel accounts={accounts} categoryId={suscripcionesCat} />
 
         {/* --- Gastos operativos del mes --- */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">

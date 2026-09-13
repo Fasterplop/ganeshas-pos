@@ -371,6 +371,69 @@ CREATE TABLE IF NOT EXISTS public.fin_budgets (
 );
 
 
+-- Abonos y cargos manuales sobre una cuenta o tarjeta.
+--
+-- `kind` se lee siempre como "le meto dinero" / "le saco dinero", y el efecto
+-- sobre el saldo depende de que es la cuenta:
+--   - tarjeta de credito: el saldo es la DEUDA, asi que un abono la BAJA.
+--   - banco / efectivo / zelle: el saldo es lo disponible, un abono lo SUBE.
+--
+-- Existe para no tener que editar el saldo inicial cada vez que se le paga a
+-- una tarjeta, que borraba el historial.
+CREATE TABLE IF NOT EXISTS public.fin_account_movements (
+  id         uuid NOT NULL DEFAULT uuid_generate_v4(),
+  account_id uuid NOT NULL,
+  kind       text NOT NULL CHECK (kind IN ('abono','cargo')),
+  amount_usd numeric NOT NULL CHECK (amount_usd > 0),
+  moved_at   date NOT NULL,
+  note       text,
+  created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fin_account_movements_pkey PRIMARY KEY (id),
+  CONSTRAINT fin_account_movements_account_fkey
+    FOREIGN KEY (account_id) REFERENCES public.fin_accounts(id) ON DELETE CASCADE,
+  CONSTRAINT fin_account_movements_author_fkey
+    FOREIGN KEY (created_by) REFERENCES public.profiles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fin_account_movements_account
+  ON public.fin_account_movements (account_id, moved_at DESC);
+
+
+-- Suscripciones recurrentes (YouTube, Spotify, herramientas).
+--
+-- NO generan gastos solas: son un recordatorio con monto que se marca en el
+-- calendario en su dia de corte, igual que el dia de pago de una tarjeta. Si
+-- un mes se quiere contar de verdad, se registra el gasto a mano. Asi un mes
+-- que no cobraron no deja un gasto fantasma.
+--
+-- billing_day es un DIA del mes (1-31), no una fecha: se cobra todos los meses
+-- y guardar una fecha concreta obligaria a moverla cada vez.
+CREATE TABLE IF NOT EXISTS public.fin_subscriptions (
+  id          uuid NOT NULL DEFAULT uuid_generate_v4(),
+  name        text NOT NULL,
+  amount_usd  numeric NOT NULL CHECK (amount_usd > 0),
+  billing_day smallint NOT NULL CHECK (billing_day BETWEEN 1 AND 31),
+  account_id  uuid,
+  category_id uuid,
+  is_personal boolean NOT NULL DEFAULT false,
+  is_active   boolean NOT NULL DEFAULT true,
+  notes       text,
+  created_by  uuid NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fin_subscriptions_pkey PRIMARY KEY (id),
+  CONSTRAINT fin_subscriptions_account_fkey
+    FOREIGN KEY (account_id) REFERENCES public.fin_accounts(id) ON DELETE SET NULL,
+  CONSTRAINT fin_subscriptions_category_fkey
+    FOREIGN KEY (category_id) REFERENCES public.fin_categories(id) ON DELETE SET NULL,
+  CONSTRAINT fin_subscriptions_author_fkey
+    FOREIGN KEY (created_by) REFERENCES public.profiles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fin_subscriptions_activas
+  ON public.fin_subscriptions (billing_day) WHERE is_active;
+
+
 -- FKs que el Bloque 2 dejo pendientes, ahora que fin_expenses y
 -- fin_purchase_lines existen.
 --
@@ -512,7 +575,7 @@ UPDATE public.fin_expenses e
 -- ----------------------------------------------------------------------------
 -- BLOQUE 4 - RLS: el dueno y nadie mas.  [OBLIGATORIO]
 --
--- Son 10 tablas x 4 verbos = 40 politicas. Se generan en bucle a proposito:
+-- Son 12 tablas x 4 verbos = 48 politicas. Se generan en bucle a proposito:
 -- escritas a mano, olvidar UNA deja esa tabla muda y sin error visible, que es
 -- exactamente el bug que este bloque existe para evitar. El bucle hace
 -- imposible que una tabla de la lista se quede sin sus cuatro politicas.
@@ -548,7 +611,8 @@ DECLARE
   tablas text[] := ARRAY[
     'fin_suppliers', 'fin_categories', 'fin_accounts',
     'fin_shipments', 'fin_shipment_items', 'fin_shipment_boxes',
-    'fin_expenses', 'fin_purchase_lines', 'fin_payments', 'fin_budgets'
+    'fin_expenses', 'fin_purchase_lines', 'fin_payments', 'fin_budgets',
+    'fin_account_movements', 'fin_subscriptions'
   ];
 BEGIN
   FOREACH t IN ARRAY tablas LOOP
@@ -594,39 +658,64 @@ $rls$;
 -- Los reportes NO guardan el saldo: lo derivan. Materializarlo seria una
 -- segunda fuente de verdad que se desincroniza en cuanto alguien corrige un
 -- pago.
---   - banco / zelle / efectivo : el dinero SALE     -> el saldo baja
---   - tarjeta de credito       : cada pago es deuda -> el consumo sube
 --
--- Limitacion conocida: abonarle a la tarjeta (bajar su deuda) todavia no se
--- registra como movimiento; se reconcilia ajustando opening_balance_usd.
+-- Que mueve el saldo y que no:
+--   - Compras a proveedores y fletes: SI. Ahi importa cuanto queda en la
+--     tarjeta.
+--   - Gastos operativos: NO. La seccion de Gastos es para llevar la cuenta de
+--     en que se va el dinero; guarda con que cuenta se pago como informacion,
+--     pero no toca el saldo.
+--   - Abonos y cargos manuales (fin_account_movements): SI. Es como el dueno
+--     baja la deuda de una tarjeta.
 CREATE OR REPLACE VIEW public.fin_v_account_balance
 WITH (security_invoker = on) AS
-SELECT a.id                       AS account_id,
-       a.name,
-       a.kind,
-       a.bank_name,
-       a.last4,
-       a.is_personal,
-       a.is_active,
-       a.credit_limit_usd,
-       a.statement_day,
-       a.due_day,
-       a.opening_balance_usd,
-       COALESCE(p.moved_usd, 0)   AS moved_usd,
-       CASE WHEN a.kind = 'tarjeta_credito'
-            THEN a.opening_balance_usd + COALESCE(p.moved_usd, 0)
-            ELSE a.opening_balance_usd - COALESCE(p.moved_usd, 0)
-       END                        AS balance_usd,
-       CASE WHEN a.kind = 'tarjeta_credito' AND a.credit_limit_usd IS NOT NULL
-            THEN a.credit_limit_usd - (a.opening_balance_usd + COALESCE(p.moved_usd, 0))
+WITH pagos AS (
+  SELECT p.account_id, SUM(p.amount_usd) AS total
+    FROM public.fin_payments p
+    JOIN public.fin_expenses e ON e.id = p.expense_id
+   WHERE e.kind <> 'gasto'
+   GROUP BY p.account_id
+), manuales AS (
+  SELECT account_id,
+         COALESCE(SUM(amount_usd) FILTER (WHERE kind = 'abono'), 0) AS abonos,
+         COALESCE(SUM(amount_usd) FILTER (WHERE kind = 'cargo'), 0) AS cargos
+    FROM public.fin_account_movements
+   GROUP BY account_id
+), calculo AS (
+  SELECT a.*,
+         COALESCE(p.total, 0)  AS moved_usd,
+         COALESCE(m.abonos, 0) AS abonos_usd,
+         COALESCE(m.cargos, 0) AS cargos_usd,
+         CASE WHEN a.kind = 'tarjeta_credito'
+              THEN a.opening_balance_usd + COALESCE(p.total, 0)
+                   + COALESCE(m.cargos, 0) - COALESCE(m.abonos, 0)
+              ELSE a.opening_balance_usd - COALESCE(p.total, 0)
+                   + COALESCE(m.abonos, 0) - COALESCE(m.cargos, 0)
+         END AS balance_usd
+    FROM public.fin_accounts a
+    LEFT JOIN pagos    p ON p.account_id = a.id
+    LEFT JOIN manuales m ON m.account_id = a.id
+)
+SELECT id AS account_id,
+       name,
+       kind,
+       bank_name,
+       last4,
+       is_personal,
+       is_active,
+       credit_limit_usd,
+       statement_day,
+       due_day,
+       opening_balance_usd,
+       moved_usd,
+       abonos_usd,
+       cargos_usd,
+       balance_usd,
+       CASE WHEN kind = 'tarjeta_credito' AND credit_limit_usd IS NOT NULL
+            THEN credit_limit_usd - balance_usd
             ELSE NULL
-       END                        AS available_usd
-  FROM public.fin_accounts a
-  LEFT JOIN (
-    SELECT account_id, SUM(amount_usd) AS moved_usd
-      FROM public.fin_payments
-     GROUP BY account_id
-  ) p ON p.account_id = a.id;
+       END AS available_usd
+  FROM calculo;
 
 
 -- Estado de cuenta por proveedor: facturas abiertas, saldo y proximo
@@ -678,7 +767,7 @@ SELECT b.category_id,
 -- VERIFICACION. Devuelve una sola celda JSON (el editor de Supabase solo
 -- muestra el ultimo SELECT).
 --
--- Las 10 tablas fin_* deben salir TODAS con rls_activa = true y politicas = 4.
+-- Las 12 tablas fin_* deben salir TODAS con rls_activa = true y politicas = 4.
 -- Si alguna sale con politicas = 0, esa tabla esta muda: la app no vera ni una
 -- fila y no habra ningun error en consola.
 -- ----------------------------------------------------------------------------

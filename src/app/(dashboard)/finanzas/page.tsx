@@ -333,7 +333,7 @@ export default function ResumenPage() {
         salida: rows.reduce((a, r) => a + r.salida, 0),
       },
       totalsLabel: 'TOTALES',
-      note: 'Ingresos = ventas registradas en el POS. Egresos = pagos realmente hechos desde una cuenta.',
+      note: 'Ingresos = ventas del POS. Egresos = pagos registrados. Los gastos operativos se listan pero no mueven el saldo de la cuenta; eso se ajusta desde Cuentas.',
     };
   };
 
