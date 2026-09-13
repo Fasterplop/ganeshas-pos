@@ -667,6 +667,15 @@ $rls$;
 --     pero no toca el saldo.
 --   - Abonos y cargos manuales (fin_account_movements): SI. Es como el dueno
 --     baja la deuda de una tarjeta.
+-- OJO: va un DROP antes del CREATE, no basta con CREATE OR REPLACE.
+-- Postgres solo deja "reemplazar" una vista si las columnas quedan con el
+-- mismo nombre y en el mismo orden, y aqui se agregan abonos_usd y cargos_usd
+-- en medio. Sin el DROP falla con:
+--   42P16: cannot change name of view column "balance_usd" to "abonos_usd"
+-- Borrarla es seguro: ninguna otra vista ni funcion depende de ella, solo la
+-- app, que la consulta por nombre.
+DROP VIEW IF EXISTS public.fin_v_account_balance;
+
 CREATE OR REPLACE VIEW public.fin_v_account_balance
 WITH (security_invoker = on) AS
 WITH pagos AS (
