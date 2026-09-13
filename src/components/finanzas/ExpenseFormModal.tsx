@@ -636,9 +636,7 @@ export default function ExpenseFormModal({
                   label="Con qué cuenta se pagó"
                   required
                   hint={
-                    kind === 'gasto'
-                      ? 'Solo para tenerlo anotado: un gasto no descuenta del saldo de la cuenta.'
-                      : undefined
+                    'Solo para tenerlo anotado: ningún pago descuenta del saldo de la cuenta.'
                   }
                 >
                   <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>

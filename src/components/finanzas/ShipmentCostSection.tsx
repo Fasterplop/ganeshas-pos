@@ -12,8 +12,8 @@
 // una lista y no un campo.
 //
 // El flete NO descuenta del saldo de la cuenta con que se pagó: la cuenta queda
-// anotada como información, igual que en los gastos operativos. Solo las
-// compras a proveedores mueven saldos (db/finanzas_06_fletes_no_restan.sql).
+// anotada como información. Ningún pago mueve saldos; el saldo de las cuentas
+// se lleva a mano (db/finanzas_06_saldo_manual.sql).
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';

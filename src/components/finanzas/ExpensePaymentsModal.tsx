@@ -353,14 +353,11 @@ export default function ExpensePaymentsModal({
             cuenta con la misma fecha.
           </p>
 
-          {(current.kind === 'gasto' || current.kind === 'envio') && (
-            <p className="text-xs text-slate-500">
-              La cuenta queda anotada como información:{' '}
-              {current.kind === 'gasto' ? 'los gastos operativos' : 'los fletes'}{' '}
-              <strong>no descuentan del saldo</strong>. Para mover un saldo, usa el botón de la
-              pestaña Cuentas.
-            </p>
-          )}
+          <p className="text-xs text-slate-500">
+            La cuenta queda anotada solo como información:{' '}
+            <strong>ningún pago descuenta del saldo</strong>. El saldo de las cuentas se lleva a
+            mano desde la pestaña Cuentas.
+          </p>
 
           <div className="flex justify-end gap-2">
             <button onClick={onClose} className={btnSecondary} disabled={busy}>

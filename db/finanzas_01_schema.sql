@@ -99,8 +99,8 @@ CREATE TABLE IF NOT EXISTS public.fin_accounts (
 
   -- Arranque real: con que saldo (o que deuda, si es tarjeta) y desde que
   -- fecha entra la cuenta al sistema. Sin esto el modulo miente los primeros
-  -- meses. Tambien es el punto de reconciliacion: despues de pagarle a la
-  -- tarjeta, se ajusta aqui.
+  -- meses. Despues, el saldo solo cambia con los abonos y cargos manuales
+  -- (fin_account_movements): ningun pago lo mueve solo.
   opening_balance_usd  numeric NOT NULL DEFAULT 0,
   opening_balance_date date,
 
@@ -656,36 +656,27 @@ $rls$;
 -- Saldo, consumo y disponible por cuenta.
 --
 -- Los reportes NO guardan el saldo: lo derivan. Materializarlo seria una
--- segunda fuente de verdad que se desincroniza en cuanto alguien corrige un
--- pago.
+-- segunda fuente de verdad que se desincroniza.
 --
--- Que mueve el saldo y que no:
---   - Compras a proveedores: SI. Ahi importa cuanto queda en la tarjeta.
---   - Gastos operativos y fletes de las cajas: NO. Guardan con que cuenta se
---     pagaron como informacion, pero no tocan el saldo
---     (db/finanzas_06_fletes_no_restan.sql). Se filtra `= 'compra'` y no
---     "todo menos gastos": un tipo de egreso nuevo, por defecto, no mueve
---     saldos.
---   - Abonos y cargos manuales (fin_account_movements): SI. Es como el dueno
---     baja la deuda de una tarjeta.
--- OJO: va un DROP antes del CREATE, no basta con CREATE OR REPLACE.
--- Postgres solo deja "reemplazar" una vista si las columnas quedan con el
--- mismo nombre y en el mismo orden, y aqui se agregan abonos_usd y cargos_usd
--- en medio. Sin el DROP falla con:
---   42P16: cannot change name of view column "balance_usd" to "abonos_usd"
--- Borrarla es seguro: ninguna otra vista ni funcion depende de ella, solo la
--- app, que la consulta por nombre.
+-- El saldo es 100% MANUAL (db/finanzas_06_saldo_manual.sql): solo cambia con el
+-- saldo inicial y con los abonos y cargos que el dueno registra
+-- (fin_account_movements). NINGUN pago lo mueve: ni compras, ni gastos, ni
+-- fletes. Los pagos siguen guardando con que cuenta se pagaron, y moved_usd
+-- queda como dato informativo de cuanto se pago con cada cuenta.
+--
+-- OJO: va un DROP antes del CREATE. CREATE OR REPLACE falla con 42P16 si
+-- cambian el nombre o el orden de las columnas.
 DROP VIEW IF EXISTS public.fin_v_account_balance;
 
-CREATE OR REPLACE VIEW public.fin_v_account_balance
+CREATE VIEW public.fin_v_account_balance
 WITH (security_invoker = on) AS
-WITH pagos AS (
-  SELECT p.account_id, SUM(p.amount_usd) AS total
-    FROM public.fin_payments p
-    JOIN public.fin_expenses e ON e.id = p.expense_id
-   WHERE e.kind = 'compra'
-   GROUP BY p.account_id
+WITH pagados AS (
+  -- INFORMATIVO: cuanto se ha pagado con cada cuenta. No entra en el saldo.
+  SELECT account_id, SUM(amount_usd) AS total
+    FROM public.fin_payments
+   GROUP BY account_id
 ), manuales AS (
+  -- Lo UNICO que mueve el saldo, ademas del saldo inicial.
   SELECT account_id,
          COALESCE(SUM(amount_usd) FILTER (WHERE kind = 'abono'), 0) AS abonos,
          COALESCE(SUM(amount_usd) FILTER (WHERE kind = 'cargo'), 0) AS cargos
@@ -697,13 +688,11 @@ WITH pagos AS (
          COALESCE(m.abonos, 0) AS abonos_usd,
          COALESCE(m.cargos, 0) AS cargos_usd,
          CASE WHEN a.kind = 'tarjeta_credito'
-              THEN a.opening_balance_usd + COALESCE(p.total, 0)
-                   + COALESCE(m.cargos, 0) - COALESCE(m.abonos, 0)
-              ELSE a.opening_balance_usd - COALESCE(p.total, 0)
-                   + COALESCE(m.abonos, 0) - COALESCE(m.cargos, 0)
+              THEN a.opening_balance_usd + COALESCE(m.cargos, 0) - COALESCE(m.abonos, 0)
+              ELSE a.opening_balance_usd + COALESCE(m.abonos, 0) - COALESCE(m.cargos, 0)
          END AS balance_usd
     FROM public.fin_accounts a
-    LEFT JOIN pagos    p ON p.account_id = a.id
+    LEFT JOIN pagados  p ON p.account_id = a.id
     LEFT JOIN manuales m ON m.account_id = a.id
 )
 SELECT id AS account_id,

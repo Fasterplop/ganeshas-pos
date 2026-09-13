@@ -424,10 +424,10 @@ export default function CuentasPage() {
 
         <div className="text-xs text-slate-400 space-y-1">
           <p>
-            <strong>Qué mueve el saldo:</strong> solo las compras a proveedores, más los abonos y
-            cargos que registres con el botón de arriba. Los <strong>gastos operativos y los
-            fletes de las cajas no lo mueven</strong>: guardan con qué cuenta los pagaste, pero solo
-            como información.
+            <strong>El saldo se lleva a mano:</strong> solo cambia con el saldo inicial y con los
+            abonos y cargos que registres con el botón de arriba. Las compras, los gastos y los
+            fletes <strong>no lo mueven</strong>: guardan con qué cuenta los pagaste, pero solo como
+            información.
           </p>
           <p>
             De las tarjetas se guardan solo el alias, el banco y los últimos 4 dígitos. Nunca el

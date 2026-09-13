@@ -333,7 +333,7 @@ export default function ResumenPage() {
         salida: rows.reduce((a, r) => a + r.salida, 0),
       },
       totalsLabel: 'TOTALES',
-      note: 'Ingresos = ventas del POS. Egresos = pagos registrados. Los gastos operativos y los fletes se listan pero no mueven el saldo de la cuenta; eso se ajusta desde Cuentas.',
+      note: 'Ingresos = ventas del POS. Egresos = pagos registrados, con la cuenta que se usó. Ningún pago mueve el saldo de las cuentas: ese saldo se lleva a mano desde Cuentas.',
     };
   };
 

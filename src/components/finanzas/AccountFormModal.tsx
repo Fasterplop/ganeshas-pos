@@ -244,8 +244,8 @@ export default function AccountFormModal({
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
           <p className="text-xs text-slate-500">
             {isCard
-              ? 'Cuánto debes hoy en esta tarjeta. A partir de ahí, cada compra pagada con ella suma al consumo.'
-              : 'Cuánto hay hoy en esta cuenta. A partir de ahí, cada pago hecho desde ella lo descuenta.'}
+              ? 'Cuánto debes hoy en esta tarjeta. A partir de ahí, la deuda solo cambia con los abonos y cargos que registres en Cuentas.'
+              : 'Cuánto hay hoy en esta cuenta. A partir de ahí, el saldo solo cambia con los movimientos que registres en Cuentas.'}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <FinField
