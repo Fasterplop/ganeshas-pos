@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
 import FinShell from '@/components/finanzas/FinShell';
-import ShipmentFormModal, { Shipment } from '@/components/finanzas/ShipmentFormModal';
+import ShipmentFormModal, { Shipment, ShipmentBox } from '@/components/finanzas/ShipmentFormModal';
 import ShipmentDetailModal, { ShipmentItem } from '@/components/finanzas/ShipmentDetailModal';
 import type { Supplier } from '@/components/finanzas/SupplierFormModal';
 import type { Account } from '@/components/finanzas/AccountFormModal';
@@ -54,6 +54,7 @@ export default function CajasPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [envioCategoryId, setEnvioCategoryId] = useState<string | null>(null);
   const [costByShipment, setCostByShipment] = useState<Map<string, number>>(new Map());
+  const [boxes, setBoxes] = useState<ShipmentBox[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -85,6 +86,7 @@ export default function CajasPage() {
     // El contenido de todas las cajas en una sola consulta: la lista muestra de
     // qué marcas viene cada caja, y el export lo necesita completo.
     let content: ShipmentItem[] = [];
+    let physical: ShipmentBox[] = [];
     const costs = new Map<string, number>();
 
     if (ship.length > 0) {
@@ -115,6 +117,17 @@ export default function CajasPage() {
       for (const c of costRows) {
         costs.set(c.shipment_id, (costs.get(c.shipment_id) ?? 0) + Number(c.amount_usd));
       }
+
+      // Cuántas cajas físicas y de qué tamaño lleva cada envío.
+      const { rows: boxRows } = await fetchAllPages<ShipmentBox>((from, to) =>
+        supabase
+          .from('fin_shipment_boxes')
+          .select('id, shipment_id, size, quantity, sort_order')
+          .in('shipment_id', ids)
+          .order('sort_order')
+          .range(from, to),
+      );
+      physical = boxRows;
     }
 
     const { rows: sup } = await fetchAllPages<Supplier>((from, to) =>
@@ -147,6 +160,7 @@ export default function CajasPage() {
 
     setShipments(ship);
     setItems(content);
+    setBoxes(physical);
     setSuppliers(sup);
     setAccounts(acc);
     setEnvioCategoryId(cat?.id ?? null);
@@ -171,6 +185,27 @@ export default function CajasPage() {
   const supplierName = useCallback(
     (id: string | null) => suppliers.find((s) => s.id === id)?.name ?? null,
     [suppliers],
+  );
+
+  const boxesByShipment = useMemo(() => {
+    const map = new Map<string, ShipmentBox[]>();
+    for (const b of boxes) {
+      const list = map.get(b.shipment_id);
+      if (list) list.push(b);
+      else map.set(b.shipment_id, [b]);
+    }
+    return map;
+  }, [boxes]);
+
+  /** "3 cajas · 2 Grande, 1 Mediana" */
+  const boxesOf = useCallback(
+    (shipmentId: string) => {
+      const list = boxesByShipment.get(shipmentId) ?? [];
+      const total = list.reduce((a, b) => a + Number(b.quantity), 0);
+      const detalle = list.map((b) => `${b.quantity} ${b.size}`).join(', ');
+      return { total, detalle };
+    },
+    [boxesByShipment],
   );
 
   const brandsOf = useCallback(
@@ -273,6 +308,8 @@ export default function CajasPage() {
           guia: s.tracking_code ?? '',
           enviada: formatDate(s.sent_date),
           llegada: formatDate(s.received_date),
+          cajas: boxesOf(s.id).total || '',
+          tamanos: boxesOf(s.id).detalle,
           marcas: brandsOf(s.id).join(', '),
           contenido: list
             .map((i) => {
@@ -308,6 +345,8 @@ export default function CajasPage() {
               { header: 'Guía', key: 'guia', width: 20 },
               { header: 'Enviada', key: 'enviada', width: 13 },
               { header: 'Llegó', key: 'llegada', width: 13 },
+              { header: 'Cajas', key: 'cajas', width: 9, align: 'center' },
+              { header: 'Tamaños', key: 'tamanos', width: 24, wrap: true },
               { header: 'Marcas', key: 'marcas', width: 26, wrap: true },
               { header: 'Contenido', key: 'contenido', width: 46, wrap: true },
               { header: 'Costo del envío', key: 'costo', width: 15, numFmt: FMT_USD },
@@ -469,6 +508,7 @@ export default function CajasPage() {
                     const list = itemsByShipment.get(s.id) ?? [];
                     const brands = brandsOf(s.id);
                     const costo = costByShipment.get(s.id) ?? 0;
+                    const cajas = boxesOf(s.id);
                     return (
                       <tr key={s.id} className="hover:bg-slate-50 align-top">
                         <td className="px-3 sm:px-4 py-3">
@@ -489,6 +529,8 @@ export default function CajasPage() {
                               {brands.length > 0 && ` · ${brands.join(', ')}`}
                             </div>
                             <div className="text-xs text-slate-400">
+                              {cajas.total > 0 &&
+                                `${cajas.total} ${cajas.total === 1 ? 'caja' : 'cajas'} · `}
                               {s.received_date
                                 ? `Llegó ${formatDate(s.received_date)}`
                                 : s.sent_date
@@ -521,6 +563,12 @@ export default function CajasPage() {
                                 <div className="text-xs text-slate-500">{brands.join(', ')}</div>
                               )}
                             </>
+                          )}
+                          {cajas.total > 0 && (
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              {cajas.total} {cajas.total === 1 ? 'caja' : 'cajas'}
+                              {cajas.detalle && `: ${cajas.detalle}`}
+                            </div>
                           )}
                           {costo > 0 && (
                             <div className="text-xs text-slate-500 mt-0.5">
@@ -596,6 +644,7 @@ export default function CajasPage() {
           load();
         }}
         shipment={detail}
+        boxes={detail ? (boxesByShipment.get(detail.id) ?? []) : []}
         suppliers={suppliers}
         accounts={accounts}
         envioCategoryId={envioCategoryId}

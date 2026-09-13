@@ -25,6 +25,26 @@ import {
   SHIPMENT_STATUS_ORDER,
 } from './ui';
 
+/** Cuántas cajas físicas de cada tamaño van en el envío. */
+export interface ShipmentBox {
+  id: string;
+  shipment_id: string;
+  size: string;
+  quantity: number;
+  sort_order: number;
+}
+
+/** Sugerencias, no una lista cerrada: cada courier tiene sus nombres. */
+const TAMANOS = ['Pequeña', 'Mediana', 'Grande', 'Extra grande'];
+
+interface BoxRow {
+  key: string;
+  size: string;
+  quantity: string;
+}
+
+const newBoxRow = (): BoxRow => ({ key: crypto.randomUUID(), size: '', quantity: '1' });
+
 export interface Shipment {
   id: string;
   alias: string;
@@ -78,6 +98,12 @@ export default function ShipmentFormModal({
   const [docPath, setDocPath] = useState<string | null>(null);
   const [docUrl, setDocUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [boxes, setBoxes] = useState<BoxRow[]>([newBoxRow()]);
+
+  const totalCajas = boxes.reduce(
+    (a, b) => a + (b.size.trim() ? Math.max(1, Math.round(Number(b.quantity) || 1)) : 0),
+    0,
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -95,6 +121,32 @@ export default function ShipmentFormModal({
           }
         : { ...EMPTY, sent_date: caracasToday() },
     );
+
+    // Al editar se traen las cajas físicas que ya tenía; al crear se arranca
+    // con una fila vacía para que se vea que el campo existe.
+    if (!shipment) {
+      setBoxes([newBoxRow()]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from('fin_shipment_boxes')
+        .select('id, shipment_id, size, quantity, sort_order')
+        .eq('shipment_id', shipment.id)
+        .order('sort_order');
+      if (cancelled) return;
+      const rows = (data ?? []) as ShipmentBox[];
+      setBoxes(
+        rows.length > 0
+          ? rows.map((b) => ({ key: b.id, size: b.size, quantity: String(b.quantity) }))
+          : [newBoxRow()],
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, shipment, reset]);
 
   // La URL firmada se pide en el momento de mostrarla: guardarla en la BD sería
@@ -158,6 +210,34 @@ export default function ShipmentFormModal({
       }
       saved = data as Shipment;
       isNew = true;
+    }
+
+    // Las cajas físicas se reescriben enteras: son dos o tres filas y el
+    // formulario las edita como un bloque, así que borrar e insertar es más
+    // simple y más difícil de equivocar que reconciliar fila por fila.
+    if (saved) {
+      // Se copia a una const: dentro del callback de .map, TypeScript pierde el
+      // estrechamiento de `saved` por ser `let`.
+      const shipmentId = saved.id;
+      const validas = boxes
+        .map((b, i) => ({
+          size: b.size.trim(),
+          quantity: Math.max(1, Math.round(Number(b.quantity) || 1)),
+          sort_order: i,
+        }))
+        .filter((b) => b.size !== '');
+
+      await supabase.from('fin_shipment_boxes').delete().eq('shipment_id', shipmentId);
+      if (validas.length > 0) {
+        const { error: boxError } = await supabase
+          .from('fin_shipment_boxes')
+          .insert(validas.map((b) => ({ ...b, shipment_id: shipmentId })));
+        if (boxError) {
+          setError('root', {
+            message: `El envío se guardó, pero las cajas no: ${finErrorMessage(boxError)}`,
+          });
+        }
+      }
     }
 
     // La foto se sube DESPUÉS de tener el id: la ruta lo incluye, y así los
@@ -240,8 +320,75 @@ export default function ShipmentFormModal({
         </div>
 
         <p className="text-xs text-slate-400 -mt-1">
-          La fecha de llegada no se pide aquí: se guarda sola cuando marcas la caja como recibida.
+          La fecha de llegada no se pide aquí: se guarda sola cuando marcas el envío como recibido.
         </p>
+
+        {/* --- Cuántas cajas físicas y de qué tamaño --- */}
+        <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+              Cajas del envío
+            </label>
+            <span className="text-xs text-slate-400">
+              {totalCajas > 0
+                ? `${totalCajas} ${totalCajas === 1 ? 'caja' : 'cajas'} en total`
+                : 'Sin cajas'}
+            </span>
+          </div>
+
+          <datalist id="fin-tamanos-caja">
+            {TAMANOS.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+
+          {boxes.map((b, i) => (
+            <div key={b.key} className="grid grid-cols-[minmax(0,1fr)_80px_auto] gap-2">
+              <input
+                value={b.size}
+                onChange={(e) =>
+                  setBoxes((p) => p.map((x, j) => (j === i ? { ...x, size: e.target.value } : x)))
+                }
+                list="fin-tamanos-caja"
+                placeholder="Tamaño (Grande, Mediana…)"
+                className={inputClass}
+              />
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={b.quantity}
+                onChange={(e) =>
+                  setBoxes((p) => p.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))
+                }
+                className={`${inputClass} text-center`}
+                aria-label="Cantidad"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  setBoxes((p) => (p.length === 1 ? [newBoxRow()] : p.filter((_, j) => j !== i)))
+                }
+                className="text-slate-400 hover:text-red-600 px-2 cursor-pointer"
+                title="Quitar tamaño"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => setBoxes((p) => [...p, newBoxRow()])}
+            className="text-sm text-teal-700 hover:underline cursor-pointer"
+          >
+            + Otro tamaño
+          </button>
+          <p className="text-xs text-slate-400">
+            Si el envío son 2 grandes y 1 mediana, van dos filas. Los tamaños sin nombre no se
+            guardan.
+          </p>
+        </div>
 
         <FinField label="Notas" error={errors.notes?.message}>
           <textarea {...register('notes')} rows={2} className={inputClass} />

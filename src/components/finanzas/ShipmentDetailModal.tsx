@@ -19,7 +19,7 @@ import { caracasToday, formatDate } from '@/lib/finanzas/dates';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { fmtUSD, round2 } from '@/lib/finanzas/money';
 import type { Supplier } from './SupplierFormModal';
-import type { Shipment } from './ShipmentFormModal';
+import type { Shipment, ShipmentBox } from './ShipmentFormModal';
 import type { Account } from './AccountFormModal';
 import type { Expense } from './ExpenseFormModal';
 import ShipmentCostSection from './ShipmentCostSection';
@@ -58,6 +58,7 @@ export default function ShipmentDetailModal({
   isOpen,
   onClose,
   shipment,
+  boxes,
   suppliers,
   accounts,
   envioCategoryId,
@@ -66,6 +67,8 @@ export default function ShipmentDetailModal({
   isOpen: boolean;
   onClose: () => void;
   shipment: Shipment | null;
+  /** Cuántas cajas físicas y de qué tamaño: se cargan en la lista y se pasan. */
+  boxes: ShipmentBox[];
   suppliers: Supplier[];
   accounts: Account[];
   envioCategoryId: string | null;
@@ -339,6 +342,9 @@ export default function ShipmentDetailModal({
     });
   };
 
+  const totalCajas = boxes.reduce((a, b) => a + Number(b.quantity), 0);
+  const detalleCajas = boxes.map((b) => `${b.quantity} ${b.size}`).join(', ');
+
   const missing = items.filter(
     (i) => !i.is_received || (i.pieces != null && (i.received_pieces ?? 0) < i.pieces),
   );
@@ -375,6 +381,12 @@ export default function ShipmentDetailModal({
           {isReceived && (
             <span className="text-slate-600">
               <span className="text-slate-400">Llegó:</span> {formatDate(shipment.received_date)}
+            </span>
+          )}
+          {totalCajas > 0 && (
+            <span className="text-slate-600">
+              <span className="text-slate-400">Cajas:</span> {totalCajas}
+              {detalleCajas && <span className="text-slate-400"> ({detalleCajas})</span>}
             </span>
           )}
         </div>

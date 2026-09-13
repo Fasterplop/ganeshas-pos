@@ -1,5 +1,6 @@
 -- ============================================================================
--- MODULO DE FINANZAS - simplificar la caja y agregar la categoria Suscripciones.
+-- MODULO DE FINANZAS - simplificar la caja, contar las cajas fisicas y agregar
+-- la categoria Suscripciones.
 --
 -- Por que: al usarlo, la mitad de los campos de una caja no se llenaban nunca.
 -- El dueno no lleva numeracion de cajas ni pesa la mercancia; lo que necesita
@@ -9,8 +10,11 @@
 --
 -- Que se quita de fin_shipments: box_number, courier, eta_date, pieces, weight
 -- y weight_unit.
--- Que se queda: alias (pasa a ser EL nombre de la caja), status, tracking_code,
+-- Que se queda: alias (pasa a ser EL nombre del envio), status, tracking_code,
 -- sent_date, received_date, document_path y notes.
+--
+-- Que se AGREGA: fin_shipment_boxes, porque un envio son varias cajas fisicas
+-- de distinto tamano ("2 grandes y 1 mediana") y eso si hacia falta.
 --
 -- received_date NO se quita: deja de pedirse al crear, pero se sigue guardando
 -- sola cuando se marca la caja como recibida. Esa parte es justamente la que
@@ -82,7 +86,65 @@ CREATE INDEX IF NOT EXISTS idx_fin_shipments_incoming
 
 
 -- ----------------------------------------------------------------------------
--- 5) Categoria nueva: Suscripciones (YouTube, Spotify, herramientas...).
+-- 5) Cuantas cajas fisicas van en el envio y de que tamano.
+--
+-- !! Esta tabla nace con RLS por el event trigger `ensure_rls`. Sin las cuatro
+-- politicas de abajo quedaria BLOQUEADA para todos y la app mostraria la lista
+-- vacia SIN ERROR. Por eso van en el mismo bloque.
+-- ----------------------------------------------------------------------------
+-- Es una tabla y no una columna porque un envio lleva varios tamanos a la vez
+-- ("2 grandes y 1 mediana"), y asi se puede sumar por tamano en los reportes
+-- sin parsear texto. El total de cajas NO se guarda: se suma de aqui, para no
+-- tener dos numeros que puedan contradecirse.
+--
+-- `size` es texto libre a proposito: la app sugiere los tamanos habituales,
+-- pero el courier de turno puede tener los suyos.
+CREATE TABLE IF NOT EXISTS public.fin_shipment_boxes (
+  id          uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shipment_id uuid NOT NULL,
+  size        text NOT NULL,
+  quantity    integer NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  sort_order  integer NOT NULL DEFAULT 0,
+  CONSTRAINT fin_shipment_boxes_pkey PRIMARY KEY (id),
+  CONSTRAINT fin_shipment_boxes_shipment_fkey
+    FOREIGN KEY (shipment_id) REFERENCES public.fin_shipments(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_fin_shipment_boxes_shipment
+  ON public.fin_shipment_boxes (shipment_id);
+
+DO $rlsbox$
+DECLARE
+  t text := 'fin_shipment_boxes';
+BEGIN
+  EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_select_owner', t);
+  EXECUTE format(
+    'CREATE POLICY %I ON public.%I FOR SELECT TO authenticated USING (public.fin_is_owner())',
+    t || '_select_owner', t);
+
+  EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_insert_owner', t);
+  EXECUTE format(
+    'CREATE POLICY %I ON public.%I FOR INSERT TO authenticated WITH CHECK (public.fin_is_owner())',
+    t || '_insert_owner', t);
+
+  EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_update_owner', t);
+  EXECUTE format(
+    'CREATE POLICY %I ON public.%I FOR UPDATE TO authenticated USING (public.fin_is_owner()) WITH CHECK (public.fin_is_owner())',
+    t || '_update_owner', t);
+
+  EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_delete_owner', t);
+  EXECUTE format(
+    'CREATE POLICY %I ON public.%I FOR DELETE TO authenticated USING (public.fin_is_owner())',
+    t || '_delete_owner', t);
+
+  -- Recien ahora, con las cuatro politicas ya puestas.
+  EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+END
+$rlsbox$;
+
+
+-- ----------------------------------------------------------------------------
+-- 6) Categoria nueva: Suscripciones (YouTube, Spotify, herramientas...).
 --
 -- Se inserta como las de la semilla del 01 y con el mismo criterio: si ya
 -- existe una con ese nombre, no se toca.
@@ -115,11 +177,12 @@ $cat$;
 -- VERIFICACION.
 --
 -- `columnas_de_caja` no debe traer box_number, courier, eta_date, pieces,
--- weight ni weight_unit. `suscripciones` debe ser 1. Y las cajas que ya
--- existian deben conservar su nombre en `cajas`.
+-- weight ni weight_unit. `suscripciones` debe ser 1. `cajas_fisicas` debe
+-- salir con rls_activa = true y politicas = 4: si sale en 0, esa tabla queda
+-- muda y la app no mostraria los tamanos, sin dar ningun error.
 --
--- PROBAR DESPUES: /finanzas/cajas -> crear una caja nueva (solo pide nombre,
--- fecha, guia y notas), abrirla y marcarla como recibida.
+-- PROBAR DESPUES: /finanzas/cajas -> crear un envio nuevo (pide nombre, fecha,
+-- guia, notas y cuantas cajas de cada tamano), abrirlo y marcarlo recibido.
 -- ----------------------------------------------------------------------------
 SELECT jsonb_pretty(jsonb_build_object(
   'columnas_de_caja', (
@@ -128,6 +191,16 @@ SELECT jsonb_pretty(jsonb_build_object(
      WHERE table_schema = 'public' AND table_name = 'fin_shipments'
   ),
   'suscripciones', (SELECT COUNT(*) FROM public.fin_categories WHERE lower(name) = 'suscripciones'),
+  'cajas_fisicas', (
+    SELECT jsonb_build_object(
+             'rls_activa', c.relrowsecurity,
+             'politicas',  (SELECT COUNT(*) FROM pg_policies p
+                             WHERE p.schemaname = 'public' AND p.tablename = 'fin_shipment_boxes')
+           )
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relname = 'fin_shipment_boxes'
+  ),
   'cajas', (
     SELECT COALESCE(jsonb_agg(jsonb_build_object('nombre', alias, 'estado', status) ORDER BY created_at), '[]'::jsonb)
       FROM public.fin_shipments

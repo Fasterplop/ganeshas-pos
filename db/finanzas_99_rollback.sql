@@ -26,6 +26,7 @@ DROP VIEW IF EXISTS public.fin_v_supplier_balance;
 DROP VIEW IF EXISTS public.fin_v_account_balance;
 
 DROP TABLE IF EXISTS public.fin_payments        CASCADE;
+DROP TABLE IF EXISTS public.fin_shipment_boxes  CASCADE;
 DROP TABLE IF EXISTS public.fin_shipment_items  CASCADE;
 DROP TABLE IF EXISTS public.fin_purchase_lines  CASCADE;
 DROP TABLE IF EXISTS public.fin_budgets         CASCADE;

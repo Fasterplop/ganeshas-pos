@@ -232,6 +232,29 @@ CREATE INDEX IF NOT EXISTS idx_fin_shipment_items_shipment
 CREATE INDEX IF NOT EXISTS idx_fin_shipment_items_expense
   ON public.fin_shipment_items (expense_id);
 
+-- Cuantas cajas fisicas van en el envio y de que tamano.
+--
+-- Es una tabla y no una columna porque un envio lleva varios tamanos a la vez
+-- ("2 grandes y 1 mediana"), y asi se puede sumar por tamano en los reportes
+-- sin parsear texto. El total de cajas NO se guarda: se suma de aqui, para no
+-- tener dos numeros que puedan contradecirse.
+--
+-- `size` es texto libre a proposito: la app sugiere los tamanos habituales,
+-- pero el courier de turno puede tener los suyos.
+CREATE TABLE IF NOT EXISTS public.fin_shipment_boxes (
+  id          uuid NOT NULL DEFAULT uuid_generate_v4(),
+  shipment_id uuid NOT NULL,
+  size        text NOT NULL,
+  quantity    integer NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  sort_order  integer NOT NULL DEFAULT 0,
+  CONSTRAINT fin_shipment_boxes_pkey PRIMARY KEY (id),
+  CONSTRAINT fin_shipment_boxes_shipment_fkey
+    FOREIGN KEY (shipment_id) REFERENCES public.fin_shipments(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_fin_shipment_boxes_shipment
+  ON public.fin_shipment_boxes (shipment_id);
+
 
 -- ----------------------------------------------------------------------------
 -- BLOQUE 3 - Egresos, lineas, pagos y presupuesto.
@@ -489,7 +512,7 @@ UPDATE public.fin_expenses e
 -- ----------------------------------------------------------------------------
 -- BLOQUE 4 - RLS: el dueno y nadie mas.  [OBLIGATORIO]
 --
--- Son 9 tablas x 4 verbos = 36 politicas. Se generan en bucle a proposito:
+-- Son 10 tablas x 4 verbos = 40 politicas. Se generan en bucle a proposito:
 -- escritas a mano, olvidar UNA deja esa tabla muda y sin error visible, que es
 -- exactamente el bug que este bloque existe para evitar. El bucle hace
 -- imposible que una tabla de la lista se quede sin sus cuatro politicas.
@@ -524,7 +547,7 @@ DECLARE
   t text;
   tablas text[] := ARRAY[
     'fin_suppliers', 'fin_categories', 'fin_accounts',
-    'fin_shipments', 'fin_shipment_items',
+    'fin_shipments', 'fin_shipment_items', 'fin_shipment_boxes',
     'fin_expenses', 'fin_purchase_lines', 'fin_payments', 'fin_budgets'
   ];
 BEGIN
@@ -655,7 +678,7 @@ SELECT b.category_id,
 -- VERIFICACION. Devuelve una sola celda JSON (el editor de Supabase solo
 -- muestra el ultimo SELECT).
 --
--- Las 9 tablas fin_* deben salir TODAS con rls_activa = true y politicas = 4.
+-- Las 10 tablas fin_* deben salir TODAS con rls_activa = true y politicas = 4.
 -- Si alguna sale con politicas = 0, esa tabla esta muda: la app no vera ni una
 -- fila y no habra ningun error en consola.
 -- ----------------------------------------------------------------------------
