@@ -4,12 +4,16 @@
 //
 // POR QUÉ NO ES UNA COLUMNA DE fin_shipments: el flete es dinero que sale, y el
 // dinero del módulo tiene UN solo camino, `fin_expenses`. Guardarlo en la caja
-// abriría un segundo camino que no entra al gasto del mes, ni al calendario, ni
-// al saldo de la cuenta. Aquí es un egreso con kind='envio' y shipment_id
+// abriría un segundo camino que no entra al gasto del mes ni al calendario. Aquí
+// es un egreso con kind='envio' y shipment_id
 // apuntando a la caja: el "costo real por caja" es la suma de sus fletes.
 //
 // Una caja puede tener más de uno (el courier y después la aduana), por eso es
 // una lista y no un campo.
+//
+// El flete NO descuenta del saldo de la cuenta con que se pagó: la cuenta queda
+// anotada como información, igual que en los gastos operativos. Solo las
+// compras a proveedores mueven saldos (db/finanzas_06_fletes_no_restan.sql).
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
@@ -343,7 +347,11 @@ export default function ShipmentCostSection({
           </label>
 
           {paid ? (
-            <FinField label="Con qué cuenta se pagó" required>
+            <FinField
+              label="Con qué cuenta se pagó"
+              required
+              hint="Solo para tenerlo anotado: un flete no descuenta del saldo de la cuenta."
+            >
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
                 <option value="">Selecciona…</option>
                 {usable.map((a) => (

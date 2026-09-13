@@ -353,9 +353,10 @@ export default function ExpensePaymentsModal({
             cuenta con la misma fecha.
           </p>
 
-          {current.kind === 'gasto' && (
+          {(current.kind === 'gasto' || current.kind === 'envio') && (
             <p className="text-xs text-slate-500">
-              La cuenta queda anotada como información: los gastos operativos{' '}
+              La cuenta queda anotada como información:{' '}
+              {current.kind === 'gasto' ? 'los gastos operativos' : 'los fletes'}{' '}
               <strong>no descuentan del saldo</strong>. Para mover un saldo, usa el botón de la
               pestaña Cuentas.
             </p>

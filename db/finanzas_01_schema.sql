@@ -660,11 +660,12 @@ $rls$;
 -- pago.
 --
 -- Que mueve el saldo y que no:
---   - Compras a proveedores y fletes: SI. Ahi importa cuanto queda en la
---     tarjeta.
---   - Gastos operativos: NO. La seccion de Gastos es para llevar la cuenta de
---     en que se va el dinero; guarda con que cuenta se pago como informacion,
---     pero no toca el saldo.
+--   - Compras a proveedores: SI. Ahi importa cuanto queda en la tarjeta.
+--   - Gastos operativos y fletes de las cajas: NO. Guardan con que cuenta se
+--     pagaron como informacion, pero no tocan el saldo
+--     (db/finanzas_06_fletes_no_restan.sql). Se filtra `= 'compra'` y no
+--     "todo menos gastos": un tipo de egreso nuevo, por defecto, no mueve
+--     saldos.
 --   - Abonos y cargos manuales (fin_account_movements): SI. Es como el dueno
 --     baja la deuda de una tarjeta.
 -- OJO: va un DROP antes del CREATE, no basta con CREATE OR REPLACE.
@@ -682,7 +683,7 @@ WITH pagos AS (
   SELECT p.account_id, SUM(p.amount_usd) AS total
     FROM public.fin_payments p
     JOIN public.fin_expenses e ON e.id = p.expense_id
-   WHERE e.kind <> 'gasto'
+   WHERE e.kind = 'compra'
    GROUP BY p.account_id
 ), manuales AS (
   SELECT account_id,
