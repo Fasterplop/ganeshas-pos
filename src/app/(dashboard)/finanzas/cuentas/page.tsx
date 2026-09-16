@@ -21,6 +21,8 @@ import {
   EmptyState,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -218,7 +220,7 @@ export default function CuentasPage() {
               <tr>
                 <th className="text-left font-semibold px-3 sm:px-4 py-3">Cuenta</th>
                 <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Tipo</th>
-                <th className="text-right font-semibold px-3 sm:px-4 py-3">
+                <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">
                   {isCardTable ? 'Consumo' : 'Saldo'}
                 </th>
                 {isCardTable && (
@@ -235,7 +237,7 @@ export default function CuentasPage() {
                 {!isCardTable && (
                   <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Desde</th>
                 )}
-                <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -244,6 +246,25 @@ export default function CuentasPage() {
                 const saldo = Number(b?.balance_usd ?? a.opening_balance_usd ?? 0);
                 const disp = b?.available_usd;
                 const sobregiro = a.credit_limit_usd != null && disp != null && disp < 0;
+                const acciones = (
+                  <>
+                    <button className={btnPrimary} onClick={() => setMoving(a)}>
+                      {isCardTable ? 'Abonar' : 'Movimiento'}
+                    </button>
+                    <button
+                      className={btnSecondary}
+                      onClick={() => {
+                        setEditing(a);
+                        setModalOpen(true);
+                      }}
+                    >
+                      Editar
+                    </button>
+                    <button className={btnSecondary} onClick={() => toggleActive(a)}>
+                      {a.is_active ? 'Desactivar' : 'Reactivar'}
+                    </button>
+                  </>
+                );
                 return (
                   <tr key={a.id} className={`hover:bg-slate-50 ${!a.is_active ? 'opacity-55' : ''}`}>
                     <td className="px-3 sm:px-4 py-3">
@@ -261,12 +282,27 @@ export default function CuentasPage() {
                           Inactiva
                         </span>
                       )}
+                      <MobileAmount
+                        label={isCardTable ? 'Consumo' : 'Saldo'}
+                        value={fmtUSD(saldo)}
+                        className={
+                          isCardTable ? 'text-slate-800' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'
+                        }
+                      />
+                      {isCardTable && disp != null && (
+                        <MobileAmount
+                          label="Disponible"
+                          value={fmtUSD(disp)}
+                          className={sobregiro ? 'text-red-600' : 'text-emerald-700'}
+                        />
+                      )}
+                      <RowActions mobile>{acciones}</RowActions>
                     </td>
                     <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                       {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
                     </td>
                     <td
-                      className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
+                      className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                         isCardTable ? 'text-slate-800' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'
                       }`}
                     >
@@ -294,27 +330,8 @@ export default function CuentasPage() {
                         {formatDate(a.opening_balance_date)}
                       </td>
                     )}
-                    <td className="px-3 sm:px-4 py-3">
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <button className={btnPrimary} onClick={() => setMoving(a)}>
-                          {isCardTable ? 'Abonar' : 'Movimiento'}
-                        </button>
-                        <button
-                          className={`${btnSecondary} hidden sm:inline-block`}
-                          onClick={() => {
-                            setEditing(a);
-                            setModalOpen(true);
-                          }}
-                        >
-                          Editar
-                        </button>
-                        <button
-                          className={`${btnSecondary} hidden sm:inline-block`}
-                          onClick={() => toggleActive(a)}
-                        >
-                          {a.is_active ? 'Desactivar' : 'Reactivar'}
-                        </button>
-                      </div>
+                    <td className="px-4 py-3 hidden sm:table-cell">
+                      <RowActions>{acciones}</RowActions>
                     </td>
                   </tr>
                 );

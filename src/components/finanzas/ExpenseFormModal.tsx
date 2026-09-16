@@ -471,7 +471,7 @@ export default function ExpenseFormModal({
                     }
                   }}
                   placeholder="Nombre de la marca"
-                  className={inputClass}
+                  className={`${inputClass} min-w-0`}
                   autoFocus
                 />
                 <button onClick={createSupplierInline} disabled={busy} className={btnPrimary}>
@@ -486,7 +486,7 @@ export default function ExpenseFormModal({
                 <select
                   value={supplierId}
                   onChange={(e) => onSupplierChange(e.target.value)}
-                  className={inputClass}
+                  className={`${inputClass} min-w-0`}
                 >
                   <option value="">Selecciona…</option>
                   {suppliers
@@ -704,7 +704,10 @@ export default function ExpenseFormModal({
                   se enlaza con el catálogo de productos.
                 </p>
                 {lines.map((l, i) => (
-                  <div key={l.key} className="grid grid-cols-[1fr_70px_90px_auto] gap-2">
+                  <div
+                    key={l.key}
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_70px_90px_auto] gap-2"
+                  >
                     <input
                       value={l.description}
                       onChange={(e) =>
@@ -713,7 +716,7 @@ export default function ExpenseFormModal({
                         )
                       }
                       placeholder="10 blusas talla M"
-                      className={inputClass}
+                      className={`${inputClass} col-span-3 sm:col-span-1`}
                     />
                     <input
                       type="number"

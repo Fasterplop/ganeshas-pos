@@ -63,6 +63,7 @@ export default function ShipmentDetailModal({
   accounts,
   envioCategoryId,
   onShipmentChanged,
+  onEdit,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -73,6 +74,8 @@ export default function ShipmentDetailModal({
   accounts: Account[];
   envioCategoryId: string | null;
   onShipmentChanged: (shipment: Shipment) => void;
+  /** Abre el formulario de la caja: nombre, estado, cajas físicas y notas. */
+  onEdit?: () => void;
 }) {
   const supabase = useMemo(() => createClient(), []);
 
@@ -444,7 +447,7 @@ export default function ShipmentDetailModal({
                     <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">Compra</th>
                     <th className="text-center font-semibold px-2 sm:px-3 py-2 w-14 sm:w-20">Pzs</th>
                     {(receiving || isReceived) && (
-                      <th className="text-center font-semibold px-3 py-2 w-36">Llegó</th>
+                      <th className="text-center font-semibold px-2 sm:px-3 py-2 sm:w-36">Llegó</th>
                     )}
                     {!receiving && <th className="px-3 py-2 w-10" />}
                   </tr>
@@ -457,6 +460,54 @@ export default function ShipmentDetailModal({
                       (item.received_pieces ?? 0) < item.pieces &&
                       item.is_received;
                     const exp = purchaseOf(item.expense_id);
+                    const compra = (
+                      <>
+                        {linking === item.id ? (
+                          <LinkEditor
+                            item={item}
+                            purchases={purchases.filter(
+                              (p) => !item.supplier_id || p.supplier_id === item.supplier_id,
+                            )}
+                            onCancel={() => setLinking(null)}
+                            onSave={(expenseId, amount) => linkToPurchase(item, expenseId, amount)}
+                          />
+                        ) : exp ? (
+                          <div>
+                            <div className="text-slate-700">
+                              {formatDate(exp.expense_date)} · {fmtUSD(exp.amount_usd)}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {item.allocated_usd != null
+                                ? `${fmtUSD(item.allocated_usd)} en esta caja`
+                                : 'sin repartir'}
+                              {!receiving && (
+                                <button
+                                  onClick={() => setLinking(item.id)}
+                                  className="ml-2 text-teal-700 hover:underline cursor-pointer"
+                                >
+                                  cambiar
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : receiving ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <button
+                            onClick={() => setLinking(item.id)}
+                            className="text-xs text-teal-700 hover:underline cursor-pointer"
+                            disabled={purchases.length === 0}
+                            title={
+                              purchases.length === 0
+                                ? 'Todavía no hay compras registradas'
+                                : undefined
+                            }
+                          >
+                            Enlazar a compra
+                          </button>
+                        )}
+                      </>
+                    );
                     return (
                       <tr key={item.id} className="hover:bg-slate-50 align-top">
                         <td className="px-2 sm:px-3 py-2 text-slate-600 hidden sm:table-cell">
@@ -469,62 +520,20 @@ export default function ShipmentDetailModal({
                               {supplierName(item.supplier_id)}
                             </div>
                           )}
-                        </td>
-
-                        <td className="px-3 py-2 hidden md:table-cell">
-                          {linking === item.id ? (
-                            <LinkEditor
-                              item={item}
-                              purchases={purchases.filter(
-                                (p) => !item.supplier_id || p.supplier_id === item.supplier_id,
-                              )}
-                              onCancel={() => setLinking(null)}
-                              onSave={(expenseId, amount) => linkToPurchase(item, expenseId, amount)}
-                            />
-                          ) : exp ? (
-                            <div>
-                              <div className="text-slate-700">
-                                {formatDate(exp.expense_date)} · {fmtUSD(exp.amount_usd)}
-                              </div>
-                              <div className="text-xs text-slate-400">
-                                {item.allocated_usd != null
-                                  ? `${fmtUSD(item.allocated_usd)} en esta caja`
-                                  : 'sin repartir'}
-                                {!receiving && (
-                                  <button
-                                    onClick={() => setLinking(item.id)}
-                                    className="ml-2 text-teal-700 hover:underline cursor-pointer"
-                                  >
-                                    cambiar
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          ) : receiving ? (
-                            <span className="text-slate-300">—</span>
-                          ) : (
-                            <button
-                              onClick={() => setLinking(item.id)}
-                              className="text-xs text-teal-700 hover:underline cursor-pointer"
-                              disabled={purchases.length === 0}
-                              title={
-                                purchases.length === 0
-                                  ? 'Todavía no hay compras registradas'
-                                  : undefined
-                              }
-                            >
-                              Enlazar a compra
-                            </button>
+                          {!(receiving && !exp) && (
+                            <div className="md:hidden mt-1 text-xs">{compra}</div>
                           )}
                         </td>
+
+                        <td className="px-3 py-2 hidden md:table-cell">{compra}</td>
 
                         <td className="px-2 sm:px-3 py-2 text-center text-slate-600">
                           {item.pieces ?? '—'}
                         </td>
 
                         {receiving && (
-                          <td className="px-3 py-2">
-                            <div className="flex items-center justify-center gap-2">
+                          <td className="px-2 sm:px-3 py-2">
+                            <div className="flex items-center justify-center gap-1.5 sm:gap-2">
                               <input
                                 type="checkbox"
                                 checked={d?.ok ?? false}
@@ -548,7 +557,7 @@ export default function ShipmentDetailModal({
                                     [item.id]: { ok: p[item.id]?.ok ?? false, got: e.target.value },
                                   }))
                                 }
-                                className={`${inputClass} w-20 py-1 text-center`}
+                                className={`${inputClass} w-14 sm:w-20 px-1 py-1 text-center`}
                               />
                             </div>
                           </td>
@@ -636,7 +645,7 @@ export default function ShipmentDetailModal({
                   }
                 }}
                 placeholder="10 blusas talla M"
-                className={inputClass}
+                className={`${inputClass} col-span-2 sm:col-span-1`}
               />
               <input
                 type="number"
@@ -662,7 +671,12 @@ export default function ShipmentDetailModal({
                     : 'Solo aplica si enlazas la línea a una compra'
                 }
               />
-              <button type="button" onClick={addItem} disabled={busy} className={btnSecondary}>
+              <button
+                type="button"
+                onClick={addItem}
+                disabled={busy}
+                className={`${btnSecondary} col-span-2 sm:col-span-1`}
+              >
                 Agregar
               </button>
             </div>
@@ -708,12 +722,12 @@ export default function ShipmentDetailModal({
                   className={inputClass}
                 />
               </div>
-              <p className="text-xs text-slate-500 flex-1 min-w-[220px]">
+              <p className="text-xs text-slate-500 flex-1 basis-full sm:basis-auto sm:min-w-[220px]">
                 Marca lo que llegó y cuántas piezas. Si algo falta, la caja queda como
                 <strong> recibida incompleta</strong> con el faltante a la vista.
               </p>
             </div>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button onClick={() => setReceiving(false)} className={btnSecondary} disabled={busy}>
                 Cancelar
               </button>
@@ -723,10 +737,15 @@ export default function ShipmentDetailModal({
             </div>
           </div>
         ) : (
-          <div className="border-t border-slate-200 pt-4 flex justify-end gap-2">
+          <div className="border-t border-slate-200 pt-4 flex flex-wrap justify-end gap-2">
             <button onClick={onClose} className={btnSecondary}>
               Cerrar
             </button>
+            {onEdit && (
+              <button onClick={onEdit} className={btnSecondary}>
+                Editar caja
+              </button>
+            )}
             <button onClick={startReceiving} className={isReceived ? btnDanger : btnPrimary}>
               {isReceived ? 'Corregir recepción' : 'Recibir caja'}
             </button>
@@ -753,7 +772,7 @@ function LinkEditor({
   const [amount, setAmount] = useState(item.allocated_usd != null ? String(item.allocated_usd) : '');
 
   return (
-    <div className="space-y-1.5 min-w-[220px]">
+    <div className="space-y-1.5 w-full sm:min-w-[220px]">
       <select value={expenseId} onChange={(e) => setExpenseId(e.target.value)} className={`${inputClass} py-1`}>
         <option value="">Sin enlazar</option>
         {purchases.map((p) => (

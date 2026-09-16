@@ -208,6 +208,79 @@ export const btnDanger =
   'bg-white hover:bg-red-50 text-red-600 font-medium px-3 sm:px-4 py-2 rounded-lg text-sm ' +
   'whitespace-nowrap border border-red-200 transition-colors disabled:opacity-50 cursor-pointer';
 
+/**
+ * Botones de una fila de tabla.
+ *
+ * Desde tablet van en su propia columna. En el teléfono esa columna se oculta
+ * (`hidden sm:table-cell`) y los MISMOS botones se repiten debajo de la fila,
+ * a todo el ancho, con `mobile`. Así ninguna acción queda escondida ni fuera
+ * de la pantalla: antes, Editar no existía en el teléfono.
+ */
+export function RowActions({
+  mobile = false,
+  onDelete,
+  deleteLabel = 'Eliminar',
+  children,
+}: {
+  mobile?: boolean;
+  onDelete?: () => void;
+  deleteLabel?: string;
+  children?: ReactNode;
+}) {
+  if (mobile) {
+    return (
+      <div className="sm:hidden mt-3 flex flex-wrap gap-2 *:flex-auto">
+        {children}
+        {onDelete && (
+          <button className={btnDanger} onClick={onDelete}>
+            {deleteLabel}
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {children}
+      {onDelete && (
+        <button
+          className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
+          onClick={onDelete}
+          title={deleteLabel}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * El monto de una fila en el teléfono. Ahí la columna del monto se oculta y
+ * la fila queda en una sola columna, para que los botones tengan todo el ancho.
+ */
+export function MobileAmount({
+  label,
+  value,
+  className = 'text-slate-800',
+  sub,
+}: {
+  label: string;
+  value: ReactNode;
+  className?: string;
+  sub?: ReactNode;
+}) {
+  return (
+    <div className="sm:hidden mt-1.5 flex items-baseline justify-between gap-3">
+      <span className="text-xs text-slate-400">{label}</span>
+      <span className={`font-bold whitespace-nowrap ${className}`}>
+        {value}
+        {sub && <span className="ml-1 text-[11px] font-normal text-slate-400">{sub}</span>}
+      </span>
+    </div>
+  );
+}
+
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="text-center py-16 px-6">

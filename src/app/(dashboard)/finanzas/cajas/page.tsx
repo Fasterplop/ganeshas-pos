@@ -31,6 +31,7 @@ import {
   SHIPMENT_STATUS_LABEL,
   btnPrimary,
   btnSecondary,
+  RowActions,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
@@ -270,6 +271,9 @@ export default function CajasPage() {
       isNew ? [saved, ...prev] : prev.map((s) => (s.id === saved.id ? saved : s)),
     );
     if (detail?.id === saved.id) setDetail(saved);
+    // Las cajas físicas se guardan aparte (fin_shipment_boxes): sin recargar,
+    // la lista seguiría mostrando las de antes de editar.
+    load();
     setNotice({
       type: 'success',
       text: isNew ? `Caja "${saved.alias}" creada.` : `"${saved.alias}" actualizada.`,
@@ -522,7 +526,7 @@ export default function CajasPage() {
                     </th>
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Guía</th>
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Fechas</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -531,6 +535,22 @@ export default function CajasPage() {
                     const brands = brandsOf(s.id);
                     const costo = costByShipment.get(s.id) ?? 0;
                     const cajas = boxesOf(s.id);
+                    const acciones = (
+                      <>
+                        <button className={btnSecondary} onClick={() => setDetail(s)}>
+                          Contenido
+                        </button>
+                        <button
+                          className={btnSecondary}
+                          onClick={() => {
+                            setEditing(s);
+                            setFormOpen(true);
+                          }}
+                        >
+                          Editar
+                        </button>
+                      </>
+                    );
                     return (
                       <tr key={s.id} className="hover:bg-slate-50 align-top">
                         <td className="px-3 sm:px-4 py-3">
@@ -561,6 +581,9 @@ export default function CajasPage() {
                               {costo > 0 && ` · Envío ${fmtUSD(costo)}`}
                             </div>
                           </div>
+                          <RowActions mobile onDelete={() => deleteShipment(s)}>
+                            {acciones}
+                          </RowActions>
 
                           <div className="hidden sm:block md:hidden text-xs text-slate-500 mt-1">
                             {list.length > 0
@@ -619,28 +642,10 @@ export default function CajasPage() {
                           )}
                         </td>
 
-                        <td className="px-3 sm:px-4 py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button className={btnSecondary} onClick={() => setDetail(s)}>
-                              Contenido
-                            </button>
-                            <button
-                              className={btnSecondary}
-                              onClick={() => {
-                                setEditing(s);
-                                setFormOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
-                              onClick={() => deleteShipment(s)}
-                              title="Eliminar caja"
-                            >
-                              ✕
-                            </button>
-                          </div>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <RowActions onDelete={() => deleteShipment(s)} deleteLabel="Eliminar caja">
+                            {acciones}
+                          </RowActions>
                         </td>
                       </tr>
                     );
@@ -667,6 +672,12 @@ export default function CajasPage() {
         }}
         shipment={detail}
         boxes={detail ? (boxesByShipment.get(detail.id) ?? []) : []}
+        onEdit={() => {
+          if (!detail) return;
+          setEditing(detail);
+          setDetail(null);
+          setFormOpen(true);
+        }}
         suppliers={suppliers}
         accounts={accounts}
         envioCategoryId={envioCategoryId}

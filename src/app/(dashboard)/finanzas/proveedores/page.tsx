@@ -21,6 +21,8 @@ import {
   DueBadge,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
@@ -247,15 +249,34 @@ export default function ProveedoresPage() {
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">
                       Condiciones
                     </th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
                     <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Vence</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visible.map((s) => {
                     const b = bal(s.id);
                     const saldo = Number(b?.balance_usd ?? 0);
+                    const acciones = (
+                      <>
+                        <button className={btnSecondary} onClick={() => setStatement(s)}>
+                          Estado de cuenta
+                        </button>
+                        <button
+                          className={btnSecondary}
+                          onClick={() => {
+                            setEditing(s);
+                            setModalOpen(true);
+                          }}
+                        >
+                          Editar
+                        </button>
+                        <button className={btnSecondary} onClick={() => toggleActive(s)}>
+                          {s.is_active ? 'Desactivar' : 'Reactivar'}
+                        </button>
+                      </>
+                    );
                     return (
                       <tr key={s.id} className={`hover:bg-slate-50 ${!s.is_active ? 'opacity-55' : ''}`}>
                         <td className="px-3 sm:px-4 py-3">
@@ -282,6 +303,15 @@ export default function ProveedoresPage() {
                               Inactivo
                             </span>
                           )}
+                          {saldo > 0 && b && (
+                            <MobileAmount
+                              label="Le debes"
+                              value={fmtUSD(saldo)}
+                              className="text-red-600"
+                              sub={`${b.open_invoices} ${b.open_invoices === 1 ? 'factura' : 'facturas'}`}
+                            />
+                          )}
+                          <RowActions mobile>{acciones}</RowActions>
                         </td>
                         <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                           {s.contact_name || '—'}
@@ -291,7 +321,7 @@ export default function ProveedoresPage() {
                           {PAYMENT_TERMS_LABEL[s.payment_terms] ?? s.payment_terms}
                         </td>
                         <td
-                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
+                          className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                             saldo > 0 ? 'text-red-600' : 'text-slate-300'
                           }`}
                         >
@@ -309,28 +339,8 @@ export default function ProveedoresPage() {
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        <td className="px-3 sm:px-4 py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button className={btnSecondary} onClick={() => setStatement(s)}>
-                              <span className="sm:hidden">Cuenta</span>
-                              <span className="hidden sm:inline">Estado de cuenta</span>
-                            </button>
-                            <button
-                              className={`${btnSecondary} hidden sm:inline-block`}
-                              onClick={() => {
-                                setEditing(s);
-                                setModalOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className={`${btnSecondary} hidden lg:inline-block`}
-                              onClick={() => toggleActive(s)}
-                            >
-                              {s.is_active ? 'Desactivar' : 'Reactivar'}
-                            </button>
-                          </div>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <RowActions>{acciones}</RowActions>
                         </td>
                       </tr>
                     );

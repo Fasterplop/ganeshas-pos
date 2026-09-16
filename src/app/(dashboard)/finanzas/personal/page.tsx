@@ -22,6 +22,8 @@ import {
   DueBadge,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
@@ -321,11 +323,11 @@ export default function PersonalPage() {
                   <tr>
                     <th className="text-left font-semibold px-3 sm:px-4 py-3">Cuenta</th>
                     <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Tipo</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
                     <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">
                       Disponible
                     </th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -333,6 +335,22 @@ export default function PersonalPage() {
                     const b = balances.get(a.id);
                     const saldo = Number(b?.balance_usd ?? a.opening_balance_usd ?? 0);
                     const card = a.kind === 'tarjeta_credito';
+                    const acciones = (
+                      <>
+                        <button
+                          className={btnSecondary}
+                          onClick={() => {
+                            setEditingAccount(a);
+                            setAccountOpen(true);
+                          }}
+                        >
+                          Editar
+                        </button>
+                        <button className={btnSecondary} onClick={() => toggleAccount(a)}>
+                          {a.is_active ? 'Desactivar' : 'Reactivar'}
+                        </button>
+                      </>
+                    );
                     return (
                       <tr key={a.id} className={`hover:bg-slate-50 ${!a.is_active ? 'opacity-55' : ''}`}>
                         <td className="px-3 sm:px-4 py-3">
@@ -342,12 +360,21 @@ export default function PersonalPage() {
                           <div className="md:hidden text-xs text-slate-500 mt-0.5">
                             {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
                           </div>
+                          <MobileAmount
+                            label={card ? 'Consumo' : 'Saldo'}
+                            value={fmtUSD(saldo)}
+                            className={card ? 'text-amber-700' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'}
+                          />
+                          {b?.available_usd != null && (
+                            <MobileAmount label="Disponible" value={fmtUSD(b.available_usd)} className="text-slate-600" />
+                          )}
+                          <RowActions mobile>{acciones}</RowActions>
                         </td>
                         <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
                           {ACCOUNT_KIND_LABEL[a.kind] ?? a.kind}
                         </td>
                         <td
-                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
+                          className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                             card ? 'text-amber-700' : saldo < 0 ? 'text-red-600' : 'text-emerald-700'
                           }`}
                         >
@@ -356,24 +383,8 @@ export default function PersonalPage() {
                         <td className="px-4 py-3 text-right text-slate-600 hidden sm:table-cell">
                           {b?.available_usd != null ? fmtUSD(b.available_usd) : '—'}
                         </td>
-                        <td className="px-3 sm:px-4 py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button
-                              className={btnSecondary}
-                              onClick={() => {
-                                setEditingAccount(a);
-                                setAccountOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className={`${btnSecondary} hidden sm:inline-block`}
-                              onClick={() => toggleAccount(a)}
-                            >
-                              {a.is_active ? 'Desactivar' : 'Reactivar'}
-                            </button>
-                          </div>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <RowActions>{acciones}</RowActions>
                         </td>
                       </tr>
                     );
@@ -413,16 +424,32 @@ export default function PersonalPage() {
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">
                       Categoría
                     </th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Monto</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Monto</th>
                     <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
                     <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
                     <th className="text-center font-semibold px-4 py-3 hidden lg:table-cell">Vence</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibles.map((e) => {
                     const saldo = saldoDe(e);
+                    const accionesMov = (
+                      <>
+                        <button className={btnSecondary} onClick={() => setPaying(e)}>
+                          Abonos
+                        </button>
+                        <button
+                          className={btnSecondary}
+                          onClick={() => {
+                            setEditingExpense(e);
+                            setExpenseOpen(true);
+                          }}
+                        >
+                          Editar
+                        </button>
+                      </>
+                    );
                     return (
                       <tr key={e.id} className="hover:bg-slate-50 align-top">
                         <td className="px-3 sm:px-4 py-3">
@@ -432,15 +459,17 @@ export default function PersonalPage() {
                             <div className="text-xs text-slate-400">
                               {formatDate(e.expense_date)} · {categoryName(e.category_id)}
                             </div>
-                            {saldo > 0 && (
-                              <div className="text-xs font-semibold text-red-600">
-                                Saldo {fmtUSD(saldo)}
-                              </div>
-                            )}
                           </div>
+                          <MobileAmount label="Monto" value={fmtUSD(e.amount_usd)} />
+                          {saldo > 0 && (
+                            <MobileAmount label="Saldo" value={fmtUSD(saldo)} className="text-red-600" />
+                          )}
                           <div className="hidden sm:block md:hidden text-xs text-slate-400 mt-0.5">
                             {formatDate(e.expense_date)}
                           </div>
+                          <RowActions mobile onDelete={() => removeExpense(e)}>
+                            {accionesMov}
+                          </RowActions>
                         </td>
                         <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
                           {formatDate(e.expense_date)}
@@ -448,7 +477,7 @@ export default function PersonalPage() {
                         <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
                           {categoryName(e.category_id)}
                         </td>
-                        <td className="px-3 sm:px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap">
+                        <td className="px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap hidden sm:table-cell">
                           {fmtUSD(e.amount_usd)}
                         </td>
                         <td
@@ -468,28 +497,8 @@ export default function PersonalPage() {
                             <DueBadge dueDate={e.due_date} />
                           )}
                         </td>
-                        <td className="px-3 sm:px-4 py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button className={btnSecondary} onClick={() => setPaying(e)}>
-                              Abonos
-                            </button>
-                            <button
-                              className={`${btnSecondary} hidden sm:inline-block`}
-                              onClick={() => {
-                                setEditingExpense(e);
-                                setExpenseOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
-                              onClick={() => removeExpense(e)}
-                              title="Eliminar"
-                            >
-                              ✕
-                            </button>
-                          </div>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <RowActions onDelete={() => removeExpense(e)}>{accionesMov}</RowActions>
                         </td>
                       </tr>
                     );

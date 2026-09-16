@@ -68,8 +68,10 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">{actions}</div>
         </div>
 
-        <nav className="mt-5 -mx-1 overflow-x-auto">
-          <div className="flex gap-1 min-w-max border-b border-slate-200 px-1">
+        {/* En teléfono y tablet las ocho pestañas se ven de una vez, en
+            filas: una tira deslizable escondía varias sin que se notara. */}
+        <nav className="mt-5 md:-mx-1 md:overflow-x-auto">
+          <div className="grid grid-cols-3 min-[400px]:grid-cols-4 gap-1.5 md:flex md:gap-1 md:min-w-max md:border-b md:border-slate-200 md:px-1">
             {TABS.map((tab) => {
               const isActive =
                 tab.path === '/finanzas'
@@ -79,10 +81,10 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
                 <Link
                   key={tab.path}
                   href={tab.path}
-                  className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                  className={`text-center rounded-lg border px-1 py-2 text-xs font-medium truncate transition-colors md:rounded-none md:border-0 md:border-b-2 md:-mb-px md:px-4 md:py-2.5 md:text-sm md:whitespace-nowrap ${
                     isActive
-                      ? 'border-teal-700 text-teal-800'
-                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+                      ? 'bg-teal-700 border-teal-700 text-white md:bg-transparent md:text-teal-800'
+                      : 'bg-white border-slate-200 text-slate-600 md:bg-transparent md:border-transparent md:text-slate-500 hover:text-slate-800 md:hover:border-slate-300'
                   }`}
                 >
                   {tab.name}

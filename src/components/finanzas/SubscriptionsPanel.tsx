@@ -24,6 +24,8 @@ import {
   inputClass,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
 } from './ui';
 
 export interface Subscription {
@@ -311,13 +313,23 @@ export default function SubscriptionsPanel({
                   <th className="text-left font-semibold px-3 py-2">Suscripción</th>
                   <th className="text-center font-semibold px-2 py-2 hidden sm:table-cell">Corte</th>
                   <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">Se paga con</th>
-                  <th className="text-right font-semibold px-3 py-2">Al mes</th>
-                  <th className="text-right font-semibold px-3 py-2">Acciones</th>
+                  <th className="text-right font-semibold px-3 py-2 hidden sm:table-cell">Al mes</th>
+                  <th className="text-right font-semibold px-3 py-2 hidden sm:table-cell">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {visibles.map((s) => {
                   const faltan = daysToBilling(s.billing_day);
+                  const acciones = (
+                    <>
+                      <button className={btnSecondary} onClick={() => startEdit(s)}>
+                        Editar
+                      </button>
+                      <button className={btnSecondary} onClick={() => toggle(s)}>
+                        {s.is_active ? 'Cancelar' : 'Reactivar'}
+                      </button>
+                    </>
+                  );
                   return (
                     <tr key={s.id} className={`hover:bg-slate-50 ${!s.is_active ? 'opacity-55' : ''}`}>
                       <td className="px-3 py-2">
@@ -331,6 +343,10 @@ export default function SubscriptionsPanel({
                             Cancelada
                           </span>
                         )}
+                        <MobileAmount label="Al mes" value={fmtUSD(s.amount_usd)} />
+                        <RowActions mobile onDelete={() => remove(s)}>
+                          {acciones}
+                        </RowActions>
                       </td>
                       <td className="px-2 py-2 text-center hidden sm:table-cell">
                         <span className="font-semibold text-slate-700">{s.billing_day}</span>
@@ -345,28 +361,11 @@ export default function SubscriptionsPanel({
                           ? accountLabel(accounts.find((a) => a.id === s.account_id))
                           : '—'}
                       </td>
-                      <td className="px-3 py-2 text-right font-semibold text-slate-800 whitespace-nowrap">
+                      <td className="px-3 py-2 text-right font-semibold text-slate-800 whitespace-nowrap hidden sm:table-cell">
                         {fmtUSD(s.amount_usd)}
                       </td>
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <button className={btnSecondary} onClick={() => startEdit(s)}>
-                            Editar
-                          </button>
-                          <button
-                            className={`${btnSecondary} hidden sm:inline-block`}
-                            onClick={() => toggle(s)}
-                          >
-                            {s.is_active ? 'Cancelar' : 'Reactivar'}
-                          </button>
-                          <button
-                            onClick={() => remove(s)}
-                            className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
-                            title="Eliminar"
-                          >
-                            ✕
-                          </button>
-                        </div>
+                      <td className="px-3 py-2 hidden sm:table-cell">
+                        <RowActions onDelete={() => remove(s)}>{acciones}</RowActions>
                       </td>
                     </tr>
                   );

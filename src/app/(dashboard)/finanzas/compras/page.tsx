@@ -27,6 +27,8 @@ import {
   DueBadge,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
@@ -413,15 +415,31 @@ export default function ComprasPage() {
                     <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Fecha</th>
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Concepto</th>
                     <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Total</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
                     <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
                     <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Vence</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visible.map((e) => {
                     const saldo = saldoDe(e);
+                    const acciones = (
+                      <>
+                        <button className={btnSecondary} onClick={() => setPaying(e)}>
+                          Abonos
+                        </button>
+                        <button
+                          className={btnSecondary}
+                          onClick={() => {
+                            setEditing(e);
+                            setFormOpen(true);
+                          }}
+                        >
+                          Editar
+                        </button>
+                      </>
+                    );
                     return (
                       <tr key={e.id} className="hover:bg-slate-50 align-top">
                         <td className="px-3 sm:px-4 py-3">
@@ -452,6 +470,12 @@ export default function ComprasPage() {
                               📎 Ver recibo
                             </button>
                           )}
+                          {saldo > 0 && (
+                            <MobileAmount label="Saldo" value={fmtUSD(saldo)} className="text-red-600" />
+                          )}
+                          <RowActions mobile onDelete={() => remove(e)}>
+                            {acciones}
+                          </RowActions>
                         </td>
                         <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
                           {formatDate(e.expense_date)}
@@ -468,7 +492,7 @@ export default function ComprasPage() {
                           )}
                         </td>
                         <td
-                          className={`px-3 sm:px-4 py-3 text-right font-semibold whitespace-nowrap ${
+                          className={`px-4 py-3 text-right font-semibold whitespace-nowrap hidden sm:table-cell ${
                             saldo > 0 ? 'text-red-600' : 'text-slate-300'
                           }`}
                         >
@@ -484,28 +508,10 @@ export default function ComprasPage() {
                             <DueBadge dueDate={e.due_date} />
                           )}
                         </td>
-                        <td className="px-3 sm:px-4 py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button className={btnSecondary} onClick={() => setPaying(e)}>
-                              Abonos
-                            </button>
-                            <button
-                              className={`${btnSecondary} hidden sm:inline-block`}
-                              onClick={() => {
-                                setEditing(e);
-                                setFormOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
-                              onClick={() => remove(e)}
-                              title="Eliminar compra"
-                            >
-                              ✕
-                            </button>
-                          </div>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <RowActions onDelete={() => remove(e)} deleteLabel="Eliminar compra">
+                            {acciones}
+                          </RowActions>
                         </td>
                       </tr>
                     );

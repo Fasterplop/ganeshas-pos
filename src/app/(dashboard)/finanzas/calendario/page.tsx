@@ -27,6 +27,8 @@ import {
   PaymentStatusBadge,
   btnSecondary,
   inputClass,
+  RowActions,
+  MobileAmount,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -573,9 +575,9 @@ export default function CalendarioPage() {
                     <th className="text-left font-semibold px-3 sm:px-4 py-3">A quién</th>
                     <th className="text-left font-semibold px-4 py-3 hidden sm:table-cell">Vence</th>
                     <th className="text-left font-semibold px-4 py-3 hidden lg:table-cell">Tipo</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Saldo</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Saldo</th>
                     <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Estado</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -589,6 +591,12 @@ export default function CalendarioPage() {
                         <div className="lg:hidden text-xs text-slate-400 mt-1">
                           {{ compra: 'Compra', gasto: 'Gasto', envio: 'Envío' }[e.kind] ?? e.kind}
                         </div>
+                        <MobileAmount label="Saldo" value={fmtUSD(saldoDe(e))} className="text-red-600" />
+                        <RowActions mobile>
+                          <button className={btnSecondary} onClick={() => setPaying(e)}>
+                            Abonar
+                          </button>
+                        </RowActions>
                       </td>
                       <td className="px-4 py-3 hidden sm:table-cell">
                         <DueBadge dueDate={e.due_date} />
@@ -596,13 +604,13 @@ export default function CalendarioPage() {
                       <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">
                         {{ compra: 'Compra', gasto: 'Gasto', envio: 'Envío' }[e.kind] ?? e.kind}
                       </td>
-                      <td className="px-3 sm:px-4 py-3 text-right font-semibold text-red-600 whitespace-nowrap">
+                      <td className="px-4 py-3 text-right font-semibold text-red-600 whitespace-nowrap hidden sm:table-cell">
                         {fmtUSD(saldoDe(e))}
                       </td>
                       <td className="px-4 py-3 text-center hidden md:table-cell">
                         <PaymentStatusBadge status={e.status} />
                       </td>
-                      <td className="px-3 sm:px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right hidden sm:table-cell">
                         <button className={btnSecondary} onClick={() => setPaying(e)}>
                           Abonar
                         </button>

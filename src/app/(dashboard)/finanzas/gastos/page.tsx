@@ -25,6 +25,8 @@ import {
   DueBadge,
   btnPrimary,
   btnSecondary,
+  RowActions,
+  MobileAmount,
   inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
@@ -313,6 +315,23 @@ export default function GastosPage() {
     }
   };
 
+  const accionesDe = (e: Expense) => (
+    <>
+      <button className={btnSecondary} onClick={() => setPaying(e)}>
+        Abonos
+      </button>
+      <button
+        className={btnSecondary}
+        onClick={() => {
+          setEditing(e);
+          setFormOpen(true);
+        }}
+      >
+        Editar
+      </button>
+    </>
+  );
+
   return (
     <FinShell
       title="Gastos y presupuesto"
@@ -381,7 +400,7 @@ export default function GastosPage() {
 
         {/* --- Presupuesto por categoría --- */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <h3 className="font-bold text-slate-800 text-sm">Planeado vs. gastado</h3>
             <span className="text-xs text-slate-400">
               Escribe el monto y sal del campo para guardarlo.
@@ -509,10 +528,10 @@ export default function GastosPage() {
                     <th className="text-left font-semibold px-4 py-3 hidden sm:table-cell">
                       Categoría
                     </th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Monto</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Monto</th>
                     <th className="text-center font-semibold px-4 py-3 hidden sm:table-cell">Estado</th>
                     <th className="text-center font-semibold px-4 py-3 hidden md:table-cell">Vence</th>
-                    <th className="text-right font-semibold px-3 sm:px-4 py-3">Acciones</th>
+                    <th className="text-right font-semibold px-4 py-3 hidden sm:table-cell">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -530,6 +549,10 @@ export default function GastosPage() {
                         <div className="hidden sm:block md:hidden text-xs text-slate-400 mt-0.5">
                           {formatDate(e.expense_date)}
                         </div>
+                        <MobileAmount label="Monto" value={fmtUSD(e.amount_usd)} />
+                        <RowActions mobile onDelete={() => remove(e)}>
+                          {accionesDe(e)}
+                        </RowActions>
                       </td>
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap hidden md:table-cell">
                         {formatDate(e.expense_date)}
@@ -537,7 +560,7 @@ export default function GastosPage() {
                       <td className="px-4 py-3 text-slate-600 hidden sm:table-cell">
                         {categoryName(e.category_id)}
                       </td>
-                      <td className="px-3 sm:px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap">
+                      <td className="px-4 py-3 text-right font-semibold text-slate-800 whitespace-nowrap hidden sm:table-cell">
                         {fmtUSD(e.amount_usd)}
                       </td>
                       <td className="px-4 py-3 text-center hidden sm:table-cell">
@@ -550,28 +573,10 @@ export default function GastosPage() {
                           <DueBadge dueDate={e.due_date} />
                         )}
                       </td>
-                      <td className="px-3 sm:px-4 py-3">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <button className={btnSecondary} onClick={() => setPaying(e)}>
-                            Abonos
-                          </button>
-                          <button
-                            className={`${btnSecondary} hidden sm:inline-block`}
-                            onClick={() => {
-                              setEditing(e);
-                              setFormOpen(true);
-                            }}
-                          >
-                            Editar
-                          </button>
-                          <button
-                            className="text-slate-400 hover:text-red-600 px-1 cursor-pointer"
-                            onClick={() => remove(e)}
-                            title="Eliminar gasto"
-                          >
-                            ✕
-                          </button>
-                        </div>
+                      <td className="px-4 py-3 hidden sm:table-cell">
+                        <RowActions onDelete={() => remove(e)} deleteLabel="Eliminar gasto">
+                          {accionesDe(e)}
+                        </RowActions>
                       </td>
                     </tr>
                   ))}
