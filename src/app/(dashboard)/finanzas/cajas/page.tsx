@@ -625,7 +625,7 @@ export default function CajasPage() {
                               Contenido
                             </button>
                             <button
-                              className={`${btnSecondary} hidden sm:inline-block`}
+                              className={btnSecondary}
                               onClick={() => {
                                 setEditing(s);
                                 setFormOpen(true);

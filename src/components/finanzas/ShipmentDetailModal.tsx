@@ -343,7 +343,6 @@ export default function ShipmentDetailModal({
   };
 
   const totalCajas = boxes.reduce((a, b) => a + Number(b.quantity), 0);
-  const detalleCajas = boxes.map((b) => `${b.quantity} ${b.size}`).join(', ');
 
   const missing = items.filter(
     (i) => !i.is_received || (i.pieces != null && (i.received_pieces ?? 0) < i.pieces),
@@ -383,13 +382,37 @@ export default function ShipmentDetailModal({
               <span className="text-slate-400">Llegó:</span> {formatDate(shipment.received_date)}
             </span>
           )}
-          {totalCajas > 0 && (
-            <span className="text-slate-600">
-              <span className="text-slate-400">Cajas:</span> {totalCajas}
-              {detalleCajas && <span className="text-slate-400"> ({detalleCajas})</span>}
-            </span>
-          )}
         </div>
+
+        {/* Cajas físicas y notas: lo que se escribió al crear el envío. En el
+            teléfono esta ventana es la única forma de verlo. */}
+        {boxes.length > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-bold text-slate-800">Cajas enviadas</h3>
+              <span className="text-xs text-slate-400">
+                {totalCajas} {totalCajas === 1 ? 'caja' : 'cajas'}
+              </span>
+            </div>
+            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg text-sm">
+              {boxes.map((b) => (
+                <li key={b.id} className="flex items-start justify-between gap-3 px-3 py-2">
+                  <span className="text-slate-700 break-words min-w-0">{b.size}</span>
+                  <span className="font-semibold text-slate-800 whitespace-nowrap">× {b.quantity}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {shipment.notes && shipment.notes.trim() !== '' && (
+          <div>
+            <h3 className="font-bold text-slate-800 mb-2">Notas</h3>
+            <p className="text-sm text-slate-700 whitespace-pre-wrap break-words bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              {shipment.notes}
+            </p>
+          </div>
+        )}
 
         {/* --- Contenido --- */}
         <div>
