@@ -2076,6 +2076,23 @@ const handleExportCSV = async () => {
                     ? 'Esta etiqueta va sin precio: el descuento no se imprime. Las ofertas se cargan en /ofertas y el teléfono las muestra.'
                     : 'El descuento es opcional. Con 0% se imprime el precio normal.'}
                 </p>
+                {/* Mismo aviso que en /labels: este % solo se dibuja en el
+                    papel, no toca products.price. La caja sigue cobrando el
+                    precio completo. */}
+                {discountPercent > 0 && !labelWithoutPrice && (
+                  <div className="bg-red-50 border border-red-300 text-red-800 text-[11px] rounded-lg px-3 py-2.5 leading-relaxed">
+                    <p className="font-bold mb-1">⚠️ Este descuento solo se imprime en el papel</p>
+                    <p>
+                      <strong>No cambia el precio del producto.</strong> La caja va a seguir cobrando
+                      ${originalPrice.toFixed(2)}, aunque la etiqueta diga ${finalPrice.toFixed(2)}.
+                    </p>
+                    <p className="mt-1">
+                      Para que la caja cobre el descuento sola, el dueño tiene que cargarlo como{' '}
+                      <strong>oferta</strong> en el módulo <strong>Ofertas</strong>.
+                    </p>
+                  </div>
+                )}
+
                 <div className="bg-blue-50 p-4 rounded-lg mt-4 flex justify-between items-center border border-blue-100">
                   <span className="text-sm font-medium text-blue-900">Precio Final</span>
                   <span className="text-2xl font-bold text-[#0f5c5c]">${finalPrice.toFixed(2)}</span>

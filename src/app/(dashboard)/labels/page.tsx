@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Heart } from 'lucide-react';
 import { formatVariant } from '@/lib/productVariant';
@@ -67,6 +68,50 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
       setStoreNames(map);
     })();
   }, [supabase]);
+
+  // Precarga desde el módulo de Ofertas: /labels?producto=<id> o ?grupo=<id>.
+  // Así el dueño imprime las etiquetas de lo que acaba de poner en oferta sin
+  // tener que volver a buscar el producto a mano.
+  const searchParams = useSearchParams();
+  const preloadProduct = searchParams.get('producto');
+  const preloadGroup = searchParams.get('grupo');
+
+  useEffect(() => {
+    if (!preloadProduct && !preloadGroup) return;
+    let cancelled = false;
+
+    (async () => {
+      const run = (table: string) => {
+        const q = supabase.from(table).select('*').eq('is_active', true);
+        return preloadProduct ? q.eq('id', preloadProduct) : q.eq('parent_group_id', preloadGroup).order('talla').order('color');
+      };
+
+      let res = await run(pricedTable());
+      if (pricedFallback(res.error)) res = await run(pricedTable());
+      if (cancelled || !res.data) return;
+
+      setSelectedProducts(prev => {
+        const yaEstan = new Set(prev.map(p => p.id));
+        const nuevos = (res.data as Record<string, unknown>[])
+          .filter(p => !yaEstan.has(p.id as string))
+          .map(p => ({
+            id: p.id as string,
+            name: p.name as string,
+            sku_barcode: p.sku_barcode as string,
+            price: Number(p.price),
+            effective_price: priceOf(p as { price: number; effective_price?: number | null }),
+            offer_percent: p.offer_id ? Number(p.offer_percent) : null,
+            owner_store_id: (p.owner_store_id as string) ?? null,
+            copies: 1,
+            talla: (p.talla as string) ?? null,
+            color: (p.color as string) ?? null,
+          }));
+        return [...prev, ...nuevos];
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [preloadProduct, preloadGroup, supabase]);
 
   // ¿Esta etiqueta se imprime sin precio? Solo si el interruptor está en
   // "sin precio" Y el producto es de la tienda de ropa. Juguetes —y cualquier
@@ -424,6 +469,23 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                     </p>
                   </div>
                 </div>
+
+                {/* El % del lote NO toca products.price: solo se dibuja en el
+                    papel. Sin este aviso es una trampa: la etiqueta dice $108 y
+                    la caja cobra $135, y el cliente lo descubre pagando. */}
+                {discountPercent > 0 && (
+                  <div className="bg-red-50 border border-red-300 text-red-800 text-[11px] rounded-lg px-3 py-2.5 mb-6 leading-relaxed">
+                    <p className="font-bold mb-1">⚠️ Este descuento solo se imprime en el papel</p>
+                    <p>
+                      <strong>No cambia el precio del producto.</strong> La caja va a seguir cobrando
+                      el precio completo, aunque la etiqueta diga otra cosa.
+                    </p>
+                    <p className="mt-1">
+                      Para que la caja cobre el descuento sola, el dueño tiene que cargarlo como{' '}
+                      <strong>oferta</strong> en el módulo <strong>Ofertas</strong>, y este campo se deja en 0.
+                    </p>
+                  </div>
+                )}
 
                 <div className="border-t border-slate-100 pt-4 mb-4">
                   <p className="text-slate-500 text-xs mb-1 text-right">Total a Imprimir</p>

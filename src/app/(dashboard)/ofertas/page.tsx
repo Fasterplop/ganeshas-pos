@@ -11,6 +11,7 @@
 // es la VISTA PREVIA, antes de que la oferta exista.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import { usePOSStore, Store } from '@/store/usePOSStore';
@@ -325,6 +326,23 @@ export default function OfertasPage() {
 
   const activeCount = useMemo(() => offers.filter(o => offerState(o) === 'vigente').length, [offers]);
 
+  /**
+   * Enlace a /labels con el objetivo de la oferta ya cargado en el lote.
+   *
+   * Imprimir desde acá es el complemento natural de la oferta: en la Tienda de
+   * Juguetes la etiqueta lleva precio, así que una oferta nueva suele querer
+   * etiqueta nueva. (En Ropa la etiqueta va sin precio y no hace falta
+   * reimprimir, pero el botón sirve igual para reponer etiquetas.)
+   *
+   * Devuelve null para las ofertas de categoría: pueden tocar cientos de
+   * productos y mandar ese lote de un clic sería un error caro en papel.
+   */
+  const labelHref = (o: OfferRow): string | null => {
+    if (o.scope === 'product' && o.product_id) return `/labels?producto=${o.product_id}`;
+    if (o.scope === 'group' && o.group_id) return `/labels?grupo=${o.group_id}`;
+    return null;
+  };
+
   // --- Render --------------------------------------------------------------
   if (pageError) {
     return (
@@ -403,16 +421,29 @@ export default function OfertasPage() {
                       </span>
                     </td>
                     <td className="p-3 text-center">
-                      {o.is_active ? (
-                        <button
-                          onClick={() => void deactivate(o)}
-                          className="text-sm font-semibold text-red-500 hover:text-red-700 underline cursor-pointer"
-                        >
-                          Desactivar
-                        </button>
-                      ) : (
-                        <span className="text-xs text-slate-400">—</span>
-                      )}
+                      <div className="flex flex-col items-center gap-1">
+                        {/* Solo tiene sentido para producto y modelo: una oferta
+                            de categoría puede tocar cientos de productos y no se
+                            manda un lote así sin elegirlo a mano. */}
+                        {labelHref(o) && (
+                          <Link
+                            href={labelHref(o) as string}
+                            className="text-sm font-semibold text-teal-700 hover:text-teal-900 underline whitespace-nowrap"
+                          >
+                            🏷️ Imprimir etiqueta
+                          </Link>
+                        )}
+                        {o.is_active ? (
+                          <button
+                            onClick={() => void deactivate(o)}
+                            className="text-sm font-semibold text-red-500 hover:text-red-700 underline cursor-pointer"
+                          >
+                            Desactivar
+                          </button>
+                        ) : (
+                          !labelHref(o) && <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
