@@ -10,7 +10,13 @@ export interface Store {
 export interface CartItem {
   id: string;
   name: string;
+  /** Lo que se cobra: ya trae aplicada la oferta vigente, si la hay. */
   price: number;
+  /**
+   * Precio de lista, solo para poder tacharlo en pantalla cuando hay oferta.
+   * No entra en ningún cálculo: `sale_items.unit_price` guarda `price`.
+   */
+  base_price?: number;
   quantity: number;
   talla?: string | null;
   color?: string | null;

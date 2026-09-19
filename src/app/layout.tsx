@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -12,8 +12,22 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// El POS se usa en el telefono escaner (SVANTTO Android 13) desde
+// /consultar-precio, y la propuesta promete poder agregarlo a la pantalla de
+// inicio como un icono. Con el manifest, Chrome lo instala con el logo de la
+// tienda en vez de una captura generica; sin viewport, la pagina se veria
+// alejada y el texto diminuto.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#0f5c5c",
+};
+
 export const metadata: Metadata = {
-  title: "Ganesha Store", 
+  title: "Ganesha Store",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Ganesha POS", statusBarStyle: "black-translucent" },
+  icons: { icon: "/icon-192.png", apple: "/icon-192.png" },
   description: "Sistema interno de control de inventario, registros y reportes",
   robots: {
     index: false,

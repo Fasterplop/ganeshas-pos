@@ -16,6 +16,8 @@ import {
   round2,
   type ExchangePaymentMethod,
 } from '@/lib/exchange';
+import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
+import { offersAvailable, pricedFallback } from '@/lib/pricedProducts';
 
 // ============================================================================
 // Modal de CAMBIO DE PRODUCTO.
@@ -55,11 +57,19 @@ interface SourceSale {
 interface ProductHit {
   id: string;
   name: string;
+  /** Precio de lista. Para cobrar se usa priceOf(), que respeta la oferta. */
   price: number;
   talla: string | null;
   color: string | null;
   sku_barcode: string;
   store_stock?: { stock: number; store_id: string }[];
+  // Oferta vigente (vista v_products_priced). Tiene que salir de la MISMA
+  // fuente que usa register_exchange en el servidor: si el modal calcula el
+  // total con el precio de lista y el RPC con el de oferta, el cambio se
+  // rechaza con TOTAL_MISMATCH.
+  effective_price?: number | null;
+  offer_id?: string | null;
+  offer_percent?: number | null;
 }
 
 interface NewItem {
@@ -103,6 +113,10 @@ const SALE_SELECT = `
 `;
 
 const PRODUCT_SELECT = 'id, name, price, talla, color, sku_barcode, store_stock (stock, store_id)';
+// En la vista de precios el stock NO se embebe: PostgREST no siempre resuelve
+// products -> store_stock a través de una vista. Se pide aparte y se arma la
+// misma forma (`store_stock`) que espera stockOf().
+const PRODUCT_SELECT_PRICED = 'id, name, price, talla, color, sku_barcode, effective_price, offer_id, offer_percent';
 
 const MIGRATION_MISSING = 'La base de datos aún no tiene la migración de cambios (aplicar db/exchange_02_schema_and_rpc.sql).';
 
@@ -260,17 +274,46 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   };
 
   // --- Buscar productos nuevos (misma consulta que el POS) ---------------------
+  //
+  // Lee de la vista con ofertas, igual que la caja: el total que muestra este
+  // modal tiene que ser exactamente el que recalcula register_exchange, o el
+  // RPC aborta con TOTAL_MISMATCH y el cajero no puede registrar el cambio.
+  const findProducts = async (filter: (q: any) => any): Promise<ProductHit[] | null> => {
+    if (offersAvailable()) {
+      const res = await filter(supabase.from('v_products_priced').select(PRODUCT_SELECT_PRICED));
+      if (!pricedFallback(res.error)) {
+        if (res.error) return null;
+        const hits = (res.data ?? []) as unknown as ProductHit[];
+        return attachStock(hits);
+      }
+    }
+    const res = await filter(supabase.from('products').select(PRODUCT_SELECT));
+    return res.error ? null : ((res.data ?? []) as unknown as ProductHit[]);
+  };
+
+  // Completa `store_stock` con el stock real de cada tienda, en una consulta.
+  const attachStock = async (hits: ProductHit[]): Promise<ProductHit[]> => {
+    if (hits.length === 0) return hits;
+    const { data } = await supabase
+      .from('store_stock')
+      .select('product_id, stock, store_id')
+      .in('product_id', hits.map(h => h.id));
+    const byProduct: Record<string, { stock: number; store_id: string }[]> = {};
+    for (const row of data ?? []) {
+      const pid = row.product_id as string;
+      (byProduct[pid] ??= []).push({ stock: Number(row.stock) || 0, store_id: row.store_id as string });
+    }
+    return hits.map(h => ({ ...h, store_stock: byProduct[h.id] ?? [] }));
+  };
+
   const handleProductSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setProductSearch(val);
     if (val.trim().length > 1) {
-      const { data } = await supabase
-        .from('products')
-        .select(PRODUCT_SELECT)
-        .eq('is_active', true)
-        .or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`)
-        .limit(50);
-      setProductHits((data ?? []) as unknown as ProductHit[]);
+      const hits = await findProducts((q: any) =>
+        q.eq('is_active', true).or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`).limit(50),
+      );
+      setProductHits(hits ?? []);
     } else {
       setProductHits([]);
     }
@@ -281,14 +324,11 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     e.preventDefault();
     const barcode = productSearch.trim();
     if (!barcode) return;
-    const { data } = await supabase
-      .from('products')
-      .select(PRODUCT_SELECT)
-      .eq('sku_barcode', barcode)
-      .eq('is_active', true)
-      .maybeSingle();
-    if (data) {
-      addNewItem(data as unknown as ProductHit);
+    const hits = await findProducts((q: any) =>
+      q.eq('sku_barcode', barcode).eq('is_active', true).limit(1),
+    );
+    if (hits && hits.length > 0) {
+      addNewItem(hits[0]);
     } else {
       setError(`Producto no encontrado: ${barcode}`);
     }
@@ -326,7 +366,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     return acc + lineCredit(Number(l.unit_price), ratio) * q;
   }, 0));
   const returnedUnits = returnableLines.reduce((acc, l) => acc + (returnQty[l.id] || 0), 0);
-  const newTotal = round2(newItems.reduce((acc, i) => acc + Number(i.product.price) * i.quantity, 0));
+  const newTotal = round2(newItems.reduce((acc, i) => acc + priceOf(i.product) * i.quantity, 0));
   const diff = round2(newTotal - creditTotal);
 
   const maxBlocksByBalance = customerPoints !== null ? Math.floor(customerPoints / loyaltyCfg.points_per_block) : 0;
@@ -606,7 +646,12 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
                           {formatVariant(p.talla, p.color) && `${formatVariant(p.talla, p.color)} · `}SKU {p.sku_barcode} · Stock {stockOf(p)}
                         </p>
                       </div>
-                      <span className="font-bold text-teal-700 shrink-0">${Number(p.price).toFixed(2)}</span>
+                      <span className="text-right shrink-0">
+                        <span className="block font-bold text-teal-700">${priceOf(p).toFixed(2)}</span>
+                        {hasOffer(p) && (
+                          <span className="block text-[10px] font-black text-red-600">{offerBadge(p.offer_percent)}</span>
+                        )}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -621,7 +666,12 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
                         {i.product.name}
                         {formatVariant(i.product.talla, i.product.color) && <span className="text-slate-500 font-normal"> · {formatVariant(i.product.talla, i.product.color)}</span>}
                       </p>
-                      <p className="text-xs text-slate-500">${Number(i.product.price).toFixed(2)} c/u · Stock {stockOf(i.product)}</p>
+                      <p className="text-xs text-slate-500">
+                        ${priceOf(i.product).toFixed(2)} c/u · Stock {stockOf(i.product)}
+                        {hasOffer(i.product) && (
+                          <span className="ml-1 font-black text-red-600">{offerBadge(i.product.offer_percent)}</span>
+                        )}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button type="button" onClick={() => changeNewItemQty(i.product.id, -1)}
@@ -629,7 +679,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
                       <span className="w-7 text-center text-lg font-bold text-slate-800">{i.quantity}</span>
                       <button type="button" onClick={() => changeNewItemQty(i.product.id, 1)}
                         className="w-9 h-9 rounded-full bg-teal-600 text-white hover:bg-teal-700 font-bold text-lg transition">+</button>
-                      <span className="w-20 text-right font-bold text-slate-800">${(Number(i.product.price) * i.quantity).toFixed(2)}</span>
+                      <span className="w-20 text-right font-bold text-slate-800">${(priceOf(i.product) * i.quantity).toFixed(2)}</span>
                     </div>
                   </li>
                 ))}

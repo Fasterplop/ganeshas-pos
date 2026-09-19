@@ -41,3 +41,19 @@ export function labelFontPx(fullText: string): { name: number; variant: number }
   else name = 10;
   return { name, variant: Math.max(Math.round(name * 0.72), 9) };
 }
+
+// Igual que labelFontPx pero para la etiqueta SIN PRECIO: al quitar el bloque
+// del precio se liberan ~24 px de alto, y ese espacio se reparte entre un
+// nombre más grande y un código de barras más alto. Acá la talla/color NO va
+// pegada al nombre: lleva su propia línea en negrita, así que se mide solo el
+// nombre y la variante se devuelve con su propio tamaño.
+export function labelFontPxNoPrice(name: string): { name: number; variant: number } {
+  const n = name.trim().length;
+  let size: number;
+  if (n <= 15) size = 22;
+  else if (n <= 22) size = 19;
+  else if (n <= 30) size = 16;
+  else if (n <= 40) size = 14;
+  else size = 12;
+  return { name: size, variant: Math.max(Math.round(size * 0.62), 10) };
+}

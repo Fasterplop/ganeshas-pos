@@ -1,20 +1,36 @@
 'use client';
 
-import { useState } from 'react';
-import Barcode from 'react-barcode';
+import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Heart } from 'lucide-react';
-import { formatVariant, labelFontPx } from '@/lib/productVariant';
+import { formatVariant } from '@/lib/productVariant';
+import BarcodeLabel from '@/components/labels/BarcodeLabel';
+import { isClothingStore } from '@/lib/stores';
+import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
+import { pricedFallback, pricedTable } from '@/lib/pricedProducts';
 
 interface LabelProduct {
   id: string;
   name: string;
   sku_barcode: string;
-  price: number;
+  price: number;              // precio de lista
+  effective_price: number;    // precio a cobrar (con la oferta vigente aplicada)
+  offer_percent: number | null;
+  owner_store_id: string | null;
   copies: number | string;
   talla: string | null;
   color: string | null;
 }
+
+// Modo de impresión de la etiqueta 62x29.
+//
+// "Sin precio" es la propuesta nueva: el precio ya no se imprime, así que un
+// cambio de precio no obliga a reimprimir la tienda entera. Pero SOLO aplica a
+// la Tienda de Ropa: en la juguetería el precio se mantiene impreso, por
+// decisión del negocio. Como el buscador no filtra por tienda, un mismo lote
+// puede mezclar las dos, así que la decisión se toma PRODUCTO POR PRODUCTO y
+// se muestra en la tabla antes de imprimir.
+type PriceMode = 'sin_precio' | 'con_precio';
 
 export default function LabelsPage() {
   const supabase = createClient();
@@ -35,19 +51,63 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
   // Configuración global del lote (Descuento porcentual)
   const [discountPercent, setDiscountPercent] = useState(0);
 
+  // Con precio / Sin precio. Por defecto "Sin precio", como pide la propuesta.
+  const [priceMode, setPriceMode] = useState<PriceMode>('sin_precio');
+
+  // Nombre de cada tienda, para saber cuáles productos son de ropa. El id que
+  // viene en el producto no dice nada por sí solo: en este proyecto la tienda
+  // se reconoce por su nombre (ver src/lib/stores.ts).
+  const [storeNames, setStoreNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('stores').select('id, name');
+      const map: Record<string, string> = {};
+      for (const s of data ?? []) map[s.id as string] = s.name as string;
+      setStoreNames(map);
+    })();
+  }, [supabase]);
+
+  // ¿Esta etiqueta se imprime sin precio? Solo si el interruptor está en
+  // "sin precio" Y el producto es de la tienda de ropa. Juguetes —y cualquier
+  // producto sin tienda dueña, que es el caso seguro— siempre lleva precio.
+  const printsWithoutPrice = (p: { owner_store_id: string | null }) =>
+    priceMode === 'sin_precio' && isClothingStore(storeNames[p.owner_store_id ?? '']);
+
+  // Precio que va impreso en una etiqueta CON precio.
+  //
+  // Si el producto tiene una OFERTA vigente en el sistema, manda la oferta y el
+  // % del lote se ignora: la caja va a cobrar la oferta, y una etiqueta que
+  // diga otra cosa es una discusión en el mostrador. El % del lote sigue
+  // existiendo para los productos SIN oferta (ferias, ventas fuera de tienda).
+  const labelPriceOf = (p: LabelProduct) => {
+    if (p.offer_percent) return p.effective_price;
+    return p.price - p.price * (discountPercent / 100);
+  };
+
+  // Precio anterior, tachado. Null cuando no hay ningún descuento que mostrar.
+  const labelOriginalOf = (p: LabelProduct) =>
+    labelPriceOf(p) < p.price ? p.price : null;
+
   // 1. LÓGICA DE BÚSQUEDA TIPO DROPDOWN
+  //    Lee de la vista con ofertas para que la etiqueta CON precio imprima el
+  //    mismo número que va a cobrar la caja. Si el SQL de ofertas todavía no se
+  //    aplicó, cae a `products` y el precio efectivo es el de lista.
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setProductSearch(val);
 
     if (val.trim().length > 1) {
-      const { data } = await supabase
-        .from('products')
-        .select('*')
-        .or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`)
-        .limit(50);
-      
-      setSearchResults(data || []);
+      const term = val.replace(/[%*_,()\\]/g, ' ').trim();
+      if (!term) { setSearchResults([]); return; }
+      const filter = `sku_barcode.ilike.%${term}%,name.ilike.%${term}%`;
+      const run = (table: string) =>
+        supabase.from(table).select('*').eq('is_active', true).or(filter).limit(50);
+
+      let res = await run(pricedTable());
+      if (pricedFallback(res.error)) res = await run(pricedTable());
+
+      setSearchResults(res.data || []);
     } else {
       setSearchResults([]);
     }
@@ -63,6 +123,9 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
         name: product.name,
         sku_barcode: product.sku_barcode,
         price: product.price,
+        effective_price: priceOf(product),
+        offer_percent: product.offer_id ? Number(product.offer_percent) : null,
+        owner_store_id: product.owner_store_id ?? null,
         copies: 1,
         talla: product.talla ?? null,
         color: product.color ?? null
@@ -111,10 +174,32 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
 
   const totalLabelsToPrint = selectedProducts.reduce((acc, curr) => acc + getSafeCopies(curr.copies), 0);
 
-  const handlePrint = () => {
-    if (totalLabelsToPrint > 0) {
-      window.print();
-    }
+  // Aviso de lote mixto: nadie debería descubrir después de imprimir 40
+  // etiquetas que la mitad salió distinta.
+  const clothingCount = useMemo(
+    () => selectedProducts.filter(printsWithoutPrice).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedProducts, priceMode, storeNames],
+  );
+  const mixedBatchNotice =
+    priceMode === 'sin_precio' && clothingCount > 0 && clothingCount < selectedProducts.length;
+
+  const handlePrint = async () => {
+    if (totalLabelsToPrint === 0) return;
+
+    window.print();
+
+    // Registrar la primera impresión, igual que hace /inventory. Hasta ahora
+    // imprimir en LOTE no quitaba el badge "Nuevo" del inventario, así que un
+    // producto etiquetado desde acá seguía apareciendo como pendiente. El RPC
+    // es idempotente (solo sella si label_printed_at es NULL) y si falla —SQL
+    // sin aplicar— no se interrumpe nada: solo se loguea.
+    await Promise.all(
+      selectedProducts.map(async p => {
+        const { error } = await supabase.rpc('mark_label_printed', { p_product_id: p.id });
+        if (error) console.error('No se pudo registrar la impresión de', p.sku_barcode, error);
+      }),
+    );
   };
 
   return (
@@ -196,7 +281,12 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                           )}
                           <p className="text-xs text-slate-500">SKU: {p.sku_barcode}</p>
                         </div>
-                        <p className="font-bold text-teal-700">${p.price.toFixed(2)}</p>
+                        <div className="text-right shrink-0">
+                          <p className="font-bold text-teal-700">${priceOf(p).toFixed(2)}</p>
+                          {hasOffer(p) && (
+                            <p className="text-[10px] font-black text-red-600">{offerBadge(p.offer_percent)}</p>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -210,7 +300,7 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                     <tr>
                       <th className="p-3 rounded-tl-lg">Producto</th>
                       <th className="p-3 text-center">Etiquetas</th>
-                      <th className="p-3 text-right">Precio Base</th>
+                      <th className="p-3 text-right">Cómo sale</th>
                       <th className="p-3 rounded-tr-lg text-center">Remover</th>
                     </tr>
                   </thead>
@@ -244,7 +334,23 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                               <button onClick={() => handleIncrement(product.id, product.copies)} className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-200 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold shrink-0">+</button>
                             </div>
                           </td>
-                          <td className="p-3 text-right text-slate-600 font-medium">${product.price.toFixed(2)}</td>
+                          <td className="p-3 text-right">
+                            {printsWithoutPrice(product) ? (
+                              <span className="inline-block text-[11px] font-bold uppercase tracking-wide bg-slate-200 text-slate-700 px-2 py-1 rounded">
+                                Sin precio
+                              </span>
+                            ) : (
+                              <div>
+                                <p className="text-slate-800 font-bold">${labelPriceOf(product).toFixed(2)}</p>
+                                {labelPriceOf(product) < product.price && (
+                                  <p className="text-[11px] text-slate-400 line-through">${product.price.toFixed(2)}</p>
+                                )}
+                                <p className="text-[10px] uppercase tracking-wide text-slate-400 font-bold">
+                                  {product.offer_percent ? 'Con precio · oferta' : 'Con precio'}
+                                </p>
+                              </div>
+                            )}
+                          </td>
                           <td className="p-3 text-center">
                             <button onClick={() => handleRemoveProduct(product.id)} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded transition">
                               🗑️
@@ -262,9 +368,44 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
             <div className="w-full md:w-80 space-y-6">
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                 <h3 className="font-medium text-slate-800 mb-4 flex items-center gap-2">
+                  🏷️ Formato de la Etiqueta
+                </h3>
+
+                <div className="bg-slate-100 p-1 rounded-lg flex mb-3">
+                  <button
+                    onClick={() => setPriceMode('sin_precio')}
+                    className={`flex-1 px-3 py-2 text-sm font-bold rounded-md transition-all cursor-pointer ${
+                      priceMode === 'sin_precio' ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Sin precio
+                  </button>
+                  <button
+                    onClick={() => setPriceMode('con_precio')}
+                    className={`flex-1 px-3 py-2 text-sm font-bold rounded-md transition-all cursor-pointer ${
+                      priceMode === 'con_precio' ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Con precio
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 mb-4 leading-relaxed">
+                  &laquo;Sin precio&raquo; solo aplica a la <strong>Tienda de Ropa</strong>: nombre más grande,
+                  talla y color en su propia línea y código de barras más alto. Los productos de la
+                  juguetería salen siempre con precio. La columna <em>Cómo sale</em> lo muestra por fila.
+                </p>
+
+                {mixedBatchNotice && (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded-lg px-3 py-2 mb-4 font-medium">
+                    Este lote mezcla las dos tiendas: {clothingCount} etiqueta(s) saldrán sin precio y{' '}
+                    {selectedProducts.length - clothingCount} con precio.
+                  </div>
+                )}
+
+                <h3 className="font-medium text-slate-800 mb-4 flex items-center gap-2 border-t border-slate-100 pt-4">
                   ⚙️ Descuento del Lote
                 </h3>
-                
+
                 <div className="space-y-4 mb-6">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Descuento Global (%)</label>
@@ -276,7 +417,11 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                       max="100"
                       className="w-full p-2 border border-slate-300 rounded-md bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
                     />
-                    <p className="text-[10px] text-slate-400 mt-1">Si dejas 0%, imprimirá el precio base del producto.</p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Si dejas 0%, imprimirá el precio base del producto. No se aplica a las etiquetas
+                      sin precio, ni a los productos que ya tienen una <strong>oferta</strong> cargada
+                      en el sistema: en esos manda la oferta, que es lo que va a cobrar la caja.
+                    </p>
                   </div>
                 </div>
 
@@ -287,7 +432,7 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
                 </div>
 
                 <button 
-                  onClick={handlePrint}
+                  onClick={() => void handlePrint()}
                   disabled={totalLabelsToPrint === 0}
                   className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] text-white font-medium py-3 px-4 rounded-lg transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -301,53 +446,19 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
           <div className="hidden print:block">
             {selectedProducts.flatMap(product => {
               const copiesNum = getSafeCopies(product.copies);
-              const originalPrice = product.price;
-              const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
-              const variant = formatVariant(product.talla, product.color);
-              const fs = labelFontPx(`${product.name}${variant ? ` · ${variant}` : ''}`);
+              const noPrice = printsWithoutPrice(product);
 
               return Array.from({ length: copiesNum }).map((_, i) => (
-                <div
+                <BarcodeLabel
                   key={`${product.id}-${i}`}
-                  className="flex flex-row items-center justify-between bg-white print:break-after-page"
-                  style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1.2mm 1.5mm 2.2mm 1.5mm' }}
-                >
-                  {/* Texto Vertical: Nombre de la tienda */}
-                  <div className="flex items-center justify-center h-full pl-1">
-                    <p className="text-[8px] font-black text-black tracking-wider uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
-                      Ganesha Store
-                    </p>
-                  </div>
-
-                  {/* Contenido Principal */}
-                  <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-                    {/* Nombre + Talla · Color en un solo bloque: si el nombre es
-                        largo hace wrap hacia abajo (no se corta con "...") y la
-                        variante continúa en línea tras un " · ". */}
-                    <p className="font-black text-black w-full text-center leading-tight break-words" style={{ fontSize: `${fs.name}px` }}>
-                      {product.name.toUpperCase()}
-                      {variant && (
-                        <span style={{ fontSize: `${fs.variant}px` }}> · {variant}</span>
-                      )}
-                    </p>
-
-                    <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
-                      {discountPercent > 0 && (
-                        <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
-                      )}
-                      <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
-                    </div>
-
-                    <Barcode
-                      value={product.sku_barcode}
-                      width={1.3}
-                      height={20}
-                      fontSize={10}
-                      margin={0}
-                      displayValue={true}
-                    />
-                  </div>
-                </div>
+                  name={product.name}
+                  skuBarcode={product.sku_barcode}
+                  talla={product.talla}
+                  color={product.color}
+                  price={labelPriceOf(product)}
+                  originalPrice={labelOriginalOf(product)}
+                  showPrice={!noPrice}
+                />
               ));
             })}
           </div>

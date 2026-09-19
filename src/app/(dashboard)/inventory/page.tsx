@@ -6,11 +6,14 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
-import Barcode from 'react-barcode';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp } from 'lucide-react';
 import ExcelJS from 'exceljs';
-import { variantLabel, formatVariant, labelFontPx } from '@/lib/productVariant';
+import { variantLabel, formatVariant } from '@/lib/productVariant';
+import BarcodeLabel from '@/components/labels/BarcodeLabel';
+import { storePrefix, isClothingStore } from '@/lib/stores';
+import { barcodeErrorMessage } from '@/lib/productBarcode';
+import { categoryLabel } from '@/lib/categories';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -79,30 +82,6 @@ interface VariantRowInput {
   // número recién al guardar.
   stock: number | '';
   price: number | '';
-}
-
-// Nombre visible de cada categoría. Los valores del enum de la BD van en
-// snake_case; sin entrada aquí se muestra el valor tal cual (con `capitalize`).
-const CATEGORY_LABELS: Record<string, string> = {
-  juguetes: 'Juguetes',
-  ropa: 'Ropa',
-  zapato: 'Zapato',
-  perfume: 'Perfume',
-  accesorios: 'Accesorios',
-  lentes: 'Lentes',
-  uniforme_escolar: 'Uniformes Escolares',
-  utiles_escolares: 'Útiles Escolares',
-  bolso: 'Bolso',
-  navaja_suiza: 'Navaja Suiza',
-};
-const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
-
-// Prefijo de SKU según la TIENDA dueña (juguetes -> JUG, ropa -> ROP).
-function storePrefix(storeName: string): string {
-  const n = storeName.toLowerCase();
-  if (n.includes('juguet')) return 'JUG';
-  if (n.includes('ropa')) return 'ROP';
-  return storeName.trim().substring(0, 3).toUpperCase() || 'GEN';
 }
 
 // Categoría por defecto sugerida según la tienda.
@@ -288,6 +267,17 @@ export default function InventoryPage() {
 
   const [promoName, setPromoName] = useState('Liquidación');
   const [discountPercent, setDiscountPercent] = useState(0);
+  // Formato de la etiqueta: 'auto' sigue la regla del negocio (sin precio solo
+  // en la Tienda de Ropa); los otros dos la fuerzan para un caso suelto.
+  const [labelPriceMode, setLabelPriceMode] = useState<'auto' | 'sin_precio' | 'con_precio'>('auto');
+
+  // --- Cambiar el código de barras de un producto --------------------------
+  // Va por el RPC set_product_barcode (db/scanner_02_…sql), que revalida rol y
+  // alcance en el servidor. Lo abre cualquiera que ya pueda añadir productos.
+  const [barcodeTarget, setBarcodeTarget] = useState<Product | null>(null);
+  const [barcodeValue, setBarcodeValue] = useState('');
+  const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [barcodeSaving, setBarcodeSaving] = useState(false);
 
   // --- Ajuste masivo de precios (solo owner, sobre la tienda que se ve) ---
   const [priceModalOpen, setPriceModalOpen] = useState(false);
@@ -799,10 +789,13 @@ export default function InventoryPage() {
     }
 
     if (editingProduct) {
+      // OJO: `sku_barcode` NO se manda acá. Cambiar el código de un producto que
+      // ya está etiquetado en el piso de venta es una operación aparte, con su
+      // propia confirmación y su propio RPC validado en el servidor
+      // (set_product_barcode). Ver el botón "Cambiar código" del formulario.
       const { error: productError } = await supabase
         .from('products')
         .update({
-          sku_barcode: finalSku,
           name: data.name,
           category: data.category,
           price: data.price,
@@ -894,6 +887,56 @@ export default function InventoryPage() {
     }
 
     closeModal();
+    refreshInventory(viewStoreId);
+  };
+
+  // --- Cambiar el código de barras -----------------------------------------
+  const openBarcodeModal = (product: Product) => {
+    setBarcodeTarget(product);
+    setBarcodeValue('');
+    setBarcodeError(null);
+  };
+
+  const closeBarcodeModal = () => {
+    setBarcodeTarget(null);
+    setBarcodeValue('');
+    setBarcodeError(null);
+    setBarcodeSaving(false);
+  };
+
+  const submitBarcodeChange = async () => {
+    if (!barcodeTarget) return;
+    const nuevo = barcodeValue.trim();
+    if (!nuevo) {
+      setBarcodeError('Escribe o escanea el código nuevo.');
+      return;
+    }
+    if (nuevo === barcodeTarget.sku_barcode) {
+      closeBarcodeModal();
+      return;
+    }
+
+    setBarcodeSaving(true);
+    setBarcodeError(null);
+    const { error } = await supabase.rpc('set_product_barcode', {
+      p_product_id: barcodeTarget.id,
+      p_new_sku: nuevo,
+    });
+    setBarcodeSaving(false);
+
+    if (error) {
+      setBarcodeError(barcodeErrorMessage(error));
+      return;
+    }
+
+    // El código nuevo se refleja al instante en la lista, en el producto
+    // seleccionado (para que "Imprimir Etiqueta" salga ya con el nuevo) y en el
+    // formulario de edición si está abierto.
+    setProducts(prev => prev.map(pr => (pr.id === barcodeTarget.id ? { ...pr, sku_barcode: nuevo } : pr)));
+    setSelectedProduct(prev => (prev && prev.id === barcodeTarget.id ? { ...prev, sku_barcode: nuevo } : prev));
+    setEditingProduct(prev => (prev && prev.id === barcodeTarget.id ? { ...prev, sku_barcode: nuevo } : prev));
+    setValue('sku_barcode', nuevo);
+    closeBarcodeModal();
     refreshInventory(viewStoreId);
   };
 
@@ -1666,9 +1709,15 @@ const handleExportCSV = async () => {
 
   const originalPrice = selectedProduct?.price || 0;
   const finalPrice = originalPrice - (originalPrice * (discountPercent / 100));
-  // Etiqueta: variante y tamaño de fuente dinámico (nombre editable = promoName).
-  const labelVariant = formatVariant(selectedProduct?.talla, selectedProduct?.color);
-  const labelFs = labelFontPx(`${promoName}${labelVariant ? ` · ${labelVariant}` : ''}`);
+
+  // Etiqueta sin precio: misma regla que /labels, decidida por la TIENDA DUEÑA
+  // del producto y no por la que se está viendo. Solo la Tienda de Ropa; en la
+  // juguetería el precio se sigue imprimiendo. El cajero puede forzar "con
+  // precio" para un caso suelto (una feria, una liquidación puntual).
+  const productStoreName = stores.find(st => st.id === selectedProduct?.owner_store_id)?.name;
+  const labelWithoutPrice = labelPriceMode === 'auto'
+    ? isClothingStore(productStoreName)
+    : labelPriceMode === 'sin_precio';
 
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
@@ -1963,6 +2012,34 @@ const handleExportCSV = async () => {
                   <p className="text-sm text-slate-500 font-mono">{selectedProduct.sku_barcode}</p>
                   <p className="text-[11px] uppercase font-bold text-teal-600 mt-1 bg-teal-50 inline-block px-2 py-0.5 rounded">Stock Actual: {selectedProduct.stock}</p>
                 </div>
+                {/* Con precio / Sin precio. La propuesta quita el precio de la
+                    etiqueta SOLO en la tienda de ropa: así un cambio de precio
+                    no obliga a reimprimir. La juguetería lo mantiene. */}
+                <div>
+                  <label className="text-sm font-semibold text-slate-500">Formato</label>
+                  <div className="bg-slate-100 p-1 rounded-lg flex mt-1">
+                    {(['auto', 'sin_precio', 'con_precio'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setLabelPriceMode(mode)}
+                        className={`flex-1 px-2 py-1.5 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                          labelPriceMode === mode ? 'bg-white shadow-sm text-teal-800' : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        {mode === 'auto' ? 'Automático' : mode === 'sin_precio' ? 'Sin precio' : 'Con precio'}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {labelPriceMode === 'auto'
+                      ? `Automático: ${isClothingStore(productStoreName) ? 'sin precio (Tienda de Ropa)' : 'con precio'}.`
+                      : labelPriceMode === 'sin_precio'
+                      ? 'Forzado sin precio, aunque el producto no sea de ropa.'
+                      : 'Forzado con precio (ferias, ventas fuera de la tienda).'}
+                  </p>
+                </div>
+
                 <div>
                   <label className="text-sm font-semibold text-slate-500">Nombre de Promoción</label>
                   <input
@@ -1994,7 +2071,11 @@ const handleExportCSV = async () => {
                     />
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 -mt-2">El descuento es opcional. Con 0% se imprime el precio normal.</p>
+                <p className="text-xs text-slate-400 -mt-2">
+                  {labelWithoutPrice
+                    ? 'Esta etiqueta va sin precio: el descuento no se imprime. Las ofertas se cargan en /ofertas y el teléfono las muestra.'
+                    : 'El descuento es opcional. Con 0% se imprime el precio normal.'}
+                </p>
                 <div className="bg-blue-50 p-4 rounded-lg mt-4 flex justify-between items-center border border-blue-100">
                   <span className="text-sm font-medium text-blue-900">Precio Final</span>
                   <span className="text-2xl font-bold text-[#0f5c5c]">${finalPrice.toFixed(2)}</span>
@@ -2037,16 +2118,33 @@ const handleExportCSV = async () => {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                Código de Barras (Escanea o deja vacío)
+                {editingProduct ? 'Código de Barras' : 'Código de Barras (Escanea o deja vacío)'}
               </label>
               <input
                 type="text"
-                autoFocus={!editStockOnly}
-                readOnly={editStockOnly}
+                autoFocus={!editingProduct}
+                readOnly={!!editingProduct}
                 {...register('sku_barcode')}
                 placeholder="Escanea el código aquí..."
-                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed"
+                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500 read-only:cursor-not-allowed"
               />
+              {editingProduct && (
+                <div className="mt-2">
+                  {canAdd ? (
+                    <button
+                      type="button"
+                      onClick={() => openBarcodeModal(editingProduct)}
+                      className="text-sm font-semibold text-teal-700 hover:text-teal-900 underline cursor-pointer"
+                    >
+                      Cambiar código
+                    </button>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      No tienes permiso para cambiar el código de este producto.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>
@@ -2526,6 +2624,71 @@ const handleExportCSV = async () => {
           )}
         </Modal>
 
+        {/* MODAL: CAMBIAR EL CÓDIGO DE BARRAS */}
+        <Modal isOpen={!!barcodeTarget} onClose={closeBarcodeModal} title="Cambiar código de barras">
+          {barcodeTarget && (
+            <div className="space-y-4">
+              <div>
+                <p className="font-bold text-slate-800 leading-tight">{barcodeTarget.name}</p>
+                {formatVariant(barcodeTarget.talla, barcodeTarget.color) && (
+                  <p className="text-sm text-slate-500">{formatVariant(barcodeTarget.talla, barcodeTarget.color)}</p>
+                )}
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Código actual</p>
+                <p className="font-mono text-slate-700">{barcodeTarget.sku_barcode}</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Código nuevo</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={barcodeValue}
+                  onChange={(e) => setBarcodeValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    // El escáner manda Enter al final: así se cambia el código
+                    // escaneando la etiqueta nueva, sin tocar el teclado.
+                    if (e.key === 'Enter') { e.preventDefault(); void submitBarcodeChange(); }
+                  }}
+                  placeholder="Escribe el código nuevo..."
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 font-mono focus:ring-2 focus:ring-teal-600 outline-none"
+                />
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 font-medium leading-relaxed">
+                ⚠️ Las etiquetas ya impresas con el código anterior <strong>dejarán de escanear</strong>.
+                Hay que volver a etiquetar las unidades de este producto que estén en el piso de venta.
+              </div>
+
+              {barcodeError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
+                  {barcodeError}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={closeBarcodeModal}
+                  className="flex-1 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitBarcodeChange()}
+                  disabled={barcodeSaving || !barcodeValue.trim()}
+                  className="flex-1 py-2.5 rounded-lg bg-[#0f5c5c] hover:bg-[#0a4545] text-white font-medium transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {barcodeSaving ? 'Guardando…' : 'Cambiar código'}
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+
         {/* MODAL: VINCULAR A PRODUCTO PADRE */}
         <Modal isOpen={!!linkingProduct} onClose={closeLinkModal} title="Vincular a producto padre">
           {linkingProduct && (
@@ -2732,30 +2895,16 @@ const handleExportCSV = async () => {
 
       {/* VISTA DE IMPRESIÓN */}
       {selectedProduct && (
-        <div className="hidden print:flex flex-row items-center justify-between bg-white" style={{ width: '62mm', height: '29mm', overflow: 'hidden', margin: 0, padding: '1.2mm 1.5mm 2.2mm 1.5mm' }}>
-          <div className="flex items-center justify-center h-full pl-1">
-            <p className="text-[8px] font-black text-black tracking-wider uppercase" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
-              Ganesha Store
-            </p>
-          </div>
-
-          <div className="flex flex-col items-center justify-center flex-1 w-full overflow-hidden pr-1">
-            <p className="font-black text-black w-full text-center leading-tight break-words" style={{ fontSize: `${labelFs.name}px` }}>
-              {promoName.toUpperCase()}
-              {labelVariant && (
-                <span style={{ fontSize: `${labelFs.variant}px` }}> · {labelVariant}</span>
-              )}
-            </p>
-
-            <div className="flex items-baseline gap-2 mt-0.5 mb-0.5">
-              {discountPercent > 0 && (
-                <p className="text-[12px] line-through text-gray-500 leading-none">${originalPrice.toFixed(2)}</p>
-              )}
-              <p className="text-[24px] font-black text-black leading-none">${finalPrice.toFixed(2)}</p>
-            </div>
-
-            <Barcode value={selectedProduct.sku_barcode} width={1.3} height={20} fontSize={10} margin={0} displayValue={true} />
-          </div>
+        <div className="hidden print:block">
+          <BarcodeLabel
+            name={promoName}
+            skuBarcode={selectedProduct.sku_barcode}
+            talla={selectedProduct.talla}
+            color={selectedProduct.color}
+            price={finalPrice}
+            originalPrice={discountPercent > 0 ? originalPrice : null}
+            showPrice={!labelWithoutPrice}
+          />
         </div>
       )}
     </>

@@ -1,14 +1,23 @@
 'use client';
 
 import { useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { usePOSStore } from '@/store/usePOSStore';
+
+// Rutas que NO se bloquean por falta de tasa: /consultar-precio pide la tasa
+// del dia por su cuenta y la guarda en la base (db/scanner_01_bcv_rates.sql),
+// asi que este modal encima seria pedirla dos veces. El resto del sistema
+// (caja incluida) sigue exactamente igual que antes.
+const RUTAS_SIN_BLOQUEO = ['/consultar-precio'];
 
 export default function BcvModal() {
   const { bcvRate, setBcvRate } = usePOSStore();
   const [inputValue, setInputValue] = useState('');
+  const pathname = usePathname();
 
   // Si la tasa ya es mayor a 0, no mostramos el modal (se desbloquea la app)
   if (bcvRate > 0) return null;
+  if (RUTAS_SIN_BLOQUEO.includes(pathname)) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

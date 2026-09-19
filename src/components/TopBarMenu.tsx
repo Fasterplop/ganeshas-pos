@@ -31,7 +31,9 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] }, 
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
+    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
+    { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
     { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
   ];

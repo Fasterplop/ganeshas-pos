@@ -6,6 +6,8 @@ import { usePOSStore } from '@/store/usePOSStore';
 import { notifySaleWhatsApp } from './actions';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
+import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
+import { offersAvailable, pricedFallback, pricedTable } from '@/lib/pricedProducts';
 import CasheaLogo from '@/components/CasheaLogo';
 import ExchangeModal from '@/components/ExchangeModal';
 
@@ -21,6 +23,11 @@ interface SiblingVariant {
   sku_barcode: string;
   parent_group_id: string | null;
   store_stock?: { stock: number }[];
+  // Precio con la oferta vigente aplicada (vista v_products_priced). Ausente
+  // mientras db/scanner_03_offers.sql no esté aplicado.
+  effective_price?: number | null;
+  offer_id?: string | null;
+  offer_percent?: number | null;
 }
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
@@ -374,14 +381,17 @@ export default function POSPage() {
     setProductSearch(val);
 
     if (val.trim().length > 1) {
-      const { data } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`)
-        .limit(50);
-      
-      setSearchResults(data || []);
+      const filter = `sku_barcode.ilike.%${val}%,name.ilike.%${val}%`;
+      // Se lee de la vista con ofertas: el precio que ve el cajero tiene que
+      // ser el que se va a cobrar. Si el SQL de ofertas no está aplicado,
+      // pricedFallback degrada a `products` y todo sigue como antes.
+      const run = (table: string) =>
+        supabase.from(table).select('*').eq('is_active', true).or(filter).limit(50);
+
+      let res = await run(pricedTable());
+      if (pricedFallback(res.error)) res = await run(pricedTable());
+
+      setSearchResults(res.data || []);
     } else {
       setSearchResults([]);
     }
@@ -394,15 +404,17 @@ export default function POSPage() {
       
       if (!barcode) return;
 
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('sku_barcode', barcode)
-        .eq('is_active', true)
-        .maybeSingle();
+      const run = (table: string) =>
+        supabase.from(table).select('*').eq('sku_barcode', barcode).eq('is_active', true).maybeSingle();
+
+      let res = await run(pricedTable());
+      if (pricedFallback(res.error)) res = await run(pricedTable());
+      const data = res.data;
 
       if (data) {
-        addToCart({ id: data.id, name: data.name, price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
+        // price = lo que se cobra (con oferta); base_price = el de lista, solo
+        // para poder tacharlo en pantalla. `sale_items.unit_price` guarda price.
+        addToCart({ id: data.id, name: data.name, price: priceOf(data), base_price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
         setProductSearch('');
         setSearchResults([]);
       } else {
@@ -417,7 +429,7 @@ export default function POSPage() {
   };
 
   const handleAddFromSearch = (product: any) => {
-    addToCart({ id: product.id, name: product.name, price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null, parent_group_id: product.parent_group_id ?? null });
+    addToCart({ id: product.id, name: product.name, price: priceOf(product), base_price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null, parent_group_id: product.parent_group_id ?? null });
     setProductSearch('');
     setSearchResults([]);
     searchInputRef.current?.focus();
@@ -439,13 +451,52 @@ export default function POSPage() {
     setOpenVariantSwitcherFor(cartItem.id);
     if (!siblingsByGroup[groupId]) {
       setLoadingSiblings(true);
-      const { data } = await supabase
-        .from('products')
-        .select('id, name, price, talla, color, sku_barcode, parent_group_id, store_stock(stock)')
-        .eq('parent_group_id', groupId)
-        .eq('is_active', true)
-        .order('talla')
-        .order('color');
+      // El stock NO se embebe en la vista de precios: PostgREST no siempre
+      // resuelve la relación products -> store_stock a través de una vista, y
+      // esto es la caja. Se piden los productos por un lado y su stock en la
+      // tienda activa por el otro, y se arma la misma forma de antes.
+      const storeFilter = currentStore?.id ?? '';
+      let rows: SiblingVariant[] = [];
+      let resolved = false;
+
+      if (offersAvailable()) {
+        const res = await supabase
+          .from('v_products_priced')
+          .select('id, name, price, talla, color, sku_barcode, parent_group_id, effective_price, offer_id, offer_percent')
+          .eq('parent_group_id', groupId)
+          .eq('is_active', true)
+          .order('talla')
+          .order('color');
+        if (!pricedFallback(res.error) && !res.error) {
+          rows = (res.data ?? []) as unknown as SiblingVariant[];
+          resolved = true;
+        }
+      }
+
+      if (!resolved) {
+        const res = await supabase
+          .from('products')
+          .select('id, name, price, talla, color, sku_barcode, parent_group_id')
+          .eq('parent_group_id', groupId)
+          .eq('is_active', true)
+          .order('talla')
+          .order('color');
+        rows = (res.data ?? []) as unknown as SiblingVariant[];
+      }
+
+      // `.in()` con lista vacía genera un filtro que PostgREST rechaza.
+      const stockById: Record<string, number> = {};
+      if (rows.length > 0) {
+        const { data: stockRows } = await supabase
+          .from('store_stock')
+          .select('product_id, stock')
+          .eq('store_id', storeFilter)
+          .in('product_id', rows.map(r => r.id));
+        for (const r of stockRows ?? []) stockById[r.product_id as string] = Number(r.stock) || 0;
+      }
+
+      const data = rows.map(r => ({ ...r, store_stock: [{ stock: stockById[r.id] ?? 0 }] }));
+
       setSiblingsByGroup(prev => ({ ...prev, [groupId]: data ?? [] }));
       setLoadingSiblings(false);
     }
@@ -457,7 +508,8 @@ export default function POSPage() {
     addToCart({
       id: sibling.id,
       name: sibling.name,
-      price: sibling.price,
+      price: priceOf(sibling),
+      base_price: sibling.price,
       quantity: cartItem.quantity,
       talla: sibling.talla ?? null,
       color: sibling.color ?? null,
@@ -985,7 +1037,15 @@ export default function POSPage() {
                           <p className="text-xs font-semibold text-purple-600">👕 tiene variantes</p>
                         )}
                       </div>
-                      <p className="text-lg font-bold text-teal-700">${p.price.toFixed(2)}</p>
+                      <div className="text-right shrink-0">
+                        <p className="text-lg font-bold text-teal-700">${priceOf(p).toFixed(2)}</p>
+                        {hasOffer(p) && (
+                          <>
+                            <p className="text-xs text-slate-400 line-through">${Number(p.price).toFixed(2)}</p>
+                            <p className="text-[10px] font-black text-red-600">{offerBadge(p.offer_percent)}</p>
+                          </>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -1106,7 +1166,14 @@ export default function POSPage() {
                           </button>
                         </div>
                       </td>
-                      <td className="p-3 text-right text-lg text-slate-600">${item.price.toFixed(2)}</td>
+                      <td className="p-3 text-right text-lg text-slate-600">
+                        ${item.price.toFixed(2)}
+                        {item.base_price != null && item.base_price > item.price && (
+                          <span className="block text-xs text-red-500 font-bold">
+                            antes ${item.base_price.toFixed(2)}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-3 text-right pr-4 text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
                     </tr>
                   ))
