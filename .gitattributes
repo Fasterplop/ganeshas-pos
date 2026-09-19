@@ -1,0 +1,18 @@
+# Normalizacion de fin de linea.
+#
+# El repo se trabaja en Windows con core.autocrlf=true y se despliega en Linux.
+# Para el codigo eso esta bien: Git guarda LF y entrega CRLF en Windows.
+#
+# Para los BINARIOS no: si Git los tratara como texto, al hacer checkout les
+# convertiria los LF en CRLF y quedarian corruptos (un PDF que no abre, una
+# imagen rota). Hoy Git los detecta solos porque tienen bytes NUL, pero eso es
+# una heuristica sobre los primeros 8 KB: marcarlos a mano lo vuelve seguro.
+* text=auto
+
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ico  binary
+*.xlsx binary
