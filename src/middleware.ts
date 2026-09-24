@@ -47,11 +47,13 @@ export async function middleware(request: NextRequest) {
 }
 
 // Evitamos que el middleware se ejecute en archivos estáticos o imágenes, en
-// el lector de la cámara (zxing/*.wasm) y en /api/fin-agent: el conector de
-// ChatGPT entra con su propio token, no con sesión, y refrescarle una sesión
-// que no tiene es una llamada a Supabase gastada en cada petición.
+// el lector de la cámara (zxing/*.wasm) y en el conector de ChatGPT
+// (api/fin-agent, api/mcp, api/oauth y los metadatos .well-known): entran con
+// su propio token, no con sesión, y refrescarles una sesión que no tienen es
+// una llamada a Supabase gastada en cada petición. OJO: /oauth/authorize (la
+// pantalla de "Permitir") SÍ pasa por aquí, porque necesita la sesión.
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|api/fin-agent|zxing/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|wasm)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|api/fin-agent|api/mcp|api/oauth|\\.well-known|zxing/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|wasm)$).*)',
   ],
 };

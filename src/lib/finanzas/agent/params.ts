@@ -17,25 +17,25 @@ export function zodMessage(error: z.ZodError): string {
 /**
  * Lee y valida los query params. Devuelve el objeto o una Response 400 lista
  * para retornar.
+ *
+ * Los esquemas son los mismos que usa MCP (JSON con tipos reales), así que aquí
+ * se traducen los textos del query string: 'true'/'false' pasan a booleano y
+ * los números los convierte z.coerce en cada esquema.
  */
 export function parseQuery<S extends z.ZodType>(
   req: NextRequest,
   schema: S,
 ): { ok: true; data: z.infer<S> } | { ok: false; res: Response } {
-  const raw: Record<string, string> = {};
+  const raw: Record<string, string | boolean> = {};
   req.nextUrl.searchParams.forEach((v, k) => {
-    if (v !== '') raw[k] = v;
+    if (v === '') return;
+    const low = v.toLowerCase();
+    raw[k] = low === 'true' ? true : low === 'false' ? false : v;
   });
   const parsed = schema.safeParse(raw);
   if (!parsed.success) return { ok: false, res: jsonError(400, zodMessage(parsed.error)) };
   return { ok: true, data: parsed.data };
 }
-
-/** 'true'/'1'/'si' → true. Para flags en query string. */
-export const boolParam = z
-  .string()
-  .optional()
-  .transform((v) => (v ? ['true', '1', 'si', 'sí', 'yes'].includes(v.toLowerCase()) : false));
 
 const toUTC = (s: string) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
 const fromUTC = (ms: number) => new Date(ms).toISOString().slice(0, 10);

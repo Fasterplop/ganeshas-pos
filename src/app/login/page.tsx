@@ -90,6 +90,15 @@ function LoginContent() {
       return;
     }
 
+    // Vuelta a donde se venía, solo dentro del POS (p. ej. la pantalla de
+    // "Permitir" del conector de ChatGPT, /oauth/authorize). Recarga completa
+    // para que el servidor vea la cookie de sesión recién creada.
+    const next = searchParams.get('next');
+    if (next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\')) {
+      window.location.assign(next);
+      return;
+    }
+
     if (profile.role === 'owner') {
       router.push('/');
     } else if (profile.role === 'cashier') {
