@@ -33,6 +33,8 @@ import {
   btnSecondary,
   RowActions,
   inputClass,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -403,6 +405,9 @@ export default function CajasPage() {
     { key: 'incompleta', label: `Incompletas (${counts.incompletas})` },
   ];
 
+  // Se dibujan de a 50 filas; los totales siguen sumando todo.
+  const paged = usePaged(visible, String(visible.length));
+
   return (
     <FinShell
       title="Cajas"
@@ -530,7 +535,7 @@ export default function CajasPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visible.map((s) => {
+                  {paged.slice.map((s) => {
                     const list = itemsByShipment.get(s.id) ?? [];
                     const brands = brandsOf(s.id);
                     const costo = costByShipment.get(s.id) ?? 0;
@@ -652,6 +657,7 @@ export default function CajasPage() {
                   })}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>
@@ -686,3 +692,4 @@ export default function CajasPage() {
     </FinShell>
   );
 }
+

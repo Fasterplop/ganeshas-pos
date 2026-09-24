@@ -29,6 +29,8 @@ import {
   inputClass,
   RowActions,
   MobileAmount,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -291,6 +293,9 @@ export default function CalendarioPage() {
       setExporting(false);
     }
   };
+
+  // Se dibujan de a 50 filas; los totales siguen sumando todo.
+  const paged = usePaged(proximos, String(proximos.length));
 
   return (
     <FinShell
@@ -581,7 +586,7 @@ export default function CalendarioPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {proximos.map((e) => (
+                  {paged.slice.map((e) => (
                     <tr key={e.id} className="hover:bg-slate-50 align-top">
                       <td className="px-3 sm:px-4 py-3">
                         <span className="font-semibold text-slate-800">{labelDe(e)}</span>
@@ -619,6 +624,7 @@ export default function CalendarioPage() {
                   ))}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>

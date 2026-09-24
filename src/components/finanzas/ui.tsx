@@ -13,7 +13,7 @@
 // Aviso: el proyecto NO tiene toasts. El patrón es un mensaje en línea con
 // estado {type, text}, como en src/app/(dashboard)/users/page.tsx:70,115-120.
 
-import { ReactNode } from 'react';
+import { ReactNode, useMemo, useState } from 'react';
 import { dueLevel, daysUntil, formatDate } from '@/lib/finanzas/dates';
 
 export type NoticeType = 'success' | 'error' | 'info';
@@ -277,6 +277,85 @@ export function MobileAmount({
         {value}
         {sub && <span className="ml-1 text-[11px] font-normal text-slate-400">{sub}</span>}
       </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Paginación de tablas
+//
+// Las pantallas cargan TODO (fetchAllPages) porque los totales tienen que
+// sumar todo; lo que se pagina es lo que se DIBUJA. Con el período por defecto
+// desde enero, una tabla de cientos de filas trababa el teléfono.
+// ---------------------------------------------------------------------------
+
+export const FIN_PAGE_SIZE = 50;
+
+export interface Paged<T> {
+  slice: T[];
+  page: number;
+  pages: number;
+  total: number;
+  pageSize: number;
+  setPage: (page: number) => void;
+}
+
+/**
+ * Parte `items` en páginas. `resetKey` vuelve a la página 1 cuando cambia
+ * (por ejemplo, al cambiar un filtro), sin un efecto que sincronice estado.
+ */
+export function usePaged<T>(items: T[], resetKey = '', pageSize = FIN_PAGE_SIZE): Paged<T> {
+  const [state, setState] = useState({ key: resetKey, page: 1 });
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const requested = state.key === resetKey ? state.page : 1;
+  const page = Math.min(Math.max(1, requested), pages);
+  const slice = useMemo(() => items.slice((page - 1) * pageSize, page * pageSize), [items, page, pageSize]);
+  return {
+    slice,
+    page,
+    pages,
+    total: items.length,
+    pageSize,
+    setPage: (p: number) => setState({ key: resetKey, page: p }),
+  };
+}
+
+/** Barra "Mostrando 1–50 de 230 · ‹ Anterior · 1 2 3 … · Siguiente ›". */
+export function Pagination<T>({ paged, className = '' }: { paged: Paged<T>; className?: string }) {
+  const { page, pages, total, pageSize, setPage } = paged;
+  if (pages <= 1) return null;
+
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  // Primera, última y las dos vecinas de la actual; el resto se resume en "…".
+  const nums = [...new Set([1, page - 1, page, page + 1, pages])].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+
+  const btn = (active: boolean) =>
+    `min-w-9 px-2.5 py-1.5 rounded-lg text-sm border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+      active ? 'bg-teal-700 border-teal-700 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+    }`;
+
+  return (
+    <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3 border-t border-slate-100 ${className}`}>
+      <span className="text-xs text-slate-500">
+        Mostrando {from}–{to} de {total}
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button className={btn(false)} disabled={page === 1} onClick={() => setPage(page - 1)} aria-label="Página anterior">
+          ‹
+        </button>
+        {nums.map((n, i) => (
+          <span key={n} className="flex items-center gap-1.5">
+            {i > 0 && n - nums[i - 1] > 1 && <span className="text-slate-400 text-sm">…</span>}
+            <button className={btn(n === page)} onClick={() => setPage(n)}>
+              {n}
+            </button>
+          </span>
+        ))}
+        <button className={btn(false)} disabled={page === pages} onClick={() => setPage(page + 1)} aria-label="Página siguiente">
+          ›
+        </button>
+      </div>
     </div>
   );
 }

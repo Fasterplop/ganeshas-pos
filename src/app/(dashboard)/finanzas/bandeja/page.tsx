@@ -24,6 +24,8 @@ import {
   btnPrimary,
   btnSecondary,
   btnDanger,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage, isMissingTableError } from '@/lib/finanzas/errors';
@@ -48,7 +50,7 @@ interface ApproveResult {
 
 export default function BandejaPage() {
   const supabase = useMemo(() => createClient(), []);
-  const { setDateRange } = useFinanceFilters();
+  const { dateRange, setDateRange } = useFinanceFilters();
 
   const [estado, setEstado] = useState<Estado>('pendiente');
   const [rows, setRows] = useState<InboxRow[]>([]);
@@ -137,10 +139,31 @@ export default function BandejaPage() {
 
   const nameOf = useCallback((list: Option[], id: string | null) => list.find((o) => o.id === id)?.name ?? null, []);
 
-  // Agrupado por lote (una subida de un archivo).
+  // Se dibujan de a 100 líneas (un estado de cuenta puede traer 300). Los
+  // botones de lote usan TODAS las líneas del lote, estén en la página que
+  // estén: "Aprobar todo el lote" no puede aprobar solo la mitad.
+  const paged = usePaged(rows, estado, 100);
+  const pendingByBatch = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const r of rows) {
+      if (r.status !== 'pendiente') continue;
+      map.set(r.batch_id, [...(map.get(r.batch_id) ?? []), r.id]);
+    }
+    return map;
+  }, [rows]);
+  const batchSize = useMemo(() => {
+    const map = new Map<string, { n: number; usd: number }>();
+    for (const r of rows) {
+      const cur = map.get(r.batch_id) ?? { n: 0, usd: 0 };
+      map.set(r.batch_id, { n: cur.n + 1, usd: cur.usd + Number(r.amount_usd) });
+    }
+    return map;
+  }, [rows]);
+
+  // Agrupado por lote (una subida de un archivo), solo con las líneas de la página.
   const batches = useMemo(() => {
     const map = new Map<string, InboxRow[]>();
-    for (const r of rows) {
+    for (const r of paged.slice) {
       const list = map.get(r.batch_id) ?? [];
       list.push(r);
       map.set(r.batch_id, list);
@@ -152,7 +175,7 @@ export default function BandejaPage() {
       rows: list.sort((a, b) => (a.line_no ?? 0) - (b.line_no ?? 0)),
       total: list.reduce((s, r) => s + Number(r.amount_usd), 0),
     }));
-  }, [rows]);
+  }, [paged.slice]);
 
   const pendingTotal = useMemo(
     () => (estado === 'pendiente' ? rows.reduce((s, r) => s + Number(r.amount_usd), 0) : 0),
@@ -191,8 +214,8 @@ export default function BandejaPage() {
         : {
             type: 'success',
             text:
-              `${ok} aprobada${ok === 1 ? '' : 's'}: ya están en Compras y Gastos (si son de otro mes, ` +
-              'cambia el período arriba en Compras para verlas). Los saldos de tus cuentas no cambian.',
+              `${ok} aprobada${ok === 1 ? '' : 's'}: ya están en Compras y Gastos. ` +
+              'Los saldos de tus cuentas no cambian.',
           },
     );
     load();
@@ -311,7 +334,8 @@ export default function BandejaPage() {
             </div>
           ) : (
             batches.map((b) => {
-              const pendingIds = b.rows.filter((r) => r.status === 'pendiente').map((r) => r.id);
+              const pendingIds = pendingByBatch.get(b.id) ?? [];
+              const size = batchSize.get(b.id) ?? { n: b.rows.length, usd: b.total };
               const allSelected = pendingIds.length > 0 && pendingIds.every((id) => selected.has(id));
               return (
                 <section key={b.id} className="bg-white rounded-xl shadow-sm border border-slate-200">
@@ -334,8 +358,9 @@ export default function BandejaPage() {
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold text-slate-800 truncate">📄 {b.file || 'Estado de cuenta'}</p>
                       <p className="text-xs text-slate-500">
-                        {formatDateTime(b.createdAt)} · {b.rows.length} {b.rows.length === 1 ? 'línea' : 'líneas'} ·{' '}
-                        {fmtUSD(b.total)}
+                        {formatDateTime(b.createdAt)} · {size.n} {size.n === 1 ? 'línea' : 'líneas'} ·{' '}
+                        {fmtUSD(size.usd)}
+                        {size.n > b.rows.length && ` · en esta página: ${b.rows.length}`}
                       </p>
                     </div>
                     {estado === 'pendiente' && (
@@ -459,10 +484,15 @@ export default function BandejaPage() {
                                 {r.status === 'aprobada' && r.result_expense_id && (
                                   <Link
                                     href={r.kind === 'gasto' ? '/finanzas/gastos' : '/finanzas/compras'}
-                                    // Compras filtra por período (por defecto el mes en curso) y
-                                    // esconde lo ya pagado de meses anteriores: se abre con el
-                                    // período que incluye esta compra para que no parezca perdida.
-                                    onClick={() => setDateRange({ start: caracasMonthStart(r.movement_date), end: caracasToday() })}
+                                    // Compras filtra por período y esconde lo ya pagado fuera de él:
+                                    // si el período actual no incluye esta compra, se amplía (nunca
+                                    // se achica) para que no parezca perdida.
+                                    onClick={() => {
+                                      const start = caracasMonthStart(r.movement_date);
+                                      if (start < dateRange.start || dateRange.end < caracasToday()) {
+                                        setDateRange({ start: start < dateRange.start ? start : dateRange.start, end: caracasToday() });
+                                      }
+                                    }}
                                     className="text-xs text-teal-700 hover:underline"
                                   >
                                     Aprobada {formatDateTime(r.reviewed_at)} · ver en {r.kind === 'gasto' ? 'Gastos' : 'Compras'} →
@@ -478,6 +508,12 @@ export default function BandejaPage() {
                 </section>
               );
             })
+          )}
+
+          {paged.pages > 1 && (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+              <Pagination paged={paged} className="border-t-0" />
+            </div>
           )}
         </div>
       )}

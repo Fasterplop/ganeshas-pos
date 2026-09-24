@@ -25,7 +25,13 @@ interface FinanceFiltersState {
   setRangeLastDays: (days: number) => void;
 }
 
-// El mes en curso es el período que el dueño mira el 90% de las veces.
+// Inicio del historial del módulo. El rango por defecto arranca aquí y no en
+// el mes en curso: con el mes en curso, las compras ya pagadas de meses
+// anteriores no se veían en Compras y parecía que no se habían registrado
+// (pasó con el consolidado de agosto que subió el plugin de ChatGPT). Las
+// tablas largas se paginan, así que ver todo no satura la pantalla.
+export const FIN_HISTORY_START = '2026-01-01';
+
 // caracasToday() da el mismo valor en el servidor y en el navegador (fija la
 // zona horaria), así que no provoca desajustes de hidratación.
 function currentMonthRange(): FinDateRange {
@@ -33,8 +39,13 @@ function currentMonthRange(): FinDateRange {
   return { start: caracasMonthStart(today), end: today };
 }
 
+function fullHistoryRange(): FinDateRange {
+  const today = caracasToday();
+  return { start: FIN_HISTORY_START < today ? FIN_HISTORY_START : caracasMonthStart(today), end: today };
+}
+
 export const useFinanceFilters = create<FinanceFiltersState>((set) => ({
-  dateRange: currentMonthRange(),
+  dateRange: fullHistoryRange(),
   setDateRange: (dateRange) => set({ dateRange }),
   setRangeCurrentMonth: () => set({ dateRange: currentMonthRange() }),
   setRangeLastDays: (days) => {

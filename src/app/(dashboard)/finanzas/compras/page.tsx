@@ -30,6 +30,8 @@ import {
   RowActions,
   MobileAmount,
   inputClass,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -165,6 +167,8 @@ export default function ComprasPage() {
       );
     });
   }, [enVista, estado, supplierFilter, search, supplierName]);
+
+  const paged = usePaged(visible, `${estado}|${supplierFilter}|${search}|${dateRange.start}|${dateRange.end}`);
 
   const remove = async (e: Expense) => {
     if (
@@ -422,7 +426,7 @@ export default function ComprasPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visible.map((e) => {
+                  {paged.slice.map((e) => {
                     const saldo = saldoDe(e);
                     const acciones = (
                       <>
@@ -518,6 +522,7 @@ export default function ComprasPage() {
                   })}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>

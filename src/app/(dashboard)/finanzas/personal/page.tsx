@@ -25,6 +25,8 @@ import {
   RowActions,
   MobileAmount,
   inputClass,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -245,6 +247,9 @@ export default function PersonalPage() {
     }
   };
 
+  // Se dibujan de a 50 filas; los totales siguen sumando todo.
+  const paged = usePaged(visibles, String(visibles.length));
+
   return (
     <FinShell
       title="Personal"
@@ -432,7 +437,7 @@ export default function PersonalPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visibles.map((e) => {
+                  {paged.slice.map((e) => {
                     const saldo = saldoDe(e);
                     const accionesMov = (
                       <>
@@ -505,6 +510,7 @@ export default function PersonalPage() {
                   })}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>

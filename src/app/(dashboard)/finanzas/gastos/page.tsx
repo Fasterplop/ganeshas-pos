@@ -28,6 +28,8 @@ import {
   RowActions,
   MobileAmount,
   inputClass,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -332,6 +334,9 @@ export default function GastosPage() {
     </>
   );
 
+  // Se dibujan de a 50 filas; los totales siguen sumando todo.
+  const paged = usePaged(operativos, String(operativos.length));
+
   return (
     <FinShell
       title="Gastos y presupuesto"
@@ -535,7 +540,7 @@ export default function GastosPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {operativos.map((e) => (
+                  {paged.slice.map((e) => (
                     <tr key={e.id} className="hover:bg-slate-50 align-top">
                       <td className="px-3 sm:px-4 py-3">
                         <span className="text-slate-800">{e.description || '—'}</span>
@@ -582,6 +587,7 @@ export default function GastosPage() {
                   ))}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>

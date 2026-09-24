@@ -24,6 +24,8 @@ import {
   RowActions,
   MobileAmount,
   inputClass,
+  usePaged,
+  Pagination,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -152,6 +154,9 @@ export default function ProveedoresPage() {
     });
   };
 
+  // Se dibujan de a 50 filas; los totales siguen sumando todo.
+  const paged = usePaged(visible, String(visible.length));
+
   return (
     <FinShell
       title="Proveedores"
@@ -255,7 +260,7 @@ export default function ProveedoresPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visible.map((s) => {
+                  {paged.slice.map((s) => {
                     const b = bal(s.id);
                     const saldo = Number(b?.balance_usd ?? 0);
                     const acciones = (
@@ -347,6 +352,7 @@ export default function ProveedoresPage() {
                   })}
                 </tbody>
               </table>
+              <Pagination paged={paged} />
             </div>
           )}
         </div>
