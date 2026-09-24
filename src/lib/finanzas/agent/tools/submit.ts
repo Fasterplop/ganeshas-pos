@@ -50,6 +50,20 @@ const Line = z.object({
 const Body = z.object({
   source_file: z.string().trim().max(200).optional().describe('Nombre del archivo subido.'),
   lines: z.array(Line).min(1).max(300),
+  // Control de cuadre: lo que DICE el documento (su fila TOTAL, o el conteo
+  // de cargos). El servidor lo compara con las líneas recibidas y avisa si
+  // falta algo. Pasó: un consolidado de 34 cobros llegó con 33.
+  expected_count: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe('Cuántas transacciones de compra/gasto trae el documento en total (incluye las que ya existan).'),
+  expected_total_usd: z
+    .number()
+    .positive()
+    .optional()
+    .describe('Total en USD que trae el documento para esas transacciones (su fila TOTAL, si la tiene).'),
 });
 
 type LineIn = z.infer<typeof Line>;
@@ -84,7 +98,7 @@ export const submitTool = defineTool({
   name: 'enviar_a_bandeja',
   title: 'Enviar a la Bandeja de revisión',
   description:
-    'Manda las líneas clasificadas del estado de cuenta a Finanzas > Bandeja. Quedan pendientes hasta que el dueño las apruebe; salta lo repetido y dice por qué. Nunca incluir pagos a tarjetas ni movimientos entre cuentas propias.',
+    'Manda TODAS las transacciones del documento a Finanzas > Bandeja, con expected_count y expected_total_usd para el control de cuadre. Quedan pendientes hasta que el dueño las apruebe; salta lo repetido y dice por qué. No cambia saldos de cuentas. Nunca incluir pagos a tarjetas ni movimientos entre cuentas propias.',
   input: Body,
   readOnly: false,
   run: submitLines,
@@ -92,7 +106,7 @@ export const submitTool = defineTool({
 
 async function submitLines(
   { admin, profileId }: { admin: import('../tool').AgentContext['admin']; profileId: string },
-  { source_file, lines }: z.infer<typeof Body>,
+  { source_file, lines, expected_count, expected_total_usd }: z.infer<typeof Body>,
 ): Promise<Record<string, unknown>> {
 
   // --- Maestros que se usan para validar ------------------------------------
@@ -422,6 +436,26 @@ async function submitLines(
     insertIdx.filter((p) => final[p.idx].resultado === 'agregada').reduce((s, p) => s + p.amount_usd, 0),
   );
 
+  // Cuadre contra lo que dice el documento: cuenta TODAS las líneas enviadas
+  // (agregadas, ya existentes y con error), porque el documento las incluye.
+  const sentUsd = round2(
+    lines.reduce((s, l) => {
+      if (l.currency === 'USD') return s + l.amount;
+      const rate = l.bcv_rate ?? rateByDate.get(l.date);
+      return rate ? s + l.amount / rate : s;
+    }, 0),
+  );
+  const faltan: string[] = [];
+  if (expected_count !== undefined && expected_count !== lines.length) {
+    faltan.push(`El documento trae ${expected_count} transacciones y se enviaron ${lines.length}.`);
+  }
+  if (expected_total_usd !== undefined && Math.abs(expected_total_usd - sentUsd) > 0.01) {
+    faltan.push(
+      `El total del documento es $${expected_total_usd.toFixed(2)} y lo enviado suma $${sentUsd.toFixed(2)} ` +
+        `(diferencia $${round2(expected_total_usd - sentUsd).toFixed(2)}).`,
+    );
+  }
+
   return {
     batch_id,
     resumen: {
@@ -431,8 +465,18 @@ async function submitLines(
       ya_en_bandeja: count('ya_en_bandeja'),
       con_error: count('error'),
     },
+    cuadre: faltan.length
+      ? {
+          ok: false,
+          detalle: faltan,
+          que_hacer:
+            'NO digas que se registró todo. Busca en el documento qué transacción falta, díselo al dueño y envíala en otra llamada.',
+        }
+      : expected_count !== undefined || expected_total_usd !== undefined
+        ? { ok: true, detalle: [`Cuadra con el documento: ${lines.length} transacciones, $${sentUsd.toFixed(2)}.`] }
+        : { ok: null, detalle: ['Sin control: no se enviaron expected_count ni expected_total_usd.'] },
     siguiente_paso:
-      'Lo agregado quedó en Finanzas > Bandeja esperando aprobación del dueño. Nada se registró todavía. Las líneas con error se pueden corregir y reenviar.',
+      'Lo agregado quedó en Finanzas > Bandeja esperando aprobación del dueño. Nada se registró todavía, y aprobar NO cambia el saldo de ninguna cuenta ni tarjeta. Las líneas con error se pueden corregir y reenviar.',
     lineas: final,
   };
 }

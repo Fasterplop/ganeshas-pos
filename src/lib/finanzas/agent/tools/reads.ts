@@ -200,7 +200,7 @@ export const accountsTool = defineTool({
     let query = admin
       .from('fin_v_account_balance')
       .select(
-        'account_id, name, kind, bank_name, last4, is_personal, credit_limit_usd, statement_day, due_day, balance_usd, available_usd, moved_usd',
+        'account_id, name, kind, bank_name, last4, is_personal, credit_limit_usd, statement_day, due_day, balance_usd, available_usd',
       )
       .eq('is_active', true)
       .order('name');
@@ -208,7 +208,9 @@ export const accountsTool = defineTool({
 
     const rows = mustList(await query, 'cuentas');
     return {
-      nota: 'Saldos manuales: los pone el dueño en Finanzas > Cuentas. En tarjetas, saldo = deuda.',
+      nota:
+        'Saldos MANUALES: los pone el dueño en Finanzas > Cuentas y nada de lo que registres los cambia. ' +
+        'En tarjetas, saldo = deuda. Nunca digas que un saldo subió o bajó por una compra, gasto o abono.',
       cuentas: rows.map((a: Record<string, unknown>) => ({
         account_id: a.account_id,
         nombre: a.name,
@@ -221,7 +223,9 @@ export const accountsTool = defineTool({
         disponible_usd: a.available_usd === null ? null : round2(Number(a.available_usd)),
         dia_corte: a.statement_day,
         dia_pago: a.due_day,
-        pagado_con_esta_cuenta_usd: round2(Number(a.moved_usd)),
+        // moved_usd (cuánto se pagó con la cuenta) NO se expone a propósito:
+        // el asistente lo restaba del saldo y le decía al dueño que su banco
+        // había bajado, cuando el saldo es manual y no cambió.
       })),
     };
   },

@@ -27,7 +27,8 @@ import {
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage, isMissingTableError } from '@/lib/finanzas/errors';
-import { formatDate, formatDateTime } from '@/lib/finanzas/dates';
+import { caracasMonthStart, caracasToday, formatDate, formatDateTime } from '@/lib/finanzas/dates';
+import { useFinanceFilters } from '@/store/useFinanceFilters';
 import { accountLabel, fmtUSD, fmtVES } from '@/lib/finanzas/money';
 
 type Estado = 'pendiente' | 'aprobada' | 'descartada';
@@ -47,6 +48,7 @@ interface ApproveResult {
 
 export default function BandejaPage() {
   const supabase = useMemo(() => createClient(), []);
+  const { setDateRange } = useFinanceFilters();
 
   const [estado, setEstado] = useState<Estado>('pendiente');
   const [rows, setRows] = useState<InboxRow[]>([]);
@@ -186,7 +188,12 @@ export default function BandejaPage() {
               `${ok ? `${ok} aprobada${ok === 1 ? '' : 's'}. ` : ''}` +
               `${failed.length} no se ${failed.length === 1 ? 'pudo' : 'pudieron'} aprobar: el motivo está en rojo en cada una.`,
           }
-        : { type: 'success', text: `${ok} aprobada${ok === 1 ? '' : 's'}: ya están en Compras y Gastos.` },
+        : {
+            type: 'success',
+            text:
+              `${ok} aprobada${ok === 1 ? '' : 's'}: ya están en Compras y Gastos (si son de otro mes, ` +
+              'cambia el período arriba en Compras para verlas). Los saldos de tus cuentas no cambian.',
+          },
     );
     load();
   };
@@ -452,6 +459,10 @@ export default function BandejaPage() {
                                 {r.status === 'aprobada' && r.result_expense_id && (
                                   <Link
                                     href={r.kind === 'gasto' ? '/finanzas/gastos' : '/finanzas/compras'}
+                                    // Compras filtra por período (por defecto el mes en curso) y
+                                    // esconde lo ya pagado de meses anteriores: se abre con el
+                                    // período que incluye esta compra para que no parezca perdida.
+                                    onClick={() => setDateRange({ start: caracasMonthStart(r.movement_date), end: caracasToday() })}
                                     className="text-xs text-teal-700 hover:underline"
                                   >
                                     Aprobada {formatDateTime(r.reviewed_at)} · ver en {r.kind === 'gasto' ? 'Gastos' : 'Compras'} →
