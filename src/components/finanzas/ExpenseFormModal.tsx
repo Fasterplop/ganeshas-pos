@@ -396,8 +396,8 @@ export default function ExpenseFormModal({
       if (lineErr) setError(`La compra se guardó, pero el detalle no: ${finErrorMessage(lineErr)}`);
     }
 
-    // El pago es lo que mueve el dinero; el trigger deja el estado en pagada o
-    // parcial segun lo que cubra.
+    // El pago deja anotada la cuenta con que se pago (sin tocar su saldo, que es
+    // manual); el trigger deja el estado en pagada o parcial segun lo que cubra.
     if (payMode === 'pagada' || payMode === 'abono') {
       const payAmount = payMode === 'pagada' ? value : Number(abono);
       const payUsd = payMode === 'pagada' ? usd : abonoUsd!;

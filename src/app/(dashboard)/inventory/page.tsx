@@ -14,6 +14,7 @@ import BarcodeLabel from '@/components/labels/BarcodeLabel';
 import { storePrefix, isClothingStore } from '@/lib/stores';
 import { barcodeErrorMessage } from '@/lib/productBarcode';
 import { categoryLabel } from '@/lib/categories';
+import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -206,6 +207,17 @@ export default function InventoryPage() {
   const [canRestockLocal, setCanRestockLocal] = useState(false); // reponer solo en su tienda asignada
 
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Escáner con la cámara: qué campo se llena con el código leído. Una sola
+  // lectura y se cierra; nunca envía un formulario por su cuenta.
+  const [cameraTarget, setCameraTarget] = useState<
+    | { kind: 'search' }
+    | { kind: 'form' }
+    | { kind: 'variant'; key: string }
+    | { kind: 'addVariant' }
+    | { kind: 'barcode' }
+    | null
+  >(null);
 
   // Orden de columnas, filtro por semáforo de stock y paginación.
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -1719,6 +1731,18 @@ const handleExportCSV = async () => {
     ? isClothingStore(productStoreName)
     : labelPriceMode === 'sin_precio';
 
+  // Lo que hace el código leído con la cámara depende de qué botón la abrió.
+  const handleCameraScan = (code: string) => {
+    const target = cameraTarget;
+    if (!target) return;
+    if (target.kind === 'search') setSearchTerm(code);
+    else if (target.kind === 'form') setValue('sku_barcode', code, { shouldDirty: true });
+    else if (target.kind === 'variant')
+      setVariantRows(rows => rows.map(r => (r.key === target.key ? { ...r, sku_barcode: code } : r)));
+    else if (target.kind === 'addVariant') setAddVariantSku(code);
+    else if (target.kind === 'barcode') setBarcodeValue(code);
+  };
+
   if (!currentStore) {
     return <div className="h-full flex items-center justify-center text-slate-500">Cargando contexto de la sucursal...</div>;
   }
@@ -1836,7 +1860,7 @@ const handleExportCSV = async () => {
                 <h2 className="text-base md:text-lg font-bold text-slate-800">{panelTitle}</h2>
                 <p className="text-xs md:text-sm text-slate-500">{panelSubtitle}</p>
               </div>
-              <div className="relative w-full lg:w-72">
+              <div className="relative w-full lg:w-72 flex gap-2">
                 <input
                   type="text"
                   value={searchTerm}
@@ -1844,6 +1868,7 @@ const handleExportCSV = async () => {
                   placeholder="🔍 Buscar código o nombre..."
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                 />
+                <ScanButton onClick={() => setCameraTarget({ kind: 'search' })} />
               </div>
 
               {/* Botón Filtros: muestra/oculta los chips de categoría EN LÍNEA
@@ -2137,14 +2162,17 @@ const handleExportCSV = async () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 {editingProduct ? 'Código de Barras' : 'Código de Barras (Escanea o deja vacío)'}
               </label>
-              <input
-                type="text"
-                autoFocus={!editingProduct}
-                readOnly={!!editingProduct}
-                {...register('sku_barcode')}
-                placeholder="Escanea el código aquí..."
-                className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500 read-only:cursor-not-allowed"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  autoFocus={!editingProduct}
+                  readOnly={!!editingProduct}
+                  {...register('sku_barcode')}
+                  placeholder="Escanea el código aquí..."
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500 read-only:cursor-not-allowed"
+                />
+                {!editingProduct && <ScanButton onClick={() => setCameraTarget({ kind: 'form' })} />}
+              </div>
               {editingProduct && (
                 <div className="mt-2">
                   {canAdd ? (
@@ -2255,13 +2283,16 @@ const handleExportCSV = async () => {
                       {variantRows.map((v, idx) => (
                         <tr key={v.key} className="border-t border-slate-100">
                           <td className="p-2">
-                            <input
-                              type="text"
-                              value={v.sku_barcode}
-                              onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, sku_barcode: e.target.value } : r))}
-                              placeholder="Escanea o deja vacío"
-                              className="w-full p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
-                            />
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                value={v.sku_barcode}
+                                onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, sku_barcode: e.target.value } : r))}
+                                placeholder="Escanea o deja vacío"
+                                className="w-full min-w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                              />
+                              <ScanButton onClick={() => setCameraTarget({ kind: 'variant', key: v.key })} className="lg:hidden px-2 py-1" />
+                            </div>
                           </td>
                           <td className="p-2">
                             <input
@@ -2659,19 +2690,24 @@ const handleExportCSV = async () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Código nuevo</label>
-                <input
-                  type="text"
-                  autoFocus
-                  value={barcodeValue}
-                  onChange={(e) => setBarcodeValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    // El escáner manda Enter al final: así se cambia el código
-                    // escaneando la etiqueta nueva, sin tocar el teclado.
-                    if (e.key === 'Enter') { e.preventDefault(); void submitBarcodeChange(); }
-                  }}
-                  placeholder="Escribe el código nuevo..."
-                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 font-mono focus:ring-2 focus:ring-teal-600 outline-none"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={barcodeValue}
+                    onChange={(e) => setBarcodeValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      // El escáner manda Enter al final: así se cambia el código
+                      // escaneando la etiqueta nueva, sin tocar el teclado.
+                      if (e.key === 'Enter') { e.preventDefault(); void submitBarcodeChange(); }
+                    }}
+                    placeholder="Escribe el código nuevo..."
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 font-mono focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  {/* Con la cámara solo se llena el campo: el cambio se confirma
+                      con el botón, porque deja inservibles las etiquetas viejas. */}
+                  <ScanButton onClick={() => setCameraTarget({ kind: 'barcode' })} />
+                </div>
               </div>
 
               <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 font-medium leading-relaxed">
@@ -2840,14 +2876,17 @@ const handleExportCSV = async () => {
               )}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Código de Barras (Escanea o deja vacío)</label>
-                <input
-                  type="text"
-                  autoFocus
-                  value={addVariantSku}
-                  onChange={(e) => setAddVariantSku(e.target.value)}
-                  placeholder="Escanea el código aquí..."
-                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={addVariantSku}
+                    onChange={(e) => setAddVariantSku(e.target.value)}
+                    placeholder="Escanea el código aquí..."
+                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                  />
+                  <ScanButton onClick={() => setCameraTarget({ kind: 'addVariant' })} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2924,6 +2963,13 @@ const handleExportCSV = async () => {
           />
         </div>
       )}
+
+      <CameraScanner
+        isOpen={!!cameraTarget}
+        onClose={() => setCameraTarget(null)}
+        onScan={handleCameraScan}
+        title={cameraTarget?.kind === 'search' ? 'Buscar por código' : 'Leer código de barras'}
+      />
     </>
   );
 }

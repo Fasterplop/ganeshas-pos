@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
+import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import { formatVariant } from '@/lib/productVariant';
 import { fmtUSD } from '@/lib/finanzas/money';
@@ -191,6 +192,41 @@ export default function OfertasPage() {
       clearTimeout(timer);
     };
   }, [search, scope, supabase]);
+
+  // --- Escáner con la cámara ---------------------------------------------
+  // Una oferta tiene UN objetivo, así que lee un código y cierra. En modo
+  // "modelo", el código de cualquier talla elige su producto padre.
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const pickByBarcode = async (code: string) => {
+    setFormError(null);
+    const { data } = await supabase
+      .from('products')
+      .select('id, name, sku_barcode, price, talla, color, category, owner_store_id, parent_group_id')
+      .eq('sku_barcode', code)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (!data) {
+      setFormError(`No se encontró ningún producto con el código ${code}.`);
+      return;
+    }
+    if (scope === 'product') {
+      setTargetProduct(data as unknown as ProductLite);
+    } else if (scope === 'group') {
+      if (!data.parent_group_id) {
+        setFormError(`"${data.name}" no pertenece a ningún modelo. Elige "Producto" para ponerle la oferta solo a él.`);
+        return;
+      }
+      const { data: g } = await supabase
+        .from('product_groups')
+        .select('id, name, owner_store_id')
+        .eq('id', data.parent_group_id)
+        .maybeSingle();
+      if (g) setTargetGroup(g as unknown as GroupLite);
+    }
+    setSearch('');
+    setProductHits([]);
+    setGroupHits([]);
+  };
 
   // --- Vista previa: a cuántos productos toca y cómo les queda el precio ----
   const loadPreview = useCallback(async () => {
@@ -460,6 +496,13 @@ export default function OfertasPage() {
         oferta se apaga sola, sin reimprimir ninguna etiqueta.
       </p>
 
+      <CameraScanner
+        isOpen={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onScan={pickByBarcode}
+        title={scope === 'group' ? 'Escanear una talla del modelo' : 'Escanear producto'}
+      />
+
       {/* MODAL: NUEVA OFERTA */}
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Nueva oferta">
         <div className="space-y-4">
@@ -543,13 +586,19 @@ export default function OfertasPage() {
                 </div>
               ) : (
                 <>
-                  <input
-                    type="text"
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                    placeholder={scope === 'product' ? 'Busca por nombre o código…' : 'Busca el modelo por nombre…'}
-                    className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      placeholder={scope === 'product' ? 'Busca por nombre o código…' : 'Busca el modelo por nombre…'}
+                      className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none"
+                    />
+                    <ScanButton
+                      onClick={() => setCameraOpen(true)}
+                      title={scope === 'product' ? 'Escanear el producto' : 'Escanear una talla del modelo'}
+                    />
+                  </div>
                   {(scope === 'product' ? productHits.length : groupHits.length) > 0 && (
                     <ul className="border border-slate-200 rounded-lg mt-1 max-h-48 overflow-y-auto divide-y divide-slate-100">
                       {scope === 'product'

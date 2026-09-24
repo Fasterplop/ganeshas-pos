@@ -24,6 +24,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import { usePOSStore } from '@/store/usePOSStore';
 import { formatVariant } from '@/lib/productVariant';
 import { fmtUSD, fmtVES } from '@/lib/finanzas/money';
@@ -90,6 +91,16 @@ export default function ConsultarPrecioPage() {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Escáner con la cámara (para un teléfono sin lector láser). Mientras está
+  // abierto, el "re-foco" automático del input se suspende (ref, porque lo leen
+  // listeners registrados una sola vez).
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const cameraOpenRef = useRef(false);
+  const setCamera = (open: boolean) => {
+    cameraOpenRef.current = open;
+    setCameraOpen(open);
+  };
+
   const [code, setCode] = useState('');
   const [keyboardOn, setKeyboardOn] = useState(false);
   const [result, setResult] = useState<ResultState>({ kind: 'idle' });
@@ -110,7 +121,9 @@ export default function ConsultarPrecioPage() {
   const storeId = currentStore?.id ?? null;
 
   const focusScanner = useCallback(() => {
-    setTimeout(() => inputRef.current?.focus(), 10);
+    setTimeout(() => {
+      if (!cameraOpenRef.current) inputRef.current?.focus();
+    }, 10);
   }, []);
 
   // --- Últimos escaneos (por dispositivo) ----------------------------------
@@ -349,13 +362,14 @@ export default function ConsultarPrecioPage() {
   // segundo plano: el empleado nunca debería tener que tocar la pantalla.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') inputRef.current?.focus();
+      if (document.visibilityState === 'visible' && !cameraOpenRef.current) inputRef.current?.focus();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
   const handleSurfaceClick = (e: React.MouseEvent) => {
+    if (cameraOpenRef.current) return;
     const el = e.target as HTMLElement;
     if (el.closest('input, button, select, textarea, a')) return;
     inputRef.current?.focus();
@@ -367,6 +381,15 @@ export default function ConsultarPrecioPage() {
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-2xl mx-auto pb-10" onClick={handleSurfaceClick}>
+      <CameraScanner
+        isOpen={cameraOpen}
+        onClose={() => {
+          setCamera(false);
+          focusScanner();
+        }}
+        onScan={code => resolve(code)}
+        title="Consultar precio"
+      />
       {/* Encabezado */}
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -436,15 +459,19 @@ export default function ConsultarPrecioPage() {
           <label className="text-[10px] uppercase tracking-widest text-teal-700 font-bold">
             Listo para escanear…
           </label>
-          <button
-            onClick={() => {
-              setKeyboardOn(v => !v);
-              setTimeout(() => inputRef.current?.focus(), 10);
-            }}
-            className="text-xs font-semibold text-slate-500 hover:text-slate-800 border border-slate-300 rounded-full px-3 py-1 cursor-pointer"
-          >
-            {keyboardOn ? 'Ocultar teclado' : 'Teclado'}
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Para un teléfono sin lector láser: lee con la cámara. */}
+            <ScanButton onClick={() => setCamera(true)} className="px-3 py-1 text-xs rounded-full" label="Cámara" />
+            <button
+              onClick={() => {
+                setKeyboardOn(v => !v);
+                setTimeout(() => inputRef.current?.focus(), 10);
+              }}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800 border border-slate-300 rounded-full px-3 py-1 cursor-pointer"
+            >
+              {keyboardOn ? 'Ocultar teclado' : 'Teclado'}
+            </button>
+          </div>
         </div>
         <input
           ref={inputRef}
@@ -460,7 +487,9 @@ export default function ConsultarPrecioPage() {
           onKeyDown={handleKeyDown}
           onBlur={e => {
             // Si el foco se fue a otro control (el input de la tasa, un boton),
-            // se respeta. Si se fue a la nada, vuelve al escaner.
+            // se respeta. Si se fue a la nada, vuelve al escaner. Con la camara
+            // abierta no: el visor tapa la pantalla y no hay que robarle el foco.
+            if (cameraOpenRef.current) return;
             const next = e.relatedTarget as HTMLElement | null;
             if (next && next.closest('input, button, select, textarea, a')) return;
             setTimeout(() => inputRef.current?.focus(), 120);

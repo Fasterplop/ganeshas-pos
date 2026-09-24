@@ -167,8 +167,8 @@ export default function ShipmentCostSection({
       return;
     }
 
-    // El pago es lo que de verdad mueve el dinero: baja el saldo de la cuenta y
-    // el trigger deja la compra en 'pagada'.
+    // El pago deja anotada la cuenta con que se pagó (NO toca su saldo, que es
+    // manual) y el trigger deja la compra en 'pagada'.
     if (paid) {
       const { error: payError } = await supabase.from('fin_payments').insert({
         expense_id: expense.id,

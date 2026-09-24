@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { usePOSStore } from '@/store/usePOSStore';
+import { createClient } from '@/lib/supabase/client';
 
 // Rutas que NO se bloquean por falta de tasa: /consultar-precio pide la tasa
 // del dia por su cuenta y la guarda en la base (db/scanner_01_bcv_rates.sql),
@@ -24,6 +25,17 @@ export default function BcvModal() {
     const rate = parseFloat(inputValue);
     if (rate > 0) {
       setBcvRate(rate);
+      // Además se guarda en bcv_rates: así queda el histórico diario que usa el
+      // conector de Finanzas para pasar Bs a dólares con la tasa de cada día.
+      // Si falla, la caja sigue igual (la tasa ya quedó en memoria).
+      createClient()
+        .rpc('set_bcv_rate', { p_rate: rate })
+        .then(
+          ({ error }) => {
+            if (error) console.warn('[BcvModal] No se pudo guardar la tasa en la base:', error.message);
+          },
+          () => undefined,
+        );
     }
   };
 

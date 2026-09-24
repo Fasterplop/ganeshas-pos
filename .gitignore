@@ -42,3 +42,6 @@ next-env.d.ts
 
 # backups de la base de datos (contienen datos de clientes)
 /backups
+
+# lector de codigos de la camara: lo copia scripts/copy-zxing-wasm.mjs en predev/prebuild
+/public/zxing

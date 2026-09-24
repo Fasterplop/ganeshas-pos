@@ -10,6 +10,8 @@ import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { offersAvailable, pricedFallback, pricedTable } from '@/lib/pricedProducts';
 import CasheaLogo from '@/components/CasheaLogo';
 import ExchangeModal from '@/components/ExchangeModal';
+import CameraScanner, { ScanButton } from '@/components/CameraScanner';
+import { findProductByBarcode } from '@/lib/barcodeLookup';
 
 
 // Una variante hermana dentro del mismo producto padre (para el "cambiar"
@@ -58,7 +60,9 @@ export default function POSPage() {
   const { cart, addToCart, removeFromCart, clearCart, bcvRate, currentStore } = usePOSStore();
   
   const searchInputRef = useRef<HTMLInputElement>(null);
-  
+  // Escáner con la cámara del teléfono (modo continuo: agrega uno tras otro).
+  const [cameraOpen, setCameraOpen] = useState(false);
+
   const [docType, setDocType] = useState('V-');
   const [docNumber, setDocNumber] = useState('');
   const [customerName, setCustomerName] = useState('');
@@ -397,30 +401,32 @@ export default function POSPage() {
     }
   };
 
+  // Agrega al carrito por código EXACTO. La usan el lector USB (Enter) y la
+  // cámara. Devuelve el texto que el visor de la cámara muestra sobre el video.
+  const addByBarcode = async (code: string): Promise<string> => {
+    const barcode = code.trim();
+    const { product: data } = await findProductByBarcode(supabase, barcode);
+
+    if (data) {
+      // price = lo que se cobra (con oferta); base_price = el de lista, solo
+      // para poder tacharlo en pantalla. `sale_items.unit_price` guarda price.
+      addToCart({ id: data.id, name: data.name, price: priceOf(data), base_price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
+      setProductSearch('');
+      setSearchResults([]);
+      const variant = formatVariant(data.talla, data.color);
+      return `✓ ${data.name}${variant ? ` (${variant})` : ''} · $${priceOf(data).toFixed(2)}`;
+    }
+    showNotification(`Producto no encontrado: ${barcode}`, 'error');
+    setProductSearch('');
+    return `✗ No encontrado: ${barcode}`;
+  };
+
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const barcode = productSearch.trim();
-      
-      if (!barcode) return;
+      if (!productSearch.trim()) return;
 
-      const run = (table: string) =>
-        supabase.from(table).select('*').eq('sku_barcode', barcode).eq('is_active', true).maybeSingle();
-
-      let res = await run(pricedTable());
-      if (pricedFallback(res.error)) res = await run(pricedTable());
-      const data = res.data;
-
-      if (data) {
-        // price = lo que se cobra (con oferta); base_price = el de lista, solo
-        // para poder tacharlo en pantalla. `sale_items.unit_price` guarda price.
-        addToCart({ id: data.id, name: data.name, price: priceOf(data), base_price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
-        setProductSearch('');
-        setSearchResults([]);
-      } else {
-        showNotification(`Producto no encontrado: ${barcode}`, 'error');
-        setProductSearch('');
-      }
+      await addByBarcode(productSearch);
 
       setTimeout(() => {
         searchInputRef.current?.focus();
@@ -918,6 +924,14 @@ export default function POSPage() {
         initialSaleId={null}
       />
 
+      <CameraScanner
+        isOpen={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onScan={addByBarcode}
+        continuous
+        title="Escanear para vender"
+      />
+
       <div className="flex flex-col lg:flex-row gap-4 pb-6 lg:pb-0 lg:flex-1 lg:min-h-0">
         
         {/* Columna Izquierda: Búsqueda y Carrito */}
@@ -1008,7 +1022,8 @@ export default function POSPage() {
                   placeholder="🛒 Busca por nombre o escanea código de barras..."
                   className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
                 />
-                <button 
+                <ScanButton onClick={() => setCameraOpen(true)} className="lg:hidden px-4" />
+                <button
                   onClick={() => setShowQuickAdd(!showQuickAdd)}
                   className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
                     showQuickAdd 

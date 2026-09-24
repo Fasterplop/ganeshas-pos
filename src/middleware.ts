@@ -46,9 +46,12 @@ export async function middleware(request: NextRequest) {
   return response;
 }
 
-// Evitamos que el middleware se ejecute en archivos estáticos o imágenes
+// Evitamos que el middleware se ejecute en archivos estáticos o imágenes, en
+// el lector de la cámara (zxing/*.wasm) y en /api/fin-agent: el conector de
+// ChatGPT entra con su propio token, no con sesión, y refrescarle una sesión
+// que no tiene es una llamada a Supabase gastada en cada petición.
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|api/fin-agent|zxing/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|wasm)$).*)',
   ],
 };

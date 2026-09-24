@@ -5,7 +5,8 @@
 // Son GLOBALES, sin store_id: la Amex paga para cualquier sucursal.
 //
 // El saldo NO se guarda, se deriva (vista fin_v_account_balance):
-//   saldo = saldo inicial ± lo que se movió por esta cuenta
+//   saldo = saldo inicial ± los abonos y cargos MANUALES de esta cuenta
+// Ningún pago de compra o gasto lo mueve (db/finanzas_06_saldo_manual.sql).
 // Guardarlo materializado sería una segunda fuente de verdad que se
 // desincroniza en cuanto se corrige un pago.
 

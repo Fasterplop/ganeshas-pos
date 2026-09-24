@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-zxing-wasm.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-zxing-wasm.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -12,6 +14,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
+    "barcode-detector": "^3.2.2",
     "exceljs": "^4.4.0",
     "lucide-react": "^1.16.0",
     "next": "16.2.6",

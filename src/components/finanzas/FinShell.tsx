@@ -5,7 +5,7 @@
 //
 // No hay selector de tienda: las finanzas son del negocio completo.
 //
-// Las ocho secciones van como PESTAÑAS y no como ocho ítems en la barra
+// Las nueve secciones van como PESTAÑAS y no como ocho ítems en la barra
 // lateral: el menú del POS tiene seis entradas y meterle ocho más lo volvería
 // inservible, sobre todo en móvil.
 
@@ -24,6 +24,8 @@ const TABS = [
   { name: 'Calendario', path: '/finanzas/calendario' },
   { name: 'Gastos', path: '/finanzas/gastos' },
   { name: 'Personal', path: '/finanzas/personal' },
+  // Lo que ChatGPT propone desde los estados de cuenta (finanzas_07).
+  { name: 'Bandeja', path: '/finanzas/bandeja' },
 ];
 
 type InstallState = 'checking' | 'ready' | 'missing';
@@ -39,6 +41,7 @@ interface FinShellProps {
 export default function FinShell({ title, subtitle, actions, children }: FinShellProps) {
   const pathname = usePathname();
   const [install, setInstall] = useState<InstallState>('checking');
+  const [inboxPending, setInboxPending] = useState(0);
 
   // Las migraciones se aplican A MANO en Supabase, así que el front puede
   // estar desplegado antes que el SQL. Sin esta comprobación, la primera
@@ -47,9 +50,15 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
     let cancelled = false;
     (async () => {
       const supabase = createClient();
-      const { error } = await supabase.from('fin_suppliers').select('id').limit(1);
+      const [{ error }, inbox] = await Promise.all([
+        supabase.from('fin_suppliers').select('id').limit(1),
+        // Contador de la pestaña Bandeja. Si finanzas_07 no está aplicado, el
+        // error se ignora y la pestaña simplemente no lleva número.
+        supabase.from('fin_inbox').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'),
+      ]);
       if (cancelled) return;
       setInstall(error && isMissingTableError(error) ? 'missing' : 'ready');
+      setInboxPending(inbox.error ? 0 : (inbox.count ?? 0));
     })();
     return () => {
       cancelled = true;
@@ -68,7 +77,7 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">{actions}</div>
         </div>
 
-        {/* En teléfono y tablet las ocho pestañas se ven de una vez, en
+        {/* En teléfono y tablet las nueve pestañas se ven de una vez, en
             filas: una tira deslizable escondía varias sin que se notara. */}
         <nav className="mt-5 md:-mx-1 md:overflow-x-auto">
           <div className="grid grid-cols-3 min-[400px]:grid-cols-4 gap-1.5 md:flex md:gap-1 md:min-w-max md:border-b md:border-slate-200 md:px-1">
@@ -88,6 +97,11 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
                   }`}
                 >
                   {tab.name}
+                  {tab.path === '/finanzas/bandeja' && inboxPending > 0 && (
+                    <span className="ml-1 inline-block min-w-[1.25rem] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-4 align-middle">
+                      {inboxPending}
+                    </span>
+                  )}
                 </Link>
               );
             })}

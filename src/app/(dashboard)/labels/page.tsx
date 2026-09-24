@@ -9,6 +9,8 @@ import BarcodeLabel from '@/components/labels/BarcodeLabel';
 import { isClothingStore } from '@/lib/stores';
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { pricedFallback, pricedTable } from '@/lib/pricedProducts';
+import { findProductByBarcode } from '@/lib/barcodeLookup';
+import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 
 interface LabelProduct {
   id: string;
@@ -180,6 +182,35 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
     setSearchResults([]); 
   };
 
+  // Escáner con la cámara (continuo): cada código leído suma una etiqueta. Va
+  // con actualización funcional porque las lecturas llegan seguidas y un
+  // closure viejo de selectedProducts perdería alguna.
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const addByBarcode = async (code: string): Promise<string> => {
+    const { product } = await findProductByBarcode(supabase, code);
+    if (!product) return `✗ No encontrado: ${code}`;
+    setSelectedProducts(prev => {
+      const exists = prev.find(p => p.id === product.id);
+      if (exists) {
+        return prev.map(p => (p.id === product.id ? { ...p, copies: getSafeCopies(p.copies) + 1 } : p));
+      }
+      return [...prev, {
+        id: product.id,
+        name: product.name,
+        sku_barcode: product.sku_barcode,
+        price: product.price,
+        effective_price: priceOf(product),
+        offer_percent: product.offer_id ? Number(product.offer_percent) : null,
+        owner_store_id: product.owner_store_id ?? null,
+        copies: 1,
+        talla: product.talla ?? null,
+        color: product.color ?? null,
+      }];
+    });
+    const variant = formatVariant(product.talla, product.color);
+    return `✓ ${product.name}${variant ? ` (${variant})` : ''} · +1 etiqueta`;
+  };
+
   const handleRemoveProduct = (id: string) => {
     setSelectedProducts(selectedProducts.filter(p => p.id !== id));
   };
@@ -304,12 +335,22 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
               
               {/* BUSCADOR CON DROPDOWN (Estilo POS) */}
               <div className="relative mb-6">
-                <input 
-                  type="text" 
-                  value={productSearch}
-                  onChange={handleSearchChange}
-                  placeholder="🔍 Buscar por nombre o código de barras para añadir a impresión..." 
-                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={productSearch}
+                    onChange={handleSearchChange}
+                    placeholder="🔍 Buscar por nombre o código de barras para añadir a impresión..."
+                    className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                  />
+                  <ScanButton onClick={() => setCameraOpen(true)} className="lg:hidden px-4" />
+                </div>
+                <CameraScanner
+                  isOpen={cameraOpen}
+                  onClose={() => setCameraOpen(false)}
+                  onScan={addByBarcode}
+                  continuous
+                  title="Escanear para etiquetas"
                 />
                 {searchResults.length > 0 && (
                   <ul className="absolute z-10 w-full bg-white border border-slate-200 shadow-xl rounded-lg mt-1 max-h-60 overflow-y-auto">
