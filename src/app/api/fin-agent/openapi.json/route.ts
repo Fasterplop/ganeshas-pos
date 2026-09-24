@@ -8,9 +8,11 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 function serverUrl(req: NextRequest): string {
   const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? 'pos.ganeshastores.com';
+  // Fuera de la red local SIEMPRE https: ChatGPT rechaza acciones sin TLS, y
+  // detrás de nginx el x-forwarded-proto que llega es 'http' (lo pone el
+  // propio Next al recibir de nginx por HTTP plano), no el del navegador.
   const local = /^(localhost|127\.|192\.168\.|10\.)/.test(host);
-  const proto = req.headers.get('x-forwarded-proto') ?? (local ? 'http' : 'https');
-  return `${proto}://${host}/api/fin-agent`;
+  return `${local ? 'http' : 'https'}://${host}/api/fin-agent`;
 }
 
 const date = { type: 'string', format: 'date', description: 'AAAA-MM-DD' };
