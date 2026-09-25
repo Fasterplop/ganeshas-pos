@@ -3,12 +3,13 @@
 import { useEffect, useState } from 'react';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 import { createClient } from '@/lib/supabase/client';
+import { tieneTiendaFija, type AppRole } from '@/lib/roles';
 
 interface StoreGuardProps {
   userProfile: {
     id: string;
     full_name: string; // <-- Aseguramos que typescript sepa que existe
-    role: 'owner' | 'cashier';
+    role: AppRole;
     assigned_store_id?: string;
   };
   stores: Store[];
@@ -22,7 +23,11 @@ export default function StoreGuard({ userProfile, stores, children }: StoreGuard
 
   useEffect(() => {
     const initializeStore = () => {
-      if (userProfile.role === 'cashier') {
+      // Cajero y consulta trabajan en UNA sucursal: se les fija la asignada.
+      // Sin esto el rol nuevo se quedaria sin `currentStore` y /consultar-precio
+      // mostraria el precio pero no el stock (la consulta de stock necesita el
+      // store_id y se saltaba entera).
+      if (tieneTiendaFija(userProfile.role)) {
         const assigned = stores.find(s => s.id === userProfile.assigned_store_id);
         if (!assigned || !assigned.is_active) {
           setError("Tu sucursal asignada no está activa. Contacta al administrador.");

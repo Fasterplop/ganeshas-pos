@@ -6,7 +6,9 @@ import Image from 'next/image';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 
-type Role = 'owner' | 'cashier';
+import { type AppRole } from '@/lib/roles';
+
+type Role = AppRole;
 
 interface TopBarMenuProps {
   userRole: Role;
@@ -31,7 +33,7 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] }, 
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
-    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier'] },
+    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'consulta'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
     { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
     { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },

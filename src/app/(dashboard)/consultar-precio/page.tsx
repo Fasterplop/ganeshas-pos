@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import { usePOSStore } from '@/store/usePOSStore';
+import { Barcode, Keyboard } from 'lucide-react';
 import { formatVariant } from '@/lib/productVariant';
 import { fmtUSD, fmtVES } from '@/lib/finanzas/money';
 import { hasOffer, offerBadge, offerEndsLabel, priceOf } from '@/lib/offers';
@@ -55,16 +56,6 @@ interface PricedRow {
 interface Sibling extends PricedRow {
   stock: number;
 }
-
-interface RecentScan {
-  sku: string;
-  name: string;
-  variant: string;
-  price: number;
-}
-
-const RECENT_KEY = 'gs.consultar-precio.recientes';
-const MAX_RECENT = 10;
 
 /** Un código con comodines de PostgREST no se puede usar en un ilike seguro. */
 const hasWildcards = (s: string) => /[%*_,()\\]/.test(s);
@@ -106,7 +97,6 @@ export default function ConsultarPrecioPage() {
   const [result, setResult] = useState<ResultState>({ kind: 'idle' });
   const [siblings, setSiblings] = useState<Sibling[] | null>(null);
   const [loadingSiblings, setLoadingSiblings] = useState(false);
-  const [recent, setRecent] = useState<RecentScan[]>([]);
 
   // Tasa del día
   const [rateReady, setRateReady] = useState(false);
@@ -124,28 +114,6 @@ export default function ConsultarPrecioPage() {
     setTimeout(() => {
       if (!cameraOpenRef.current) inputRef.current?.focus();
     }, 10);
-  }, []);
-
-  // --- Últimos escaneos (por dispositivo) ----------------------------------
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(RECENT_KEY);
-      if (raw) setRecent(JSON.parse(raw));
-    } catch {
-      // localStorage bloqueado (modo privado): la lista simplemente arranca vacía.
-    }
-  }, []);
-
-  const pushRecent = useCallback((entry: RecentScan) => {
-    setRecent(prev => {
-      const next = [entry, ...prev.filter(r => r.sku !== entry.sku)].slice(0, MAX_RECENT);
-      try {
-        window.localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-      } catch {
-        // sin persistencia: la lista igual funciona durante la sesión.
-      }
-      return next;
-    });
   }, []);
 
   // --- Tasa BCV ------------------------------------------------------------
@@ -271,16 +239,10 @@ export default function ConsultarPrecioPage() {
       }
       const stocks = await stockFor([product.id]);
       setResult({ kind: 'found', product, stock: stocks[product.id] ?? 0 });
-      pushRecent({
-        sku: product.sku_barcode,
-        name: product.name,
-        variant: formatVariant(product.talla, product.color),
-        price: priceOf(product),
-      });
       focusScanner();
       void loadSiblings(product);
     },
-    [stockFor, pushRecent, focusScanner, loadSiblings],
+    [stockFor, focusScanner, loadSiblings],
   );
 
   const searchByName = useCallback(
@@ -380,7 +342,7 @@ export default function ConsultarPrecioPage() {
   const bsOf = (usd: number) => (effectiveRate > 0 ? fmtVES(usd * effectiveRate) : '—');
 
   return (
-    <div className="flex flex-col gap-4 w-full max-w-2xl mx-auto pb-10" onClick={handleSurfaceClick}>
+    <div className="flex flex-col gap-3 w-full max-w-2xl mx-auto pb-10" onClick={handleSurfaceClick}>
       <CameraScanner
         isOpen={cameraOpen}
         onClose={() => {
@@ -390,28 +352,26 @@ export default function ConsultarPrecioPage() {
         onScan={code => resolve(code)}
         title="Consultar precio"
       />
-      {/* Encabezado */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">Consultar precio</h1>
-          <p className="text-slate-500 text-sm mt-0.5">{currentStore?.name ?? 'Sin tienda'}</p>
-        </div>
-        <div className="text-right shrink-0">
-          <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Tasa BCV</p>
-          <p className="text-sm font-bold text-slate-700">
+      {/* Encabezado: una sola linea, lo mas discreta posible.
+          El titulo y la sucursal ya los dice la barra de navegacion de arriba,
+          y en un telefono cada linea que se repite es una linea menos de
+          producto. Queda solo la tasa, que hay que poder corregir en el dia. */}
+      <div className="flex items-center justify-end gap-2 text-[11px] text-slate-400 -mb-1">
+        <span>
+          Tasa <span className="font-semibold text-slate-500">
             {effectiveRate > 0 ? effectiveRate.toLocaleString('es-VE') : '—'}
-          </p>
-          <button
-            onClick={() => {
-              setRateInput(effectiveRate > 0 ? String(effectiveRate) : '');
-              setRateError(null);
-              setRateFormOpen(v => !v);
-            }}
-            className="text-xs text-teal-700 hover:text-teal-900 font-semibold underline cursor-pointer"
-          >
-            Actualizar tasa
-          </button>
-        </div>
+          </span>
+        </span>
+        <button
+          onClick={() => {
+            setRateInput(effectiveRate > 0 ? String(effectiveRate) : '');
+            setRateError(null);
+            setRateFormOpen(v => !v);
+          }}
+          className="text-teal-700 hover:text-teal-900 font-semibold underline cursor-pointer"
+        >
+          Actualizar
+        </button>
       </div>
 
       {/* Tasa del día: se pide una vez y queda guardada para todos */}
@@ -453,26 +413,13 @@ export default function ConsultarPrecioPage() {
         </div>
       )}
 
-      {/* Casilla de escaneo */}
-      <div className="bg-white rounded-xl shadow-sm border-2 border-teal-600 p-4">
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-[10px] uppercase tracking-widest text-teal-700 font-bold">
-            Listo para escanear…
-          </label>
-          <div className="flex items-center gap-2">
-            {/* Para un teléfono sin lector láser: lee con la cámara. */}
-            <ScanButton onClick={() => setCamera(true)} className="px-3 py-1 text-xs rounded-full" label="Cámara" />
-            <button
-              onClick={() => {
-                setKeyboardOn(v => !v);
-                setTimeout(() => inputRef.current?.focus(), 10);
-              }}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 border border-slate-300 rounded-full px-3 py-1 cursor-pointer"
-            >
-              {keyboardOn ? 'Ocultar teclado' : 'Teclado'}
-            </button>
-          </div>
-        </div>
+      {/* Casilla de escaneo: una sola fila. El icono de codigo de barras a la
+          izquierda dice para que sirve el campo sin gastar una linea de texto,
+          y la camara y el teclado van como iconos a la derecha, dentro del
+          mismo recuadro. */}
+      <div className="flex items-center gap-2 bg-white rounded-xl shadow-sm border border-slate-300 focus-within:border-teal-600 focus-within:ring-1 focus-within:ring-teal-600 pl-3 pr-2 py-1.5 transition">
+        <Barcode size={22} className="text-slate-400 shrink-0" />
+        <div className="w-px self-stretch bg-slate-200 my-1" />
         <input
           ref={inputRef}
           type="text"
@@ -494,9 +441,29 @@ export default function ConsultarPrecioPage() {
             if (next && next.closest('input, button, select, textarea, a')) return;
             setTimeout(() => inputRef.current?.focus(), 120);
           }}
-          placeholder="Dispara el gatillo del escáner"
-          className="w-full p-4 text-xl font-mono border-2 border-slate-200 rounded-lg bg-slate-50 text-slate-800 focus:outline-none focus:border-teal-600 focus:bg-white transition"
+          placeholder="Escanear o escribir código..."
+          className="flex-1 min-w-0 py-2 text-base font-mono bg-transparent text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:outline-none"
         />
+        <ScanButton
+          onClick={() => setCamera(true)}
+          className="p-2 rounded-lg"
+          title="Escanear con la cámara"
+        />
+        <button
+          onClick={() => {
+            setKeyboardOn(v => !v);
+            setTimeout(() => inputRef.current?.focus(), 10);
+          }}
+          title={keyboardOn ? 'Ocultar el teclado' : 'Escribir a mano'}
+          aria-label={keyboardOn ? 'Ocultar el teclado' : 'Escribir a mano'}
+          className={`shrink-0 p-2 rounded-lg border transition cursor-pointer ${
+            keyboardOn
+              ? 'bg-teal-50 border-teal-300 text-teal-700'
+              : 'border-slate-300 text-slate-400 hover:text-slate-600'
+          }`}
+        >
+          <Keyboard size={20} />
+        </button>
       </div>
 
       {/* Resultado */}
@@ -571,30 +538,6 @@ export default function ConsultarPrecioPage() {
         />
       )}
 
-      {/* Últimos escaneos */}
-      {recent.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <p className="px-4 py-3 text-[10px] uppercase tracking-widest text-slate-400 font-bold border-b border-slate-100">
-            Últimos escaneos
-          </p>
-          <ul className="divide-y divide-slate-100">
-            {recent.map(r => (
-              <li key={r.sku}>
-                <button
-                  onClick={() => void resolve(r.sku)}
-                  className="w-full text-left px-4 py-3 hover:bg-slate-50 transition flex justify-between items-center gap-3 cursor-pointer"
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-slate-700 truncate">{r.name}</span>
-                    {r.variant && <span className="block text-xs text-slate-400">{r.variant}</span>}
-                  </span>
-                  <span className="text-sm font-bold text-slate-500 shrink-0">{fmtUSD(r.price)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
@@ -617,41 +560,43 @@ function ProductCard({
   const onSale = hasOffer(product);
   const endsLabel = onSale ? offerEndsLabel(product.offer_ends_at) : '';
 
+  // Ficha compacta: en el telefono del piso de venta lo que importa es leer el
+  // precio de un vistazo y seguir escaneando. El nombre y el codigo arriba, los
+  // dos precios en una sola fila, y el stock en una linea. Todo entra sin
+  // scroll, asi que el empleado no toca la pantalla entre producto y producto.
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-      <p className="text-xl sm:text-2xl font-bold text-slate-800 leading-tight">{product.name}</p>
-      <p className="text-sm text-slate-500 mt-1">
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+      <p className="text-base font-bold text-slate-800 leading-snug">{product.name}</p>
+      <p className="text-xs text-slate-500 mt-0.5">
         {variant && <span className="font-semibold text-slate-600">{variant} · </span>}
         <span className="font-mono">{product.sku_barcode}</span>
       </p>
 
       {onSale && (
-        <div className="mt-3 inline-flex items-center gap-2">
-          <span className="bg-red-100 text-red-700 text-xs font-black px-2.5 py-1 rounded-full tracking-wide">
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <span className="bg-red-100 text-red-700 text-[10px] font-black px-2 py-0.5 rounded-full tracking-wide">
             {offerBadge(product.offer_percent)}
           </span>
-          {endsLabel && <span className="text-xs text-slate-500 font-medium">{endsLabel}</span>}
+          <span className="text-sm text-slate-400 line-through">{fmtUSD(product.price)}</span>
+          {endsLabel && <span className="text-[11px] text-slate-500 font-medium">{endsLabel}</span>}
         </div>
       )}
 
-      <div className="mt-3 flex items-baseline gap-3 flex-wrap">
-        {onSale && <span className="text-xl text-slate-400 line-through">{fmtUSD(product.price)}</span>}
-        <span className="text-5xl font-black text-slate-900 leading-none">{fmtUSD(price)}</span>
+      {/* Los dos precios, lado a lado y separados por una linea */}
+      <div className="mt-2 flex items-center gap-4">
+        <p className="text-4xl font-black text-slate-900 leading-none shrink-0">{fmtUSD(price)}</p>
+        <div className="w-px self-stretch bg-slate-200" />
+        <div className="min-w-0">
+          <p className="text-lg font-semibold text-slate-600 leading-tight truncate">{bsOf(price)}</p>
+          <p className="text-[11px] text-slate-400 leading-tight">tasa BCV del día</p>
+        </div>
       </div>
 
-      <p className="text-lg font-semibold text-slate-600 mt-2">{bsOf(price)}</p>
-      <p className="text-[11px] text-slate-400">tasa BCV del día</p>
-
-      <div className="mt-4 pt-4 border-t border-slate-100">
-        <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">
-          Disponibles en {storeName ?? 'esta tienda'}
-        </p>
-        {stock > 0 ? (
-          <p className="text-3xl font-bold text-teal-700">{stock}</p>
-        ) : (
-          <p className="text-xl font-bold text-red-600">Agotado en esta tienda</p>
-        )}
-      </div>
+      <p className={`mt-2 font-bold ${stock > 0 ? 'text-teal-700' : 'text-red-600'}`}>
+        {stock > 0
+          ? `${stock} ${stock === 1 ? 'disponible' : 'disponibles'} en ${storeName ?? 'esta tienda'}`
+          : 'Agotado en esta tienda'}
+      </p>
     </div>
   );
 }

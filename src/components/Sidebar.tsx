@@ -6,7 +6,9 @@ import Image from 'next/image';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 
-type Role = 'owner' | 'cashier';
+import { tieneTiendaFija, type AppRole } from '@/lib/roles';
+
+type Role = AppRole;
 
 interface SidebarProps {
   userRole: Role;
@@ -31,7 +33,7 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
-    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier'] },
+    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'consulta'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
     { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
     { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },
@@ -67,8 +69,9 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
         </div>
       )}
 
-      {/* Indicador visual para el Cajero (Solo lectura) */}
-      {userRole === 'cashier' && currentStore && (
+      {/* Indicador visual para quien trabaja en una sola sucursal (cajero y
+          consulta). El dueno tiene el selector de arriba. */}
+      {tieneTiendaFija(userRole) && currentStore && (
         <div className="px-6 py-4 border-b border-teal-800 bg-teal-900/30">
           <p className="text-[10px] uppercase tracking-widest text-teal-300 font-bold mb-1">
             Sucursal Asignada

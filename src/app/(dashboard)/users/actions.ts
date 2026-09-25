@@ -1,6 +1,8 @@
 // src/app/(dashboard)/users/actions.ts
 'use server';
 
+import { ASSIGNABLE_ROLES, type AppRole } from '@/lib/roles';
+
 import { createClient as createServerClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 
@@ -34,16 +36,34 @@ export async function createCashierAction(formData: any) {
     if (authError) return { success: false, error: authError.message };
     if (!authData.user) return { success: false, error: 'No se pudo crear el usuario.' };
 
-    // Agregamos assigned_store_id a la inserción del perfil
+    // El rol lo elige el dueño en el formulario. Se valida contra la lista
+    // blanca ASSIGNABLE_ROLES: aunque el formData viene del navegador y podría
+    // traer 'owner', acá solo se aceptan los roles que el dueño puede repartir.
+    const rol: AppRole = ASSIGNABLE_ROLES.includes(formData.role) ? formData.role : 'cashier';
+
     const { error: profileError } = await supabaseAdmin.from('profiles').insert({
       id: authData.user.id,
       full_name: formData.full_name,
-      role: 'cashier',
+      role: rol,
       is_active: true, 
-      assigned_store_id: formData.assigned_store_id, // <-- NUEVO CAMPO
+      assigned_store_id: formData.assigned_store_id,
     });
 
-    if (profileError) return { success: false, error: 'Usuario en Auth creado, pero falló el perfil.' };
+    if (profileError) {
+      // El valor 'consulta' del enum se agrega a mano en Supabase
+      // (db/role_consulta_01_enum.sql). Si el SQL no se corrió, Postgres
+      // responde 22P02 "invalid input value for enum". Sin este aviso el
+      // dueño ve "falló el perfil" y no tiene forma de saber qué falta.
+      const esEnumSinAplicar =
+        profileError.code === '22P02' || /invalid input value for enum/i.test(profileError.message ?? '');
+      if (esEnumSinAplicar && rol !== 'cashier') {
+        return {
+          success: false,
+          error: `El rol "${rol}" todavía no existe en la base de datos. Falta correr db/role_consulta_01_enum.sql en Supabase.`,
+        };
+      }
+      return { success: false, error: 'Usuario en Auth creado, pero falló el perfil.' };
+    }
 
     return { success: true };
   } catch (err: any) {

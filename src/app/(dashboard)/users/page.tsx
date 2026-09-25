@@ -8,12 +8,17 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
+import { ASSIGNABLE_ROLES, ROLE_BADGE, ROLE_BADGE_CLASS, ROLE_HELP, ROLE_LABEL, type AppRole } from '@/lib/roles';
 
 // 1. Agregamos assigned_store_id como obligatorio en el esquema
 const userSchema = z.object({
   full_name: z.string().min(3, { message: 'El nombre debe tener al menos 3 letras' }),
   email: z.string().email({ message: 'Ingresa un correo válido' }),
   password: z.string().min(6, { message: 'Mínimo 6 caracteres' }),
+  // El dueño no se puede crear a sí mismo desde acá: solo cajero o consulta.
+  role: z.enum(['cashier', 'consulta']),
+  // La sucursal es obligatoria para los dos roles: el cajero factura en ella y
+  // el de consulta ve el stock de ella.
   assigned_store_id: z.string().min(1, { message: 'Debes asignar una sucursal' }),
 });
 
@@ -71,7 +76,18 @@ export default function UsersPage() {
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<UserFormValues>({
     resolver: zodResolver(userSchema),
+    defaultValues: { role: 'cashier' },
   });
+  // El rol elegido solo se usa para la ayuda de abajo del select. Va en un
+  // estado propio y no con `watch`: `watch` suscribe el componente entero a
+  // cada tecla del formulario y hace que el compilador de React se rinda con
+  // esta pantalla.
+  const [rolElegido, setRolElegido] = useState<AppRole>('cashier');
+
+  const fetchUsers = async () => {
+    const result = await getUsersAction();
+    if (result.success && result.users) setUsers(result.users);
+  };
 
   useEffect(() => {
     const checkRoleAndLoadData = async () => {
@@ -93,11 +109,6 @@ export default function UsersPage() {
     checkRoleAndLoadData();
   }, [router, supabase]);
 
-  const fetchUsers = async () => {
-    const result = await getUsersAction();
-    if (result.success && result.users) setUsers(result.users);
-  };
-
   // Función auxiliar para obtener el nombre de la tienda en la tabla
   const getStoreName = (storeId: string | null, role: string) => {
     if (role === 'owner') return 'Todas (Global)';
@@ -112,11 +123,12 @@ export default function UsersPage() {
     const result = await createCashierAction(data);
 
     if (result.success) {
-      setServerMessage({ type: 'success', text: '¡Cajero creado con éxito!' });
-      reset(); 
+      setServerMessage({ type: 'success', text: `¡Usuario creado con éxito (${ROLE_LABEL[data.role]})!` });
+      reset();
+      setRolElegido('cashier');
       await fetchUsers();
     } else {
-      setServerMessage({ type: 'error', text: result.error || 'Error al crear el cajero' });
+      setServerMessage({ type: 'error', text: result.error || 'Error al crear el usuario' });
     }
     setIsFormLoading(false);
   };
@@ -171,7 +183,7 @@ export default function UsersPage() {
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-shrink-0">
-          <h2 className="font-semibold text-slate-700 mb-4 pb-2 border-b border-slate-100">Crear Nuevo Cajero</h2>
+          <h2 className="font-semibold text-slate-700 mb-4 pb-2 border-b border-slate-100">Crear Nuevo Usuario</h2>
           
           {serverMessage && (
             <div className={`p-3 rounded-lg mb-4 text-sm font-medium ${
@@ -200,6 +212,21 @@ export default function UsersPage() {
               {errors.password && <p className="text-rose-500 text-xs mt-1 font-medium">{errors.password.message}</p>}
             </div>
 
+            {/* Rol: define a qué entra la persona. */}
+            <div>
+              <label className="block text-xs font-bold tracking-wide text-slate-600 uppercase mb-1">Rol</label>
+              <select
+                {...register('role', { onChange: e => setRolElegido(e.target.value as AppRole) })}
+                className="w-full p-2.5 border border-slate-300 rounded-lg text-sm bg-slate-50 hover:bg-white focus:bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600 transition cursor-pointer"
+              >
+                {ASSIGNABLE_ROLES.map(r => (
+                  <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                ))}
+              </select>
+              <p className="text-[11px] text-slate-500 mt-1 leading-snug">{ROLE_HELP[rolElegido]}</p>
+              {errors.role && <p className="text-rose-500 text-xs mt-1 font-medium">{errors.role.message}</p>}
+            </div>
+
             {/* 3. Selector de Sucursal */}
             <div>
               <label className="block text-xs font-bold tracking-wide text-slate-600 uppercase mb-1">Sucursal Asignada</label>
@@ -220,7 +247,7 @@ export default function UsersPage() {
                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                    Creando...
                  </span>
-              ) : 'Guardar Cajero'}
+              ) : 'Guardar Usuario'}
             </button>
           </form>
         </div>
@@ -250,8 +277,8 @@ export default function UsersPage() {
                       {getStoreName(user.assigned_store_id, user.role)}
                     </p>
                   </div>
-                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${user.role === 'owner' ? 'bg-purple-100 text-purple-700' : 'bg-teal-100 text-teal-700'}`}>
-                    {user.role === 'owner' ? 'Dueño' : 'Cajero'}
+                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${ROLE_BADGE_CLASS[user.role as AppRole] ?? 'bg-slate-100 text-slate-600'}`}>
+                    {ROLE_BADGE[user.role as AppRole] ?? user.role}
                   </span>
                 </div>
                 
@@ -316,8 +343,9 @@ export default function UsersPage() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase ${user.role === 'owner' ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-teal-50 text-teal-700 border border-teal-200'}`}>
-                        {user.role === 'owner' ? 'Dueño' : 'Cajero'}
+                      <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase ${ROLE_BADGE_CLASS[user.role as AppRole] ?? 'bg-slate-100 text-slate-600'}`}
+                            title={ROLE_LABEL[user.role as AppRole] ?? user.role}>
+                        {ROLE_BADGE[user.role as AppRole] ?? user.role}
                       </span>
                     </td>
                     <td className="px-6 py-4">

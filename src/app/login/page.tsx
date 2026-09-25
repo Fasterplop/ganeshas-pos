@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
+import { homeFor } from '@/lib/roles';
 import Image from 'next/image';
 
 // 1. Reglas de validación con Zod
@@ -99,12 +100,9 @@ function LoginContent() {
       return;
     }
 
-    if (profile.role === 'owner') {
-      router.push('/');
-    } else if (profile.role === 'cashier') {
-      router.push('/pos'); 
-    }
-
+    // Cada rol a su pantalla. Antes eran dos ramas sin `else`: un rol que no
+    // fuera owner ni cashier se autenticaba y se quedaba clavado en el login.
+    router.push(homeFor(profile.role));
     router.refresh();
   };
 
