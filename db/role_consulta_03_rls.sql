@@ -43,7 +43,27 @@
 -- ni borra ninguna política existente. El rollback está al final.
 --
 -- Aplicar en el SQL Editor de Supabase DESPUÉS de role_consulta_01 y 02.
+--
+-- ⚠️ SI FALLA CON "deadlock detected" O CON "lock timeout": VUELVE A CORRERLO.
+--    No es un error del script y no queda nada a medias: el editor de Supabase
+--    corre todo en UNA transacción, así que un fallo deshace el archivo entero.
+--
+--    Pasa porque `CREATE POLICY` necesita un AccessExclusiveLock sobre la tabla
+--    (el candado más fuerte que hay) y choca con cualquier otra cosa que esté
+--    leyendo esas tablas en ese instante. El culpable habitual es el propio
+--    panel de Supabase: los **Advisors** (Security/Performance) lanzan un
+--    escaneo del catálogo cada tanto y agarran los candados en el orden
+--    contrario. Antes de reintentar, **cierra las pestañas de Advisors y del
+--    Table Editor** y deja solo el SQL Editor abierto.
+--
+--    Y corre esto con la tienda cerrada. No por el riesgo de perder datos
+--    —no hay— sino porque mientras este script espera un candado, TODA consulta
+--    nueva sobre esas tablas se encola detrás: la caja se congelaría.
 -- ============================================================================
+
+-- Si en 5 segundos no consigue los candados, se rinde y deshace todo, en vez
+-- de quedarse esperando con la caja bloqueada detrás. Reintentar es gratis.
+SET lock_timeout = '5s';
 
 -- ----------------------------------------------------------------------------
 -- 1. ¿Quien llama es del rol 'consulta'?
