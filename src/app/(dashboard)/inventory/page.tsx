@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
@@ -311,10 +311,30 @@ export default function InventoryPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [viewStoreId, setViewStoreId] = useState<string>('');
 
-  const { register, handleSubmit, reset, watch, setValue, getValues, formState: { errors } } = useForm<ProductFormValues>({
+  const { register, handleSubmit, reset, watch, setValue, getValues, formState: { errors, isSubmitting } } = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
     defaultValues: { stock: 0, sku_barcode: '' }
   });
+
+  // --- Código autogenerado, estable mientras el formulario esté abierto ------
+  //
+  // Antes el código se sorteaba DENTRO del submit: dos clics seguidos daban
+  // ROP-575914 y ROP-170871, dos códigos distintos, y el UNIQUE de
+  // products.sku_barcode —que existe justo para esto— no llegaba a dispararse.
+  // Por eso un doble clic creaba dos productos en vez de fallar.
+  //
+  // Ahora cada "ranura" (el producto suelto, o cada fila de variante) recuerda
+  // su código mientras el formulario está abierto. Si el guardado se repite
+  // —doble clic, reintento por red lenta— vuelve a mandar EL MISMO código y la
+  // base lo rechaza. Se limpia al cerrar el formulario.
+  const autoSkuRef = useRef<Record<string, string>>({});
+  const autoSku = (prefix: string, slot: string) => {
+    const k = `${prefix}:${slot}`;
+    if (!autoSkuRef.current[k]) {
+      autoSkuRef.current[k] = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+    return autoSkuRef.current[k];
+  };
 
   // La tienda que se está viendo.
   const effectiveStore = stores.find(s => s.id === viewStoreId) ?? currentStore;
@@ -718,6 +738,7 @@ export default function InventoryPage() {
     setAddVariantError(null);
   };
   const closeAddVariantModal = () => {
+    autoSkuRef.current = {};
     setAddingVariantGroup(null);
     setAddVariantError(null);
     setAddVariantSubmitting(false);
@@ -727,11 +748,29 @@ export default function InventoryPage() {
     setAddVariantSubmitting(true);
     setAddVariantError(null);
 
+    // Esa talla y color ya existen en este modelo. Es la via lenta del
+    // duplicado: no un doble clic, sino volver a agregar dias despues una
+    // variante que ya estaba. Quedaban dos filas identicas con codigos
+    // distintos y el stock repartido entre las dos.
+    const claveNueva = `${addVariantTalla.trim().toUpperCase()}|${addVariantColor.trim().toUpperCase()}`;
+    const repetida = products.find(
+      pr => pr.parent_group_id === addingVariantGroup.id &&
+            `${(pr.talla ?? '').trim().toUpperCase()}|${(pr.color ?? '').trim().toUpperCase()}` === claveNueva,
+    );
+    if (repetida) {
+      const etiqueta = formatVariant(addVariantTalla, addVariantColor) || 'sin talla ni color';
+      setAddVariantSubmitting(false);
+      setAddVariantError(
+        `Este modelo ya tiene esa variante (${etiqueta}), con el código ${repetida.sku_barcode}. ` +
+        'Si quieres sumarle unidades, edítala y repón su stock en vez de agregarla otra vez.'
+      );
+      return;
+    }
+
     const targetStore = stores.find(s => s.id === addingVariantGroup.owner_store_id) ?? currentStore;
     let sku = addVariantSku.trim();
     if (!sku && targetStore) {
-      const prefix = storePrefix(targetStore.name);
-      sku = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+      sku = autoSku(storePrefix(targetStore.name), 'addvariant');
     }
 
     const { error } = await createProductRow({
@@ -794,10 +833,9 @@ export default function InventoryPage() {
 
     let finalSku = data.sku_barcode?.trim();
     if (!finalSku) {
-      // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la categoría.
-      const prefix = storePrefix(targetStore.name);
-      const uniqueNumber = Math.floor(100000 + Math.random() * 900000);
-      finalSku = `${prefix}-${uniqueNumber}`;
+      // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la
+      // categoría. Estable mientras el formulario siga abierto: ver autoSku.
+      finalSku = autoSku(storePrefix(targetStore.name), 'suelto');
     }
 
     if (editingProduct) {
@@ -843,6 +881,45 @@ export default function InventoryPage() {
         setFormError('Agrega al menos 2 variantes, o desmarca "¿Este producto tiene variantes?".');
         return;
       }
+
+      // Dos filas con la misma talla y color son dos productos que nadie va a
+      // poder distinguir en el inventario. Es la via por la que aparecieron
+      // varias tallas repetidas dentro de un mismo modelo.
+      const vistas = new Map<string, number>();
+      for (const [i, v] of variantRows.entries()) {
+        const k = `${(v.talla ?? '').trim().toUpperCase()}|${(v.color ?? '').trim().toUpperCase()}`;
+        if (vistas.has(k)) {
+          const etiqueta = formatVariant(v.talla, v.color) || 'sin talla ni color';
+          setFormError(
+            `Las filas ${vistas.get(k)! + 1} y ${i + 1} tienen la misma talla y color (${etiqueta}). ` +
+            'Deja una sola, o diferencialas.'
+          );
+          return;
+        }
+        vistas.set(k, i);
+      }
+
+      // Ya existe un modelo con ese nombre en esta tienda. Es exactamente lo
+      // que pasa al guardar dos veces: como product_groups no tiene un UNIQUE,
+      // la base aceptaba el segundo modelo sin chistar.
+      //
+      // Es un aviso, no una garantia: `groups` solo trae los modelos de la
+      // tienda que se esta VIENDO, asi que si se crea para la otra tienda el
+      // chequeo no encuentra nada y deja pasar. La defensa de verdad contra el
+      // doble clic es el boton bloqueado y el codigo estable de arriba; el
+      // UNIQUE en product_groups hay que agregarlo en la base, y no se puede
+      // hasta limpiar los 7 modelos repetidos que ya existen.
+      const nombreNuevo = data.name.trim().toUpperCase();
+      const yaExiste = groups.find(
+        g => g.owner_store_id === targetStoreId && g.name.trim().toUpperCase() === nombreNuevo,
+      );
+      if (yaExiste) {
+        setFormError(
+          `Ya existe un modelo llamado "${yaExiste.name}" en ${targetStore.name}. ` +
+          'Si querías agregarle tallas, ciérralo acá y usa "Agregar variante" sobre ese modelo en el inventario.'
+        );
+        return;
+      }
       const { data: newGroup, error: groupError } = await supabase
         .from('product_groups')
         .insert([{
@@ -861,11 +938,12 @@ export default function InventoryPage() {
       }
 
       const rowErrors: string[] = [];
-      for (const v of variantRows) {
+      let creadas = 0;
+      for (const [idx, v] of variantRows.entries()) {
         let sku = v.sku_barcode.trim();
         if (!sku) {
-          const prefix = storePrefix(targetStore.name);
-          sku = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+          // Cada fila recuerda su código: un reintento manda los mismos.
+          sku = autoSku(storePrefix(targetStore.name), `v${idx}`);
         }
         const { error } = await createProductRow({
           sku_barcode: sku,
@@ -879,6 +957,20 @@ export default function InventoryPage() {
           parentGroupId: newGroup.id,
         });
         if (error) rowErrors.push(error);
+        else creadas++;
+      }
+      if (creadas === 0) {
+        // El modelo quedo creado pero sin una sola talla. Pasa cuando se corta
+        // la conexion a mitad del guardado: son inserciones sueltas, no una
+        // transaccion. Decirlo claro evita el modelo fantasma que nadie sabe
+        // de donde salio, y evita que se vuelva a guardar creando otro modelo.
+        setFormError(
+          `Se creo el modelo "${data.name}" pero NO se pudo guardar ninguna talla. ` +
+          'Buscalo en el inventario y agregale las tallas con "Agregar variante", ' +
+          'o borralo y vuelve a empezar. No lo guardes otra vez desde aca: crearia un modelo repetido.'
+        );
+        refreshInventory(viewStoreId);
+        return;
       }
       if (rowErrors.length > 0) {
         alert('Producto padre creado. Algunas variantes tuvieron problemas:\n' + rowErrors.join('\n'));
@@ -1018,6 +1110,9 @@ export default function InventoryPage() {
   };
 
   const closeModal = () => {
+    // Los códigos autogenerados solo valen mientras el formulario está
+    // abierto: al cerrarlo, la próxima alta arranca con códigos nuevos.
+    autoSkuRef.current = {};
     setIsModalOpen(false);
     setEditingProduct(null);
     setFormError(null);
@@ -2388,8 +2483,17 @@ const handleExportCSV = async () => {
 
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-4">
               <button type="button" onClick={closeModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
-              <button type="submit" className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer">
-                {editingProduct ? "Guardar Cambios" : hasVariants ? "Guardar producto con variantes" : "Guardar Producto"}
+              {/* Bloqueado mientras guarda. Sin esto, con internet lento el
+                  primer clic salia, la pantalla no cambiaba, y el segundo clic
+                  creaba un producto (o un modelo entero) repetido. */}
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isSubmitting
+                  ? 'Guardando…'
+                  : editingProduct ? 'Guardar Cambios' : hasVariants ? 'Guardar producto con variantes' : 'Guardar Producto'}
               </button>
             </div>
           </form>
