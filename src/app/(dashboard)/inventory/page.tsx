@@ -2217,15 +2217,16 @@ const handleExportCSV = async () => {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={clearSelection}
+                    title="Solo desmarca las casillas; no elimina nada"
                     className="text-sm font-medium px-3 py-1.5 rounded-lg border border-teal-500 hover:bg-teal-700 transition cursor-pointer"
                   >
-                    Limpiar
+                    Quitar selección
                   </button>
                   <button
                     onClick={() => { setBulkAceptaStock(false); setBulkError(null); setBulkOpen(true); }}
                     className="text-sm font-semibold px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 transition cursor-pointer"
                   >
-                    Desactivar seleccionados
+                    Eliminar seleccionados
                   </button>
                 </div>
               </div>
@@ -2991,7 +2992,7 @@ const handleExportCSV = async () => {
         </Modal>
 
         {/* MODAL: DESACTIVAR VARIOS PRODUCTOS */}
-        <Modal isOpen={bulkOpen} onClose={closeBulk} title={`Desactivar ${selectedIds.size} producto(s)`}>
+        <Modal isOpen={bulkOpen} onClose={closeBulk} title={`Eliminar ${selectedIds.size} producto(s)`}>
           {/* Modal devuelve null cerrado, pero los hijos se evaluan igual: sin
               este guardia se filtrarian los 2.500 productos en cada render. */}
           {bulkOpen && (() => {
@@ -3001,7 +3002,7 @@ const handleExportCSV = async () => {
             return (
               <div className="space-y-4">
                 <p className="text-sm text-slate-600">
-                  Van a salir del inventario <strong>{sel.length} producto(s)</strong> de{' '}
+                  Se van a eliminar del inventario <strong>{sel.length} producto(s)</strong> de{' '}
                   {effectiveStore?.name ?? currentStore.name}. Dejan de aparecer en el inventario, en la caja
                   y en Consultar precio.
                 </p>
@@ -3019,8 +3020,9 @@ const handleExportCSV = async () => {
                 )}
 
                 <div className="bg-slate-50 border border-slate-200 text-slate-600 text-xs rounded-lg px-3 py-2.5 leading-relaxed">
-                  <p><strong>Sus ventas no se pierden.</strong> El producto no se borra, solo se apaga, así que
-                  el historial y los reportes siguen cuadrando igual que antes.</p>
+                  <p><strong>Eliminar acá no borra nada</strong> —igual que el botón de la papelera de cada
+                  fila—: el producto se apaga y deja de aparecer, pero su ficha y sus ventas se quedan
+                  guardadas, así que el historial y los reportes siguen cuadrando igual que antes.</p>
                   <p className="mt-1"><strong>Desde el POS no se puede deshacer:</strong> no hay botón para
                   reactivar un producto. Si te equivocas hay que corregirlo en la base de datos.</p>
                 </div>
@@ -3074,7 +3076,7 @@ const handleExportCSV = async () => {
                     disabled={bulkBusy || sel.length === 0 || (unidades > 0 && !bulkAceptaStock)}
                     className="flex-1 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
-                    {bulkBusy ? 'Desactivando…' : `Desactivar ${sel.length}`}
+                    {bulkBusy ? 'Eliminando…' : `Eliminar ${sel.length}`}
                   </button>
                 </div>
               </div>
