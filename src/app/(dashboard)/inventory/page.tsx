@@ -721,8 +721,33 @@ export default function InventoryPage() {
       .from('product_groups')
       .update({ name: newName })
       .eq('id', editingGroup.id);
+    if (error) {
+      setEditGroupSubmitting(false);
+      setEditGroupError('No se pudo guardar: ' + error.message);
+      return;
+    }
+
+    // Y sus variantes. Antes esto no se hacía, y el nombre del modelo y el de
+    // sus productos se separaban: el inventario mostraba el nombre nuevo
+    // (sale del modelo) pero la caja, las etiquetas, Consultar precio y los
+    // reportes seguían mostrando el viejo (sale de cada producto). Buscar el
+    // nombre nuevo tampoco encontraba nada.
+    //
+    // Se renombran también las desactivadas, para que no queden a medio camino
+    // si algún día se reactivan.
+    const { error: hijosError } = await supabase
+      .from('products')
+      .update({ name: newName })
+      .eq('parent_group_id', editingGroup.id);
     setEditGroupSubmitting(false);
-    if (error) { setEditGroupError('No se pudo guardar: ' + error.message); return; }
+    if (hijosError) {
+      setEditGroupError(
+        'El modelo se renombró, pero sus variantes se quedaron con el nombre anterior: ' +
+        hijosError.message + '. Vuelve a guardar para reintentarlo.'
+      );
+      refreshInventory(viewStoreId);
+      return;
+    }
     closeEditGroupModal();
     refreshInventory(viewStoreId);
   };
@@ -1456,10 +1481,21 @@ const handleExportCSV = async () => {
   // suman también TODAS sus hermanas (aunque su SKU/nombre no coincida) para
   // que se vea el grupo completo con su padre, no solo la fila encontrada.
   const searchLower = searchTerm.toLowerCase();
+
+  // La búsqueda mira también el nombre del MODELO, no solo el de cada
+  // producto. Los dos pueden no coincidir por dos vías legítimas: al vincular
+  // productos que ya existían con su propio nombre a un padre, y —hasta el
+  // arreglo de arriba— al renombrar un modelo. Sin esto, el inventario mostraba
+  // un nombre que no se podía buscar.
+  const gruposQueCoinciden = new Set(
+    groups.filter(g => g.name.toLowerCase().includes(searchLower)).map(g => g.id)
+  );
   const directMatchIds = new Set(
     products
       .filter(p =>
-        (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower)) &&
+        (p.name.toLowerCase().includes(searchLower) ||
+         p.sku_barcode.toLowerCase().includes(searchLower) ||
+         (p.parent_group_id ? gruposQueCoinciden.has(p.parent_group_id) : false)) &&
         (categoryFilter === 'all' || p.category === categoryFilter)
       )
       .map(p => p.id)
