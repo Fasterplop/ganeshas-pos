@@ -967,7 +967,7 @@ export default function InventoryPage() {
         setFormError(
           `Se creo el modelo "${data.name}" pero NO se pudo guardar ninguna talla. ` +
           'Buscalo en el inventario y agregale las tallas con "Agregar variante", ' +
-          'o borralo y vuelve a empezar. No lo guardes otra vez desde aca: crearia un modelo repetido.'
+          'o eliminalo y vuelve a empezar. No lo guardes otra vez desde aca: crearia un modelo repetido.'
         );
         refreshInventory(viewStoreId);
         return;
