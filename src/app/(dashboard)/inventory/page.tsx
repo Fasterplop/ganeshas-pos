@@ -1076,6 +1076,82 @@ export default function InventoryPage() {
 
   // Elimina un grupo: los hijos vuelven a ser productos sueltos (no se
   // borra ni desactiva ninguno), y el grupo queda inactivo.
+  // --- Desactivar VARIOS productos a la vez ---------------------------------
+  //
+  // El botón de la fila desactiva uno; esto hace lo mismo con una selección.
+  // Nació para limpiar los productos repetidos del 26-sep (ver
+  // docs/productos-repetidos.pdf), donde hay que apagar decenas de fichas.
+  //
+  // OJO con lo que significa desactivar: la ficha desaparece del inventario
+  // CON TODO SU STOCK (la carga filtra por is_active = true) y desde el POS no
+  // hay forma de reactivarla. Sus ventas sí se conservan: la fila nunca se
+  // borra, así que el historial nunca se descuadra. Por eso el modal de
+  // confirmación insiste en el stock y no en el historial.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkAceptaStock, setBulkAceptaStock] = useState(false);
+
+  const toggleSelected = (ids: string[], on: boolean) =>
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) { if (on) next.add(id); else next.delete(id); }
+      return next;
+    });
+  const isSelected = (id: string) => selectedIds.has(id);
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const closeBulk = () => {
+    setBulkOpen(false);
+    setBulkError(null);
+    setBulkBusy(false);
+    setBulkAceptaStock(false);
+  };
+
+  const handleBulkDeactivate = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    setBulkError(null);
+
+    // Por lotes: PostgREST mete los ids en la URL y con cientos de UUID se
+    // pasa del largo máximo. Cada lote es UNA sentencia, así que dentro del
+    // lote no puede quedar nada a medias.
+    const LOTE = 100;
+    let hechos = 0;
+    for (let i = 0; i < ids.length; i += LOTE) {
+      const trozo = ids.slice(i, i + LOTE);
+      const { error } = await supabase.from('products').update({ is_active: false }).in('id', trozo);
+      if (error) {
+        setBulkBusy(false);
+        setBulkError(
+          `Se desactivaron ${hechos} de ${ids.length} productos y el resto no. ` +
+          'Cierra, refresca el inventario y vuelve a seleccionar los que queden. Detalle: ' + error.message
+        );
+        refreshInventory(viewStoreId);
+        return;
+      }
+      hechos += trozo.length;
+    }
+
+    // Un modelo que se queda sin ninguna variante activa es justo el "modelo
+    // fantasma" que ensucia el inventario, así que se apaga también.
+    const apagados = new Set(ids);
+    const gruposVacios = [...new Set(products.filter(p => p.parent_group_id && apagados.has(p.id))
+                                             .map(p => p.parent_group_id as string))]
+      .filter(gid => products.filter(p => p.parent_group_id === gid).every(p => apagados.has(p.id)));
+    if (gruposVacios.length > 0) {
+      await supabase.from('product_groups').update({ is_active: false }).in('id', gruposVacios);
+    }
+
+    setBulkBusy(false);
+    closeBulk();
+    clearSelection();
+    setSelectedProduct(prev => (prev && apagados.has(prev.id) ? null : prev));
+    refreshInventory(viewStoreId);
+  };
+
   const handleDeleteGroup = async (e: React.MouseEvent, groupId: string, childIds: string[]) => {
     e.stopPropagation();
     if (!window.confirm('¿Eliminar este producto padre? Sus variantes NO se borran, solo dejan de estar agrupadas.')) return;
@@ -1445,6 +1521,12 @@ const handleExportCSV = async () => {
   // IDs de todos los productos padre visibles (con el filtro/búsqueda actual,
   // en todas las páginas) para el botón "expandir todos" del encabezado.
   const allGroupIds = displayRows.filter((r): r is Extract<DisplayRow, { type: 'group' }> => r.type === 'group').map(r => r.groupId);
+
+  // Todos los productos que se ven en la página actual (las variantes cuentan
+  // aunque su modelo esté colapsado: marcar el modelo las marca todas).
+  const pageProductIds = paginatedRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : [r.product.id]);
+  // Y los de TODAS las páginas del filtro actual, para "seleccionar los N".
+  const allFilteredIds = displayRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : [r.product.id]);
   const allGroupsExpanded = allGroupIds.length > 0 && allGroupIds.every(id => expandedGroups.has(id));
   const toggleAllGroupsExpanded = () =>
     setExpandedGroups(allGroupsExpanded ? new Set() : new Set(allGroupIds));
@@ -1458,6 +1540,16 @@ const handleExportCSV = async () => {
         onClick={() => setSelectedProduct(product)}
         className={`border-b transition cursor-pointer ${opts?.indent ? 'border-slate-200 bg-slate-100' : 'border-slate-100'} ${selectedProduct?.id === product.id ? 'bg-teal-50' : opts?.indent ? 'hover:bg-slate-200/70' : 'hover:bg-slate-50'}`}
       >
+        {canDelete && (
+          <td className="p-3 pl-4 w-10" onClick={e => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={isSelected(product.id)}
+              onChange={e => toggleSelected([product.id], e.target.checked)}
+              className="w-4 h-4 accent-teal-600 cursor-pointer align-middle"
+            />
+          </td>
+        )}
         <td className={`p-3 text-slate-500 font-mono text-sm ${opts?.indent ? 'pl-8' : ''}`}>{product.sku_barcode}</td>
         <td className="p-3 font-medium text-slate-800">
           {/* La variante no repite el nombre del padre (ya se ve en la fila del grupo): solo el badge "Nuevo" si aplica. */}
@@ -1547,6 +1639,19 @@ const handleExportCSV = async () => {
         onClick={() => toggleGroupExpanded(groupId)}
         className={`border-b transition cursor-pointer ${isExpanded ? 'border-slate-200 bg-slate-100 hover:bg-slate-200/70' : 'border-slate-100 bg-slate-50/70 hover:bg-slate-100'}`}
       >
+        {canDelete && (
+          <td className="p-3 pl-4 w-10" onClick={e => e.stopPropagation()}>
+            {/* Marca el modelo entero: sus variantes son las que se desactivan. */}
+            <input
+              type="checkbox"
+              checked={children.length > 0 && children.every(c => isSelected(c.id))}
+              ref={el => { if (el) el.indeterminate = children.some(c => isSelected(c.id)) && !children.every(c => isSelected(c.id)); }}
+              onChange={e => toggleSelected(children.map(c => c.id), e.target.checked)}
+              title="Seleccionar todas las variantes de este modelo"
+              className="w-4 h-4 accent-teal-600 cursor-pointer align-middle"
+            />
+          </td>
+        )}
         <td className="p-3 text-slate-500">
           {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </td>
@@ -1596,7 +1701,7 @@ const handleExportCSV = async () => {
     if (isExpanded) {
       rows.push(
         <tr key={`group-${groupId}-info`} className="bg-slate-100">
-          <td colSpan={7} className="px-6 py-2 text-xs text-slate-600 border-b border-slate-200">
+          <td colSpan={canDelete ? 8 : 7} className="px-6 py-2 text-xs text-slate-600 border-b border-slate-200">
             ℹ️ Se conservan los códigos ya impresos: cada variante mantiene su propio SKU de siempre.
           </td>
         </tr>
@@ -1605,7 +1710,7 @@ const handleExportCSV = async () => {
       if (group && canAdd) {
         rows.push(
           <tr key={`group-${groupId}-add`} className="bg-slate-100 border-b border-slate-200">
-            <td colSpan={7} className="px-6 py-2">
+            <td colSpan={canDelete ? 8 : 7} className="px-6 py-2">
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); openAddVariantModal(group); }}
@@ -1632,6 +1737,15 @@ const handleExportCSV = async () => {
         className={`border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${selected ? 'border-teal-400 ring-2 ring-teal-100 bg-teal-50' : opts?.indent ? 'border-slate-200 bg-slate-100' : 'border-slate-200 bg-white'} ${opts?.indent ? 'ml-3' : ''}`}
       >
         <div className="flex items-start justify-between gap-3">
+          {canDelete && (
+            <input
+              type="checkbox"
+              checked={isSelected(product.id)}
+              onClick={e => e.stopPropagation()}
+              onChange={e => toggleSelected([product.id], e.target.checked)}
+              className="w-5 h-5 mt-0.5 shrink-0 accent-teal-600 cursor-pointer"
+            />
+          )}
           <div className="min-w-0">
             {/* La variante no repite el nombre del padre (ya se ve en la tarjeta del grupo): solo el badge "Nuevo" si aplica. */}
             {!opts?.indent && (
@@ -1721,6 +1835,17 @@ const handleExportCSV = async () => {
           className={`border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${isExpanded ? 'bg-slate-100 border-slate-300' : 'bg-white border-slate-200'}`}
         >
           <div className="flex items-start justify-between gap-3">
+            {canDelete && (
+              <input
+                type="checkbox"
+                checked={children.length > 0 && children.every(c => isSelected(c.id))}
+                ref={el => { if (el) el.indeterminate = children.some(c => isSelected(c.id)) && !children.every(c => isSelected(c.id)); }}
+                onClick={e => e.stopPropagation()}
+                onChange={e => toggleSelected(children.map(c => c.id), e.target.checked)}
+                title="Seleccionar todas las variantes de este modelo"
+                className="w-5 h-5 mt-0.5 shrink-0 accent-teal-600 cursor-pointer"
+              />
+            )}
             <div className="min-w-0">
               <h3 className="font-bold text-slate-800 text-sm leading-snug flex items-center gap-1">
                 {isExpanded ? <ChevronDown className="w-4 h-4 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
@@ -1859,7 +1984,7 @@ const handleExportCSV = async () => {
                 <span className="text-slate-500 text-sm">Ver inventario de:</span>
                 <select
                   value={viewStoreId || currentStore.id}
-                  onChange={(e) => setViewStoreId(e.target.value)}
+                  onChange={(e) => { clearSelection(); setViewStoreId(e.target.value); }}
                   className="text-sm font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
                 >
                   {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -2029,6 +2154,40 @@ const handleExportCSV = async () => {
               )}
             </div>
 
+            {/* Barra de selección. Solo aparece cuando hay algo marcado, para no
+                robarle sitio a la lista el resto del tiempo. */}
+            {canDelete && selectedIds.size > 0 && (
+              <div className="sticky top-0 z-20 mx-3 lg:mx-6 mt-3 flex flex-wrap items-center justify-between gap-3 bg-teal-800 text-white rounded-xl px-4 py-3 shadow-lg">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-bold">
+                    {selectedIds.size} {selectedIds.size === 1 ? 'producto seleccionado' : 'productos seleccionados'}
+                  </span>
+                  {allFilteredIds.length > pageProductIds.length && !allFilteredIds.every(isSelected) && (
+                    <button
+                      onClick={() => toggleSelected(allFilteredIds, true)}
+                      className="text-xs font-semibold underline text-teal-100 hover:text-white cursor-pointer"
+                    >
+                      Seleccionar los {allFilteredIds.length} de todas las páginas
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={clearSelection}
+                    className="text-sm font-medium px-3 py-1.5 rounded-lg border border-teal-500 hover:bg-teal-700 transition cursor-pointer"
+                  >
+                    Limpiar
+                  </button>
+                  <button
+                    onClick={() => { setBulkAceptaStock(false); setBulkError(null); setBulkOpen(true); }}
+                    className="text-sm font-semibold px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 transition cursor-pointer"
+                  >
+                    Desactivar seleccionados
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* MÓVIL/TABLET: lista de tarjetas (la tabla de 7 columnas no cabe). */}
             <div className="lg:hidden p-3 space-y-3 bg-slate-50/50">
               {loading ? (
@@ -2045,7 +2204,19 @@ const handleExportCSV = async () => {
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-slate-700 text-white text-sm">
-                    <th className="p-3 rounded-tl-lg">
+                    {canDelete && (
+                      <th className="p-3 pl-4 rounded-tl-lg w-10">
+                        <input
+                          type="checkbox"
+                          checked={pageProductIds.length > 0 && pageProductIds.every(isSelected)}
+                          ref={el => { if (el) el.indeterminate = pageProductIds.some(isSelected) && !pageProductIds.every(isSelected); }}
+                          onChange={e => toggleSelected(pageProductIds, e.target.checked)}
+                          title="Seleccionar todo lo de esta página"
+                          className="w-4 h-4 accent-teal-600 cursor-pointer align-middle"
+                        />
+                      </th>
+                    )}
+                    <th className={`p-3 ${canDelete ? '' : 'rounded-tl-lg'}`}>
                       <div className="flex items-center gap-1.5">
                         <span>Código</span>
                         {allGroupIds.length > 0 && (
@@ -2074,9 +2245,9 @@ const handleExportCSV = async () => {
                 </thead>
                 <tbody>
                   {loading ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
+                    <tr><td colSpan={canDelete ? 8 : 7} className="p-8 text-center text-slate-500">Sincronizando inventario con {effectiveStore?.name ?? currentStore.name}...</td></tr>
                   ) : displayRows.length === 0 ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
+                    <tr><td colSpan={canDelete ? 8 : 7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
                     paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : renderDesktopGroup(row))
                   )}
@@ -2774,6 +2945,98 @@ const handleExportCSV = async () => {
               )}
             </div>
           )}
+        </Modal>
+
+        {/* MODAL: DESACTIVAR VARIOS PRODUCTOS */}
+        <Modal isOpen={bulkOpen} onClose={closeBulk} title={`Desactivar ${selectedIds.size} producto(s)`}>
+          {/* Modal devuelve null cerrado, pero los hijos se evaluan igual: sin
+              este guardia se filtrarian los 2.500 productos en cada render. */}
+          {bulkOpen && (() => {
+            const sel = products.filter(pr => selectedIds.has(pr.id));
+            const conStock = sel.filter(pr => pr.stock > 0);
+            const unidades = conStock.reduce((a, pr) => a + pr.stock, 0);
+            return (
+              <div className="space-y-4">
+                <p className="text-sm text-slate-600">
+                  Van a salir del inventario <strong>{sel.length} producto(s)</strong> de{' '}
+                  {effectiveStore?.name ?? currentStore.name}. Dejan de aparecer en el inventario, en la caja
+                  y en Consultar precio.
+                </p>
+
+                {/* Lo que de verdad hay que entender antes de aceptar. */}
+                {unidades > 0 && (
+                  <div className="bg-red-50 border border-red-300 text-red-800 text-sm rounded-lg px-3 py-3 leading-relaxed">
+                    <p className="font-bold mb-1">⚠️ Te vas a llevar {unidades} unidades del conteo</p>
+                    <p>
+                      {conStock.length} de los seleccionados tienen stock. Al desactivarlos, esas{' '}
+                      <strong>{unidades} unidades desaparecen del inventario</strong>. Si son duplicados y esa
+                      mercancía existe de verdad, primero pásale las unidades a la ficha que vas a conservar.
+                    </p>
+                  </div>
+                )}
+
+                <div className="bg-slate-50 border border-slate-200 text-slate-600 text-xs rounded-lg px-3 py-2.5 leading-relaxed">
+                  <p><strong>Sus ventas no se pierden.</strong> El producto no se borra, solo se apaga, así que
+                  el historial y los reportes siguen cuadrando igual que antes.</p>
+                  <p className="mt-1"><strong>Desde el POS no se puede deshacer:</strong> no hay botón para
+                  reactivar un producto. Si te equivocas hay que corregirlo en la base de datos.</p>
+                </div>
+
+                <div className="border border-slate-200 rounded-lg max-h-52 overflow-y-auto divide-y divide-slate-100">
+                  {sel.map(pr => (
+                    <div key={pr.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+                      <span className="min-w-0">
+                        <span className="block font-medium text-slate-700 truncate">{pr.name}</span>
+                        <span className="block text-slate-400 font-mono">
+                          {pr.sku_barcode}
+                          {formatVariant(pr.talla, pr.color) && ` · ${formatVariant(pr.talla, pr.color)}`}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 font-bold ${pr.stock > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                        {pr.stock > 0 ? `${pr.stock} en stock` : 'sin stock'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {unidades > 0 && (
+                  <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bulkAceptaStock}
+                      onChange={e => setBulkAceptaStock(e.target.checked)}
+                      className="w-4 h-4 mt-0.5 accent-red-600 cursor-pointer"
+                    />
+                    <span>Entiendo que esas {unidades} unidades salen del inventario.</span>
+                  </label>
+                )}
+
+                {bulkError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
+                    {bulkError}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={closeBulk}
+                    className="flex-1 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleBulkDeactivate()}
+                    disabled={bulkBusy || sel.length === 0 || (unidades > 0 && !bulkAceptaStock)}
+                    className="flex-1 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {bulkBusy ? 'Desactivando…' : `Desactivar ${sel.length}`}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </Modal>
 
         {/* MODAL: CAMBIAR EL CÓDIGO DE BARRAS */}
