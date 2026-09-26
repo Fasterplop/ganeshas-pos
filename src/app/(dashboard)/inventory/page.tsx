@@ -934,9 +934,16 @@ export default function InventoryPage() {
       // doble clic es el boton bloqueado y el codigo estable de arriba; el
       // UNIQUE en product_groups hay que agregarlo en la base, y no se puede
       // hasta limpiar los 7 modelos repetidos que ya existen.
+      //
+      // Solo cuentan los modelos que el usuario PUEDE VER. Un modelo cuyas
+      // variantes se desactivaron todas no aparece en el inventario (la lista
+      // se arma con los productos activos, no con los modelos), asi que
+      // bloquear por su culpa seria un "ya existe" imposible de rastrear.
       const nombreNuevo = data.name.trim().toUpperCase();
       const yaExiste = groups.find(
-        g => g.owner_store_id === targetStoreId && g.name.trim().toUpperCase() === nombreNuevo,
+        g => g.owner_store_id === targetStoreId &&
+             g.name.trim().toUpperCase() === nombreNuevo &&
+             products.some(pr => pr.parent_group_id === g.id),
       );
       if (yaExiste) {
         setFormError(
