@@ -1,6 +1,6 @@
 # Teléfono escáner: consulta de precios, etiqueta sin precio y ofertas
 
-Implementación de `docs/propuesta-telefono-scanner.pdf` (16-sep-2026, preparada para Gerardo).
+Implementación de la propuesta del 16-sep-2026, preparada para Gerardo.
 Este documento explica **qué se construyó, cómo funciona y cómo se pone en marcha**.
 
 La propuesta vendía tres cosas; se construyeron las tres, más un pedido posterior del cliente:
@@ -25,7 +25,7 @@ Supabase. Cada uno termina con un `SELECT` de verificación: el editor solo mues
 | 1 | `db/scanner_01_bcv_rates.sql` | Tabla `bcv_rates` + RPC `get_bcv_rate` / `set_bcv_rate` |
 | 2 | `db/scanner_02_set_product_barcode.sql` | RPC `set_product_barcode` |
 | 3 | `db/scanner_03_offers.sql` | Tabla `product_offers`, vista `v_products_priced`, función `effective_product_price` |
-| 4 | `db/scanner_04_exchange_offers.sql` | `register_exchange` cobrando el precio efectivo |
+| 4 | `db/exchange_03_discount.sql` | `register_exchange` cobrando el precio efectivo (única definición de la función; reemplazó a `scanner_04_exchange_offers.sql`) |
 
 **El front degrada si el SQL no está aplicado.** `/ofertas` avisa qué archivo falta correr, el POS
 y `/labels` leen de `products` como siempre, y `/consultar-precio` pide la tasa en memoria igual

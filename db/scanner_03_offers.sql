@@ -33,8 +33,8 @@
 -- cambia; los puntos siguen siendo FLOOR(total) sobre el neto cobrado.
 --
 -- Aplicar en el SQL Editor de Supabase DESPUÉS de scanner_01 y scanner_02, y
--- ANTES de scanner_04 (que actualiza register_exchange y necesita la función
--- de precio efectivo que se crea acá).
+-- ANTES de db/exchange_03_discount.sql (que define register_exchange y necesita
+-- la función de precio efectivo que se crea acá).
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -186,7 +186,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.effective_product_price(uuid) TO authenticated;
 
 -- ============================================================================
--- PROBAR DESPUÉS DE ESTE BLOQUE, antes de seguir con scanner_04:
+-- PROBAR DESPUÉS DE ESTE BLOQUE, antes de seguir con db/exchange_03_discount.sql:
 --
 --   -- sin ofertas cargadas, effective_price debe ser IGUAL a price en todo:
 --   SELECT count(*) AS descuadres

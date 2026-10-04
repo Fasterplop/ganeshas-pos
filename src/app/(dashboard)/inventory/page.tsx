@@ -1111,8 +1111,8 @@ export default function InventoryPage() {
   // --- Desactivar VARIOS productos a la vez ---------------------------------
   //
   // El botón de la fila desactiva uno; esto hace lo mismo con una selección.
-  // Nació para limpiar los productos repetidos del 26-sep (ver
-  // docs/productos-repetidos.pdf), donde hay que apagar decenas de fichas.
+  // Nació para limpiar los productos repetidos del 26-sep, donde hay que
+  // apagar decenas de fichas.
   //
   // OJO con lo que significa desactivar: la ficha desaparece del inventario
   // CON TODO SU STOCK (la carga filtra por is_active = true) y desde el POS no

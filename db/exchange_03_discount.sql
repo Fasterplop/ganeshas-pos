@@ -7,7 +7,12 @@
 -- cuadre, así que el descuento tiene que entrar por el RPC: no alcanza con
 -- restarlo en la pantalla.
 --
--- QUÉ CAMBIA respecto al cuerpo vigente (el de db/role_consulta_02_rpc.sql):
+-- ESTE ARCHIVO ES LA ÚNICA DEFINICIÓN DE register_exchange. Las versiones
+-- anteriores (9 parámetros) estaban en exchange_02, scanner_04 y
+-- role_consulta_02; se quitaron de db/ y quedan en el historial de git
+-- (commit 427b5f8).
+--
+-- QUÉ CAMBIÓ respecto a esa versión anterior:
 --
 --   1. Parámetro nuevo al final: p_discount_usd numeric DEFAULT 0. Es un MONTO
 --      en USD (el porcentaje lo convierte la pantalla). Se resta de la
@@ -53,17 +58,29 @@
 -- despliega ANTES de aplicar este archivo (pedir un descuento avisa que falta
 -- la migración; un cambio sin descuento se registra normal).
 --
--- OJO, NO VOLVER A CORRER db/exchange_02_schema_and_rpc.sql,
--- db/scanner_04_exchange_offers.sql NI db/role_consulta_02_rpc.sql después de
--- este archivo: los tres recrean la versión de 9 parámetros AL LADO de esta y
--- dejan las dos vivas (el PGRST203 de arriba). Si pasara, se arregla volviendo
--- a correr este archivo.
---
 -- PARA VOLVER ATRÁS:
 --   DROP FUNCTION public.register_exchange(uuid, jsonb, jsonb, text, text, boolean, integer, numeric, numeric, numeric);
---   y después correr SOLO la sección 3 de db/role_consulta_02_rpc.sql.
+--   y después correr la versión anterior, que se saca del historial con
+--     git show 427b5f8:db/role_consulta_02_rpc.sql      (su sección 3)
 --   (Si ya se registraron cambios con descuento, la fórmula vieja del crédito
 --   vuelve a quedar corta para esos cambios: anularlos antes o no volver atrás.)
+--
+-- ORDEN DE ESCRITURA, elegido para no cruzarse en deadlock con
+-- delete_sale_and_revert (que bloquea store_stock y luego customers):
+--   venta origen (FOR UPDATE) -> sales/sale_items -> store_stock (ordenado por
+--   product_id) -> canje de puntos -> customers.
+--
+-- ERRORES (RAISE EXCEPTION, el front los traduce en src/lib/exchange.ts):
+--   NOT_AUTHORIZED, NOT_AUTHORIZED_STORE, SALE_NOT_FOUND, INVALID_RATE,
+--   RETURNS_REQUIRED, NEW_ITEMS_REQUIRED, RETURN_LINE_NOT_FOUND,
+--   RETURN_LINE_NOT_RETURNABLE, INVALID_QUANTITY, RETURN_EXCEEDS,
+--   PRODUCT_NOT_FOUND, EXCHANGE_NEGATIVE, INVALID_DISCOUNT,
+--   NO_CUSTOMER_FOR_POINTS, INVALID_REDEMPTION, INSUFFICIENT_POINTS (de
+--   redeem_points_global), INVALID_PAYMENT_METHOD, TOTAL_MISMATCH.
+--
+-- DEPENDE DE: db/exchange_01 y exchange_02 (columnas y el método 'cambio'),
+-- db/scanner_03_offers.sql (effective_product_price) y
+-- db/role_consulta_02_rpc.sql (redeem_points_global).
 --
 -- Aplicar en el SQL Editor de Supabase. No toca tablas ni datos.
 -- ============================================================================

@@ -28,26 +28,6 @@ ALTER TABLE public.products
 ALTER TABLE public.products
   ALTER COLUMN created_at SET DEFAULT now();
 
--- 3) Registrar el clic en "Imprimir Etiqueta".
---    Va por RPC (SECURITY DEFINER) para que también funcione con cajeros, que
---    no tienen permiso de UPDATE sobre products. Solo sella la PRIMERA
---    impresión (idempotente: reimprimir no pisa la fecha original).
-CREATE OR REPLACE FUNCTION public.mark_label_printed(p_product_id uuid)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  IF auth.uid() IS NULL THEN
-    RAISE EXCEPTION 'NOT_AUTHORIZED';
-  END IF;
-
-  UPDATE public.products
-     SET label_printed_at = now()
-   WHERE id = p_product_id
-     AND label_printed_at IS NULL;
-END;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.mark_label_printed(uuid) TO authenticated;
+-- 3) Registrar el clic en "Imprimir Etiqueta": mark_label_printed se define en
+--    db/role_consulta_02_rpc.sql (sella solo la PRIMERA impresión; exige caja
+--    o dueño).
