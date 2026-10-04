@@ -12,7 +12,7 @@ import ExcelJS from 'exceljs';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
 import ExchangeModal from '@/components/ExchangeModal';
-import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
+import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, exchangeDiscountOf, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
 
 // PostgREST corta cada respuesta en 1000 filas (y trunca en silencio): las
 // consultas de ventas se paginan con .range() de a SALES_PAGE.
@@ -1094,6 +1094,8 @@ export default function DashboardPage() {
                     // líneas negativas son lo devuelto y las positivas lo entregado.
                     const exchange = isExchange(sale);
                     const counts = exchangeCounts(sale.sale_items);
+                    // Descuento manual sobre la diferencia del cambio (db/exchange_03_discount.sql).
+                    const exchangeDiscount = exchange ? exchangeDiscountOf(sale, sale.sale_items) : 0;
                     const sourceDate = exchange && sale.exchange_of_sale_id ? sourceSaleDates[sale.exchange_of_sale_id] : null;
                     const hasReturns = !exchange && (sale.sale_items ?? []).some((it: { id: string }) => (returnedByLine[it.id] || 0) > 0);
                     return (
@@ -1196,6 +1198,11 @@ export default function DashboardPage() {
   <p className="text-[11px] text-slate-500 font-medium mt-0.5">
     Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
   </p>
+  {exchangeDiscount > 0 && (
+    <p className="text-[11px] text-rose-600 font-semibold mt-0.5">
+      🏷 Descuento: −${exchangeDiscount.toFixed(2)}
+    </p>
+  )}
   {Number(sale.redemption_discount_usd) > 0 && (
     <p className="text-[11px] text-teal-600 font-semibold mt-0.5">
       ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}

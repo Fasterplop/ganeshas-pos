@@ -143,6 +143,11 @@ GRANT EXECUTE ON FUNCTION public.mark_label_printed(uuid) TO authenticated;
 -- 3. Cambio de producto: solo caja y dueno.
 --    Cuerpo identico al de db/scanner_04_exchange_offers.sql salvo el bloque
 --    de autorizacion que se agrega despues del chequeo de perfil activo.
+--
+--    OJO: reemplazada por db/exchange_03_discount.sql (un parametro mas). Si
+--    ese archivo ya se aplico, NO volver a correr esta seccion: crearia la
+--    firma de 9 parametros al lado de la nueva y PostgREST no sabria a cual
+--    llamar (PGRST203).
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.register_exchange(
   p_source_sale_id      uuid,

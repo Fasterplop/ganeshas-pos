@@ -1,34 +1,74 @@
 -- ============================================================================
--- register_exchange con ofertas: el cambio de producto cobra el precio
--- EFECTIVO, no el de lista.
+-- Cambios de producto (3): descuento manual sobre la diferencia.
 --
--- POR QUÉ: register_exchange es SECURITY DEFINER y vuelve a calcular en el
--- servidor el precio de cada producto nuevo, para no confiar en un monto que
--- viaja desde el navegador. Si el cliente muestra el precio con oferta y el
--- RPC sigue leyendo products.price, los dos totales no coinciden y la función
--- aborta con TOTAL_MISMATCH: el cajero no podría registrar el cambio.
+-- POR QUÉ: en una venta del POS el cajero puede aplicar un descuento manual;
+-- en un cambio de producto no había forma. register_exchange recalcula el
+-- total en el servidor y rechaza con TOTAL_MISMATCH cualquier monto que no
+-- cuadre, así que el descuento tiene que entrar por el RPC: no alcanza con
+-- restarlo en la pantalla.
 --
--- QUÉ CAMBIA: EXACTAMENTE DOS LÍNEAS del cuerpo original de
--- db/exchange_02_schema_and_rpc.sql (líneas 173-455). Donde leía
--- `SELECT price FROM public.products` ahora llama a
--- `public.effective_product_price(id)`. Todo lo demás —autorización,
--- prorrateo del descuento manual, tope de devolución, canje de puntos,
--- recargo de punto de venta, movimiento de stock, puntos ganados— es idéntico,
--- carácter por carácter.
+-- QUÉ CAMBIA respecto al cuerpo vigente (el de db/role_consulta_02_rpc.sql):
 --
--- SIN OFERTAS VIGENTES effective_product_price devuelve products.price, así
--- que el comportamiento es el de siempre.
+--   1. Parámetro nuevo al final: p_discount_usd numeric DEFAULT 0. Es un MONTO
+--      en USD (el porcentaje lo convierte la pantalla). Se resta de la
+--      diferencia ANTES del canje de puntos y del recargo de Punto de Venta,
+--      el mismo orden que usa el POS. No puede ser negativo ni mayor que la
+--      diferencia (INVALID_DISCOUNT): un cambio nunca queda a favor del
+--      cliente. Con 0 —o sin mandarlo— la función hace lo mismo de siempre.
 --
--- TODO ADITIVO: solo reemplaza una función (CREATE OR REPLACE). Para volver
--- atrás basta con volver a correr db/exchange_02_schema_and_rpc.sql.
+--   2. El descuento NO se guarda en una columna. Queda implícito en
+--      total_amount, igual que el descuento manual de una venta del POS:
+--      descuento = Σ subtotal - (total - recargo PDV + canje).
+--      Por eso este archivo no toca ninguna tabla.
 --
--- Aplicar en el SQL Editor de Supabase DESPUÉS de db/scanner_03_offers.sql
--- (necesita la función effective_product_price).
+--   3. Fórmula del crédito (paso 3). Antes:
+--        r = (total - recargo + canje) / Σ subtotal de TODAS las líneas
+--      Ahora:
+--        r = (total - recargo + canje + crédito de las líneas devueltas)
+--            / Σ subtotal de las líneas POSITIVAS
+--      * Venta normal: no tiene líneas devueltas -> exactamente lo mismo.
+--      * Cambio sin descuento: da 1 -> exactamente lo mismo.
+--      * Cambio CON descuento (no existía hasta hoy): da
+--        (nuevos - descuento) / nuevos. La fórmula vieja dividía entre la
+--        diferencia: si a un cambio se le perdonaba la diferencia entera, un
+--        cambio posterior sobre esos productos les daba crédito $0.
+--      La consulta de VERIFICACIÓN del final cuenta cuántas ventas existentes
+--      cambian de resultado con la fórmula nueva: tiene que dar 0.
 --
--- OJO: reemplazado por db/exchange_03_discount.sql (un parámetro más). Si ese
--- archivo ya se aplicó, NO volver a correr este: crearía la firma de 9
--- parámetros al lado de la nueva y PostgREST no sabría a cuál llamar (PGRST203).
+--   Todo lo demás —autorización (owner/cashier, cajero solo en su tienda),
+--   tope de devolución, precio efectivo con oferta, canje de puntos, recargo
+--   de punto de venta, movimiento de stock, puntos ganados— es idéntico,
+--   carácter por carácter.
+--
+-- POR QUÉ HAY UN DROP: agregar un parámetro cambia la firma, y CREATE OR
+-- REPLACE con otra firma NO reemplaza: crea una SEGUNDA función con el mismo
+-- nombre. Con las dos vivas PostgREST no sabe a cuál llamar y todo cambio de
+-- producto falla (PGRST203). El DROP y el CREATE van en este mismo script: el
+-- SQL Editor lo corre en UNA transacción, así que la caja nunca ve la función
+-- a medio cambiar. CORRER EL ARCHIVO ENTERO, no por partes.
+--
+-- COMPATIBLE CON EL POS YA DESPLEGADO: el front viejo llama con los 9
+-- parámetros de siempre y el décimo toma su default (0). El front nuevo solo
+-- manda p_discount_usd cuando hay descuento, así que también funciona si se
+-- despliega ANTES de aplicar este archivo (pedir un descuento avisa que falta
+-- la migración; un cambio sin descuento se registra normal).
+--
+-- OJO, NO VOLVER A CORRER db/exchange_02_schema_and_rpc.sql,
+-- db/scanner_04_exchange_offers.sql NI db/role_consulta_02_rpc.sql después de
+-- este archivo: los tres recrean la versión de 9 parámetros AL LADO de esta y
+-- dejan las dos vivas (el PGRST203 de arriba). Si pasara, se arregla volviendo
+-- a correr este archivo.
+--
+-- PARA VOLVER ATRÁS:
+--   DROP FUNCTION public.register_exchange(uuid, jsonb, jsonb, text, text, boolean, integer, numeric, numeric, numeric);
+--   y después correr SOLO la sección 3 de db/role_consulta_02_rpc.sql.
+--   (Si ya se registraron cambios con descuento, la fórmula vieja del crédito
+--   vuelve a quedar corta para esos cambios: anularlos antes o no volver atrás.)
+--
+-- Aplicar en el SQL Editor de Supabase. No toca tablas ni datos.
 -- ============================================================================
+
+DROP FUNCTION IF EXISTS public.register_exchange(uuid, jsonb, jsonb, text, text, boolean, integer, numeric, numeric);
 
 CREATE OR REPLACE FUNCTION public.register_exchange(
   p_source_sale_id      uuid,
@@ -39,7 +79,8 @@ CREATE OR REPLACE FUNCTION public.register_exchange(
   p_apply_pdv_surcharge boolean,
   p_redeem_points       integer,  -- 0 = sin canje; múltiplo de points_per_block
   p_expected_total      numeric,  -- lo que el cajero vio en pantalla
-  p_bcv_rate            numeric
+  p_bcv_rate            numeric,
+  p_discount_usd        numeric DEFAULT 0  -- descuento manual sobre la diferencia, en USD (0 = sin descuento)
 ) RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -51,6 +92,7 @@ DECLARE
   v_active          boolean;
   v_sale            public.sales%ROWTYPE;
   v_sum_subtotal    numeric;
+  v_sum_credit      numeric;
   v_ratio           numeric;
   v_ret             record;
   v_line            public.sale_items%ROWTYPE;
@@ -62,6 +104,7 @@ DECLARE
   v_is_active       boolean;
   v_new_total       numeric := 0;
   v_diff            numeric;
+  v_discount        numeric := 0;
   v_ppb             integer;
   v_dpb             numeric;
   v_blocks          integer;
@@ -79,6 +122,15 @@ BEGIN
    WHERE id = auth.uid();
 
   IF v_role IS NULL OR COALESCE(v_active, false) = false THEN
+    RAISE EXCEPTION 'NOT_AUTHORIZED';
+  END IF;
+
+  -- Un cambio de producto mueve stock, puntos y dinero. Antes bastaba con
+  -- tener un perfil activo y la tienda correcta: el rol no se miraba. Con el
+  -- rol 'consulta' (el telefono del piso de venta, que solo mira precios) eso
+  -- deja de ser aceptable, porque podria registrar cambios llamando al RPC
+  -- desde la consola del navegador. Ahora se exige caja o dueno.
+  IF v_role NOT IN ('owner', 'cashier') THEN
     RAISE EXCEPTION 'NOT_AUTHORIZED';
   END IF;
 
@@ -110,10 +162,17 @@ BEGIN
   END IF;
 
   -- 3. Prorrateo del descuento manual de la venta origen:
-  --    r = (total - recargo PDV + canje) / Σ subtotal, acotado a [0, 1].
+  --    r = (total - recargo PDV + canje + crédito de sus líneas devueltas)
+  --        / Σ subtotal de sus líneas positivas, acotado a [0, 1].
+  --    Una venta normal no tiene líneas devueltas: es la fórmula de siempre,
+  --    (total - recargo PDV + canje) / Σ subtotal.
   --    Si la venta no tiene líneas (existe una real así) r = 1.
-  --    Para una fila 'exchange' la fórmula da 1 (no tienen descuento manual).
-  SELECT COALESCE(SUM(subtotal), 0) INTO v_sum_subtotal
+  --    Para una fila 'exchange' sin descuento la fórmula da 1; con descuento da
+  --    (nuevos - descuento) / nuevos: lo que el cliente puso por esos productos
+  --    es lo que valía lo que devolvió más lo que pagó de diferencia.
+  SELECT COALESCE(SUM(subtotal) FILTER (WHERE quantity > 0), 0),
+         COALESCE(-SUM(subtotal) FILTER (WHERE quantity < 0), 0)
+    INTO v_sum_subtotal, v_sum_credit
     FROM public.sale_items
    WHERE sale_id = v_sale.id;
 
@@ -122,7 +181,8 @@ BEGIN
   ELSE
     v_ratio := (v_sale.total_amount
                 - COALESCE(v_sale.punto_de_venta_surcharge_usd, 0)
-                + COALESCE(v_sale.redemption_discount_usd, 0)) / v_sum_subtotal;
+                + COALESCE(v_sale.redemption_discount_usd, 0)
+                + v_sum_credit) / v_sum_subtotal;
     v_ratio := LEAST(1, GREATEST(0, v_ratio));
   END IF;
 
@@ -188,6 +248,18 @@ BEGIN
   IF v_diff < 0 THEN
     RAISE EXCEPTION 'EXCHANGE_NEGATIVE';
   END IF;
+
+  -- 6b. Descuento manual sobre la diferencia (opcional). Llega como monto en
+  --     USD; nunca negativo ni mayor que la diferencia. De acá en adelante
+  --     v_diff es la diferencia YA con el descuento, así que el canje de
+  --     puntos y el recargo de Punto de Venta se calculan sobre lo que queda,
+  --     igual que en el POS. No se guarda en una columna: queda implícito en
+  --     total_amount, como el descuento manual de una venta.
+  v_discount := ROUND(COALESCE(p_discount_usd, 0), 2);
+  IF v_discount < 0 OR v_discount > v_diff THEN
+    RAISE EXCEPTION 'INVALID_DISCOUNT';
+  END IF;
+  v_diff := ROUND(v_diff - v_discount, 2);
 
   -- 7. Canje de puntos contra la diferencia (misma matemática por bloques del POS;
   --    el descuento se recalcula acá, no se confía en un monto del cliente).
@@ -315,20 +387,66 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.register_exchange(uuid, jsonb, jsonb, text, text, boolean, integer, numeric, numeric) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.register_exchange(uuid, jsonb, jsonb, text, text, boolean, integer, numeric, numeric, numeric) TO authenticated;
+
+-- PostgREST guarda las firmas en caché: que la recargue ya.
+NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
--- VERIFICACIÓN: la función debe existir y mencionar effective_product_price
--- dos veces (la validación del paso 5 y la inserción de las líneas nuevas).
+-- VERIFICACIÓN. Tiene que devolver:
+--   versiones_de_la_funcion      = 1   (2 = quedaron las dos firmas vivas)
+--   parametros                   = 10
+--   valida_descuento             = true
+--   exige_caja_o_dueno           = true
+--   usa_precio_efectivo          = 2
+--   ventas_que_cambian_de_credito = 0  (la fórmula nueva del paso 3 da el
+--                                       mismo resultado que la vieja en todas
+--                                       las ventas y cambios que ya existen;
+--                                       si el archivo se vuelve a correr más
+--                                       adelante, acá aparecen los cambios con
+--                                       descuento: es lo esperado)
 -- ============================================================================
 SELECT jsonb_pretty(jsonb_build_object(
-  'register_exchange_existe', EXISTS (
-    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  'versiones_de_la_funcion', (
+    SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
+  ),
+  'parametros', (
+    SELECT MAX(p.pronargs) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
+  ),
+  'valida_descuento', (
+    SELECT bool_and(p.prosrc LIKE '%INVALID_DISCOUNT%')
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
+  ),
+  'exige_caja_o_dueno', (
+    SELECT bool_and(p.prosrc LIKE '%NOT IN (''owner'', ''cashier'')%')
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
   ),
   'usa_precio_efectivo', (
-    SELECT (length(p.prosrc) - length(replace(p.prosrc, 'effective_product_price', ''))) / length('effective_product_price')
+    SELECT MAX((length(p.prosrc) - length(replace(p.prosrc, 'effective_product_price', ''))) / length('effective_product_price'))
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
+  ),
+  'ventas_que_cambian_de_credito', (
+    SELECT COUNT(*)
+      FROM (
+        SELECT s.id,
+               s.total_amount
+                 - COALESCE(s.punto_de_venta_surcharge_usd, 0)
+                 + COALESCE(s.redemption_discount_usd, 0)                 AS pagado,
+               COALESCE(SUM(i.subtotal), 0)                               AS sum_todas,
+               COALESCE(SUM(i.subtotal) FILTER (WHERE i.quantity > 0), 0) AS sum_positivas,
+               COALESCE(-SUM(i.subtotal) FILTER (WHERE i.quantity < 0), 0) AS sum_credito
+          FROM public.sales s
+          LEFT JOIN public.sale_items i ON i.sale_id = s.id
+         GROUP BY s.id
+      ) t
+     WHERE ROUND(CASE WHEN t.sum_todas <= 0 THEN 1
+                      ELSE LEAST(1, GREATEST(0, t.pagado / t.sum_todas)) END, 6)
+        <> ROUND(CASE WHEN t.sum_positivas <= 0 THEN 1
+                      ELSE LEAST(1, GREATEST(0, (t.pagado + t.sum_credito) / t.sum_positivas)) END, 6)
   )
 ));

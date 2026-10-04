@@ -32,25 +32,69 @@ export const isExchange = (sale: { kind?: unknown } | null | undefined): boolean
   sale?.kind === 'exchange';
 
 /**
- * r = (total − recargo PDV + canje) / Σ subtotal, acotado a [0, 1].
+ * r = (total − recargo PDV + canje + crédito de las líneas devueltas)
+ *     / Σ subtotal de las líneas positivas, acotado a [0, 1].
  * Es la fracción del precio de lista que el cliente realmente pagó tras el
  * descuento manual de la venta (el canje de puntos NO reduce el crédito).
- * Sin líneas (o Σ subtotal <= 0) vale 1. Misma fórmula que el RPC.
+ * Una venta normal no tiene líneas devueltas: queda (total − recargo + canje)
+ * / Σ subtotal. Un cambio sin descuento da 1; con descuento, (nuevos −
+ * descuento) / nuevos. Sin líneas positivas vale 1. Misma fórmula que el RPC
+ * (db/exchange_03_discount.sql): si se toca una hay que tocar la otra.
  */
 export function creditRatio(
   sale: { total_amount: unknown; punto_de_venta_surcharge_usd?: unknown; redemption_discount_usd?: unknown },
-  items: { subtotal: unknown }[],
+  items: { subtotal: unknown; quantity: unknown }[],
 ): number {
-  const sum = items.reduce((acc, it) => acc + (Number(it.subtotal) || 0), 0);
+  let sum = 0;
+  let returnedCredit = 0;
+  for (const it of items) {
+    const subtotal = Number(it.subtotal) || 0;
+    if (Number(it.quantity) > 0) sum += subtotal;
+    else if (Number(it.quantity) < 0) returnedCredit -= subtotal;
+  }
   if (sum <= 0) return 1;
   const paid = (Number(sale.total_amount) || 0)
     - (Number(sale.punto_de_venta_surcharge_usd) || 0)
-    + (Number(sale.redemption_discount_usd) || 0);
+    + (Number(sale.redemption_discount_usd) || 0)
+    + returnedCredit;
   return Math.min(1, Math.max(0, paid / sum));
 }
 
 // Crédito por unidad devuelta.
 export const lineCredit = (unitPrice: number, ratio: number) => round2(unitPrice * ratio);
+
+// Descuento manual sobre la diferencia de un cambio (mismas opciones que el POS).
+export type ExchangeDiscountType = 'none' | 'percent' | 'fixed';
+
+/**
+ * Monto en USD del descuento que escribió el cajero, acotado a [0, diferencia]:
+ * un cambio nunca queda a favor del cliente. Es el número que se le manda al
+ * RPC (p_discount_usd), que lo vuelve a validar.
+ */
+export function exchangeDiscountUsd(diff: number, type: ExchangeDiscountType, value: string): number {
+  if (diff <= 0 || type === 'none' || value.trim() === '' || isNaN(Number(value))) return 0;
+  const raw = type === 'percent' ? diff * (Number(value) / 100) : Number(value);
+  return Math.min(diff, Math.max(0, round2(raw)));
+}
+
+/**
+ * Descuento manual que tuvo un cambio ya registrado. No hay columna: sale de
+ * lo que valían sus líneas (devueltas en negativo) menos lo que se cobró, igual
+ * que el descuento manual de una venta. Menos de un centavo se toma como 0
+ * (redondeo de las líneas).
+ */
+export function exchangeDiscountOf(
+  sale: { total_amount: unknown; punto_de_venta_surcharge_usd?: unknown; redemption_discount_usd?: unknown },
+  items: { quantity: unknown; unit_price: unknown }[] | null | undefined,
+): number {
+  const diff = (items ?? []).reduce(
+    (acc, it) => acc + round2((Number(it.quantity) || 0) * (Number(it.unit_price) || 0)), 0);
+  const paid = (Number(sale.total_amount) || 0)
+    - (Number(sale.punto_de_venta_surcharge_usd) || 0)
+    + (Number(sale.redemption_discount_usd) || 0);
+  const discount = round2(diff - paid);
+  return discount > 0.01 ? discount : 0;
+}
 
 // Unidades devueltas y agregadas en un cambio (para mostrar "↩R / +N").
 export function exchangeCounts(items: { quantity: unknown }[] | null | undefined): { returned: number; added: number } {
@@ -79,6 +123,7 @@ export const EXCHANGE_ERRORS: Record<string, string> = {
   RETURN_EXCEEDS: 'Se intenta devolver más unidades de las que quedan en la venta. Refresca e intenta de nuevo.',
   PRODUCT_NOT_FOUND: 'Uno de los productos nuevos no existe o está inactivo.',
   EXCHANGE_NEGATIVE: 'La diferencia queda a favor del cliente. No se devuelve dinero: agrega más productos.',
+  INVALID_DISCOUNT: 'El descuento no es válido: no puede ser mayor que la diferencia.',
   NO_CUSTOMER_FOR_POINTS: 'Para canjear puntos la venta debe tener un cliente con cédula.',
   INVALID_REDEMPTION: 'El canje de puntos no es válido para esta diferencia.',
   INSUFFICIENT_POINTS: 'El cliente no tiene puntos suficientes.',
@@ -90,6 +135,11 @@ export const EXCHANGE_ERRORS: Record<string, string> = {
   REASON_REQUIRED: 'Escribe el motivo del ajuste.',
 };
 
+// PostgREST no encontró el RPC con los parámetros que se le mandaron
+// (migración sin aplicar).
+export const isMissingFunctionError = (error: { code?: string; message?: string } | null | undefined): boolean =>
+  error?.code === 'PGRST202' || (error?.message ?? '').toLowerCase().includes('could not find the function');
+
 // Traduce el error de un RPC a un mensaje legible (el código viene en message).
 export function exchangeErrorMessage(
   error: { message?: string; code?: string } | null | undefined,
@@ -100,7 +150,7 @@ export function exchangeErrorMessage(
     if (msg.includes(code)) return EXCHANGE_ERRORS[code];
   }
   // PostgREST: la función no existe todavía (migración sin aplicar).
-  if (msg.toLowerCase().includes('could not find the function') || error?.code === 'PGRST202') {
+  if (isMissingFunctionError(error)) {
     return 'La función de cambios no está instalada en la base de datos (aplicar db/exchange_02_schema_and_rpc.sql).';
   }
   return msg || fallback;

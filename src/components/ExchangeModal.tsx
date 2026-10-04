@@ -10,10 +10,13 @@ import {
   EXCHANGE_PAYMENT_OPTIONS,
   PDV_SURCHARGE_RATE,
   creditRatio,
+  exchangeDiscountUsd,
   exchangeErrorMessage,
   isMissingExchangeColumn,
+  isMissingFunctionError,
   lineCredit,
   round2,
+  type ExchangeDiscountType,
   type ExchangePaymentMethod,
 } from '@/lib/exchange';
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
@@ -119,6 +122,7 @@ const PRODUCT_SELECT = 'id, name, price, talla, color, sku_barcode, store_stock 
 const PRODUCT_SELECT_PRICED = 'id, name, price, talla, color, sku_barcode, effective_price, offer_id, offer_percent';
 
 const MIGRATION_MISSING = 'La base de datos aún no tiene la migración de cambios (aplicar db/exchange_02_schema_and_rpc.sql).';
+const DISCOUNT_MIGRATION_MISSING = 'La base de datos aún no acepta descuentos en los cambios (aplicar db/exchange_03_discount.sql). Quita el descuento para registrar el cambio.';
 
 export default function ExchangeModal({ isOpen, onClose, initialSaleId, onDone }: Props) {
   // Cerrado no se monta el cuerpo: cada apertura arranca con estado limpio sin
@@ -153,7 +157,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   const [newItems, setNewItems] = useState<NewItem[]>([]);
   const productInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Paso 3: puntos y pago -------------------------------------------------
+  // --- Paso 3: descuento, puntos y pago ---------------------------------------
+  const [discountType, setDiscountType] = useState<ExchangeDiscountType>('none');
+  const [discountValue, setDiscountValue] = useState('');
   const [customerPoints, setCustomerPoints] = useState<number | null>(null);
   const [loyaltyCfg, setLoyaltyCfg] = useState({ points_per_block: 10, discount_per_block_usd: 10 });
   const [redeemBlocks, setRedeemBlocks] = useState(0);
@@ -164,7 +170,7 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doneId, setDoneId] = useState<string | null>(null);
-  const [doneSummary, setDoneSummary] = useState<{ total: number; points: number } | null>(null);
+  const [doneSummary, setDoneSummary] = useState<{ total: number; points: number; discount: number } | null>(null);
 
   // Configuración de lealtad de la tienda activa (fallback 10/10, como el POS).
   useEffect(() => {
@@ -369,14 +375,23 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   const newTotal = round2(newItems.reduce((acc, i) => acc + priceOf(i.product) * i.quantity, 0));
   const diff = round2(newTotal - creditTotal);
 
+  // Descuento manual sobre la diferencia. Va ANTES del canje de puntos y del
+  // recargo de Punto de Venta, en el mismo orden que el POS y que el RPC.
+  const discountUsd = exchangeDiscountUsd(diff, discountType, discountValue);
+  const diffAfterDiscount = round2(diff - discountUsd);
+  // El cajero pidió más que la diferencia: se aplica el tope y se le avisa.
+  const discountOverMax = diff > 0 && (
+    (discountType === 'percent' && Number(discountValue) > 100)
+    || (discountType === 'fixed' && Number(discountValue) > diff));
+
   const maxBlocksByBalance = customerPoints !== null ? Math.floor(customerPoints / loyaltyCfg.points_per_block) : 0;
-  const maxBlocksByDiff = diff > 0 ? Math.floor(diff / loyaltyCfg.discount_per_block_usd) : 0;
+  const maxBlocksByDiff = diffAfterDiscount > 0 ? Math.floor(diffAfterDiscount / loyaltyCfg.discount_per_block_usd) : 0;
   const maxBlocks = Math.max(0, Math.min(maxBlocksByBalance, maxBlocksByDiff));
   const effectiveBlocks = Math.min(redeemBlocks, maxBlocks);
   const redemptionUsd = round2(effectiveBlocks * loyaltyCfg.discount_per_block_usd);
   const pointsToConsume = effectiveBlocks * loyaltyCfg.points_per_block;
 
-  const diffNet = round2(diff - redemptionUsd);
+  const diffNet = round2(diffAfterDiscount - redemptionUsd);
   const surcharge = (diffNet > 0 && paymentMethod === 'punto_de_venta' && pdvSurcharge)
     ? round2(diffNet * PDV_SURCHARGE_RATE)
     : 0;
@@ -408,17 +423,22 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
       p_redeem_points: pointsToConsume,
       p_expected_total: total,
       p_bcv_rate: bcvRate,
+      // Solo viaja si hay descuento: sin él la llamada es la de siempre y
+      // funciona también si db/exchange_03_discount.sql aún no se aplicó.
+      ...(discountUsd > 0 ? { p_discount_usd: discountUsd } : {}),
     });
 
     if (rpcError) {
-      setError(exchangeErrorMessage(rpcError));
+      setError(discountUsd > 0 && isMissingFunctionError(rpcError)
+        ? DISCOUNT_MIGRATION_MISSING
+        : exchangeErrorMessage(rpcError));
       setSubmitting(false);
       return;
     }
 
     const id = data as unknown as string;
     setDoneId(id);
-    setDoneSummary({ total, points: pointsEarned });
+    setDoneSummary({ total, points: pointsEarned, discount: discountUsd });
     setSubmitting(false);
   };
 
@@ -447,8 +467,13 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
           <p className="text-slate-600 text-lg">
             {doneSummary.total > 0
               ? <>Cobrado: <strong>${doneSummary.total.toFixed(2)}</strong> (Bs. {(doneSummary.total * bcvRate).toFixed(2)})</>
-              : 'Sin diferencia: no se cobró nada.'}
+              : doneSummary.discount > 0
+                ? 'La diferencia quedó cubierta con el descuento: no se cobró nada.'
+                : 'Sin diferencia: no se cobró nada.'}
           </p>
+          {doneSummary.discount > 0 && (
+            <p className="text-slate-600 mt-1">Descuento aplicado: <strong>−${doneSummary.discount.toFixed(2)}</strong></p>
+          )}
           {doneSummary.points > 0 && (
             <p className="text-teal-700 font-semibold mt-1">✪ El cliente gana {doneSummary.points} puntos</p>
           )}
@@ -694,6 +719,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
               <div className="flex justify-between"><span className="text-slate-600">Crédito por devolución ({returnedUnits} {returnedUnits === 1 ? 'artículo' : 'artículos'})</span><span className="font-semibold text-amber-700">−${creditTotal.toFixed(2)}</span></div>
               <div className="flex justify-between"><span className="text-slate-600">Productos nuevos</span><span className="font-semibold text-slate-800">${newTotal.toFixed(2)}</span></div>
               <div className="flex justify-between border-t border-slate-100 pt-1"><span className="font-bold text-slate-800">Diferencia</span><span className={`font-bold ${diff < 0 ? 'text-red-600' : 'text-slate-800'}`}>${diff.toFixed(2)}</span></div>
+              {discountUsd > 0 && (
+                <div className="flex justify-between"><span className="text-slate-600">Descuento</span><span className="font-semibold text-teal-700">−${discountUsd.toFixed(2)}</span></div>
+              )}
             </div>
 
             {diff < 0 && returnedUnits > 0 && newItems.length > 0 && (
@@ -702,8 +730,45 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
               </div>
             )}
 
+            {/* Descuento manual sobre la diferencia (mismo control que el POS) */}
+            {diff > 0 && (
+              <div className="mt-3 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <p className="text-sm font-semibold text-slate-700 mb-2">Aplicar descuento a la diferencia</p>
+                <div className="flex gap-2">
+                  <select
+                    value={discountType}
+                    onChange={(e) => {
+                      setDiscountType(e.target.value as ExchangeDiscountType);
+                      if (e.target.value === 'none') setDiscountValue('');
+                    }}
+                    className="p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                  >
+                    <option value="none">Sin descuento</option>
+                    <option value="percent">Porcentaje (%)</option>
+                    <option value="fixed">Monto ($)</option>
+                  </select>
+                  {discountType !== 'none' && (
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={discountValue}
+                      onChange={(e) => setDiscountValue(e.target.value)}
+                      placeholder={discountType === 'percent' ? 'Ej. 10' : 'Ej. 5.00'}
+                      className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-800 text-sm outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    />
+                  )}
+                </div>
+                {discountOverMax && (
+                  <p className="text-xs text-amber-700 mt-2">
+                    El descuento no puede pasar de la diferencia: se aplica ${discountUsd.toFixed(2)}.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Canje de puntos contra la diferencia */}
-            {sale.customer_id && customerPoints !== null && diff > 0 && (
+            {sale.customer_id && customerPoints !== null && diffAfterDiscount > 0 && (
               <div className="mt-3 bg-white border-2 border-teal-200 rounded-lg p-3">
                 <div className="flex items-center justify-between">
                   <p className="font-bold text-slate-800"><span className="text-teal-600">✪</span> Puntos de Lealtad</p>
@@ -774,7 +839,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
                   <p className="text-teal-200 text-sm">Bs. {(total * bcvRate).toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
                 </>
               ) : (
-                <p className="text-xl font-bold">Sin diferencia: no se cobra nada</p>
+                <p className="text-xl font-bold">
+                  {discountUsd > 0 ? 'Diferencia cubierta con el descuento: no se cobra nada' : 'Sin diferencia: no se cobra nada'}
+                </p>
               )}
               {sale.customer_id && (
                 <p className="text-teal-200 text-sm mt-1">✪ Puntos que gana: +{pointsEarned}</p>

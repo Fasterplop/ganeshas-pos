@@ -169,6 +169,11 @@ CREATE INDEX IF NOT EXISTS customer_points_adjustments_document_id_idx
 --      PRODUCT_NOT_FOUND, EXCHANGE_NEGATIVE, NO_CUSTOMER_FOR_POINTS,
 --      INVALID_REDEMPTION, INSUFFICIENT_POINTS (de redeem_points_global),
 --      INVALID_PAYMENT_METHOD, TOTAL_MISMATCH.
+--
+--    OJO: reemplazada por db/exchange_03_discount.sql (un parámetro más). Si
+--    ese archivo ya se aplicó, NO volver a correr esta sección: crearía la
+--    firma de 9 parámetros al lado de la nueva y PostgREST no sabría a cuál
+--    llamar (PGRST203).
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.register_exchange(
   p_source_sale_id      uuid,
