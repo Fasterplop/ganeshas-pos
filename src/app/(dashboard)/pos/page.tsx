@@ -384,13 +384,19 @@ export default function POSPage() {
     const val = e.target.value;
     setProductSearch(val);
 
-    if (val.trim().length > 1) {
+    if (val.trim().length > 1 && currentStore) {
       const filter = `sku_barcode.ilike.%${val}%,name.ilike.%${val}%`;
       // Se lee de la vista con ofertas: el precio que ve el cajero tiene que
       // ser el que se va a cobrar. Si el SQL de ofertas no está aplicado,
       // pricedFallback degrada a `products` y todo sigue como antes.
+      //
+      // Solo productos de la tienda activa (owner_store_id). Las dos tiendas
+      // tienen productos casi iguales ("BILLETERA CALVIN KLEIN" en una,
+      // "BILLETERAS CALVIN KLEIN" en la otra): al elegir el de la otra tienda,
+      // la venta descontaba stock donde no lo había (quedaba en -1) y el
+      // inventario de esta tienda, que sí filtra por dueña, no lo mostraba.
       const run = (table: string) =>
-        supabase.from(table).select('*').eq('is_active', true).or(filter).limit(50);
+        supabase.from(table).select('*').eq('is_active', true).eq('owner_store_id', currentStore.id).or(filter).limit(50);
 
       let res = await run(pricedTable());
       if (pricedFallback(res.error)) res = await run(pricedTable());
@@ -405,7 +411,9 @@ export default function POSPage() {
   // cámara. Devuelve el texto que el visor de la cámara muestra sobre el video.
   const addByBarcode = async (code: string): Promise<string> => {
     const barcode = code.trim();
-    const { product: data } = await findProductByBarcode(supabase, barcode);
+    if (!currentStore) return '✗ No hay tienda activa';
+    // Mismo filtro por tienda que la búsqueda por nombre (ver handleSearchChange).
+    const { product: data } = await findProductByBarcode(supabase, barcode, currentStore.id);
 
     if (data) {
       // price = lo que se cobra (con oferta); base_price = el de lista, solo
@@ -416,9 +424,9 @@ export default function POSPage() {
       const variant = formatVariant(data.talla, data.color);
       return `✓ ${data.name}${variant ? ` (${variant})` : ''} · $${priceOf(data).toFixed(2)}`;
     }
-    showNotification(`Producto no encontrado: ${barcode}`, 'error');
+    showNotification(`Producto no encontrado en ${currentStore.name}: ${barcode}`, 'error');
     setProductSearch('');
-    return `✗ No encontrado: ${barcode}`;
+    return `✗ No encontrado en ${currentStore.name}: ${barcode}`;
   };
 
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {

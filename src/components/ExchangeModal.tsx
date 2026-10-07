@@ -284,6 +284,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   // Lee de la vista con ofertas, igual que la caja: el total que muestra este
   // modal tiene que ser exactamente el que recalcula register_exchange, o el
   // RPC aborta con TOTAL_MISMATCH y el cajero no puede registrar el cambio.
+  //
+  // Igual que la caja, solo ofrece productos de la tienda activa
+  // (owner_store_id): lo nuevo que se lleva el cliente sale de esta tienda.
   const findProducts = async (filter: (q: any) => any): Promise<ProductHit[] | null> => {
     if (offersAvailable()) {
       const res = await filter(supabase.from('v_products_priced').select(PRODUCT_SELECT_PRICED));
@@ -315,9 +318,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
   const handleProductSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setProductSearch(val);
-    if (val.trim().length > 1) {
+    if (val.trim().length > 1 && currentStore) {
       const hits = await findProducts((q: any) =>
-        q.eq('is_active', true).or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`).limit(50),
+        q.eq('is_active', true).eq('owner_store_id', currentStore.id).or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`).limit(50),
       );
       setProductHits(hits ?? []);
     } else {
@@ -329,14 +332,14 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     if (e.key !== 'Enter') return;
     e.preventDefault();
     const barcode = productSearch.trim();
-    if (!barcode) return;
+    if (!barcode || !currentStore) return;
     const hits = await findProducts((q: any) =>
-      q.eq('sku_barcode', barcode).eq('is_active', true).limit(1),
+      q.eq('sku_barcode', barcode).eq('is_active', true).eq('owner_store_id', currentStore.id).limit(1),
     );
     if (hits && hits.length > 0) {
       addNewItem(hits[0]);
     } else {
-      setError(`Producto no encontrado: ${barcode}`);
+      setError(`Producto no encontrado en ${currentStore.name}: ${barcode}`);
     }
   };
 
