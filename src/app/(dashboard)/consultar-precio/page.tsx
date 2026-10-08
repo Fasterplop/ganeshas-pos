@@ -13,9 +13,10 @@
 //     golpe: son 12 consultas por lectura. Acá se resuelve solo con Enter (o
 //     Tab, que algunos escáneres mandan en vez de Enter).
 //
-//  2. `inputMode="none"` mantiene el foco sin abrir el teclado virtual de
-//     Android, que taparía media pantalla. El botón "Teclado" lo habilita
-//     cuando hay que escribir a mano (etiqueta rayada, código ilegible).
+//  2. La casilla mantiene el foco sin abrir el teclado virtual de Android, que
+//     taparía media pantalla (el cómo está en `focusScanner`). El botón
+//     "Teclado" lo habilita cuando hay que escribir a mano (etiqueta rayada,
+//     código ilegible).
 //
 //  3. El stock y las hermanas se piden en consultas aparte en vez de
 //     embeberlas en la vista: PostgREST no siempre detecta la relación a
@@ -63,6 +64,12 @@ const hasWildcards = (s: string) => /[%*_,()\\]/.test(s);
 /** Deja un término de búsqueda libre de los caracteres que rompen .or() */
 const sanitizeTerm = (s: string) => s.replace(/[%*_,()\\]/g, ' ').trim();
 
+/** Chrome (o un navegador basado en él) en Android: el único que necesita el foco en dos pasos. */
+const isAndroidChrome = () => /Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent);
+
+/** Espera entre dar el foco y abrirle la casilla al escáner: tiene que caer después del toque. */
+const SCANNER_READY_DELAY_MS = 150;
+
 /** Resultado de una consulta a productos, en su forma más laxa. */
 type QueryResult = { data: unknown; error: { code?: string; message?: string } | null };
 type QueryFn = (table: string, cols: string) => PromiseLike<QueryResult>;
@@ -93,7 +100,11 @@ export default function ConsultarPrecioPage() {
   };
 
   const [code, setCode] = useState('');
+  // El teclado a mano. Va también en un ref porque lo lee `focusScanner` desde
+  // temporizadores.
   const [keyboardOn, setKeyboardOn] = useState(false);
+  const keyboardOnRef = useRef(false);
+  const focusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [result, setResult] = useState<ResultState>({ kind: 'idle' });
   const [siblings, setSiblings] = useState<Sibling[] | null>(null);
   const [loadingSiblings, setLoadingSiblings] = useState(false);
@@ -110,11 +121,51 @@ export default function ConsultarPrecioPage() {
 
   const storeId = currentStore?.id ?? null;
 
-  const focusScanner = useCallback(() => {
-    setTimeout(() => {
-      if (!cameraOpenRef.current) inputRef.current?.focus();
-    }, 10);
+  // Devuelve el foco a la casilla de escaneo, sin teclado salvo que esté
+  // activado a mano.
+  //
+  // Con inputmode="none" Chrome en Android esconde el teclado, pero tampoco le
+  // abre al sistema la conexión de texto de la casilla (ImeAdapterImpl.updateState:
+  // cuando oculta no llama a restartInput). El escáner del SVANTTO escribe por
+  // esa conexión y no con teclas, así que la lectura se perdía hasta que alguien
+  // tocaba "Teclado".
+  //
+  // Por eso el foco se toma en dos pasos: primero con inputmode="none" (el
+  // teclado no sale) y, pasado el toque, se cambia a "text" SIN volver a
+  // enfocar. Ese cambio abre la conexión y no pide teclado. Con la casilla ya
+  // lista no se llama a focus() de nuevo: con inputmode="text" sí lo abriría.
+  const focusScanner = useCallback((delay = 10) => {
+    if (focusTimer.current) clearTimeout(focusTimer.current);
+    focusTimer.current = setTimeout(() => {
+      const el = inputRef.current;
+      if (!el || cameraOpenRef.current) return;
+      if (keyboardOnRef.current) {
+        el.inputMode = 'text';
+        el.focus();
+        return;
+      }
+      if (document.activeElement === el && el.inputMode === 'text') return;
+      el.inputMode = 'none';
+      el.focus();
+      if (!isAndroidChrome()) return;
+      focusTimer.current = setTimeout(() => {
+        if (document.activeElement !== el || keyboardOnRef.current) return;
+        el.inputMode = 'text';
+        // Chrome relee inputmode al pintar un cuadro: se pide uno.
+        requestAnimationFrame(() => {});
+      }, SCANNER_READY_DELAY_MS);
+    }, delay);
   }, []);
+
+  const toggleKeyboard = () => {
+    const on = !keyboardOnRef.current;
+    keyboardOnRef.current = on;
+    setKeyboardOn(on);
+    // De vuelta a "none": obliga a focusScanner a rehacer el foco, que es lo
+    // que esconde el teclado al apagarlo.
+    if (inputRef.current) inputRef.current.inputMode = 'none';
+    focusScanner();
+  };
 
   // --- Tasa BCV ------------------------------------------------------------
   useEffect(() => {
@@ -323,18 +374,22 @@ export default function ConsultarPrecioPage() {
   // El foco vuelve al escáner al tocar fuera de un control y al volver de
   // segundo plano: el empleado nunca debería tener que tocar la pantalla.
   useEffect(() => {
+    focusScanner();
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && !cameraOpenRef.current) inputRef.current?.focus();
+      if (document.visibilityState === 'visible') focusScanner();
     };
     document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      if (focusTimer.current) clearTimeout(focusTimer.current);
+    };
+  }, [focusScanner]);
 
   const handleSurfaceClick = (e: React.MouseEvent) => {
     if (cameraOpenRef.current) return;
     const el = e.target as HTMLElement;
     if (el.closest('input, button, select, textarea, a')) return;
-    inputRef.current?.focus();
+    focusScanner();
   };
 
   // --- Render --------------------------------------------------------------
@@ -425,13 +480,22 @@ export default function ConsultarPrecioPage() {
           type="text"
           autoFocus
           value={code}
-          inputMode={keyboardOn ? 'text' : 'none'}
+          // Fijo a proposito: `focusScanner` lo cambia a mano sobre el elemento
+          // y, como el valor de aca nunca cambia, React no se lo pisa.
+          inputMode="none"
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
           onChange={e => setCode(e.target.value)}
           onKeyDown={handleKeyDown}
+          onMouseDown={() => {
+            // Tocar la casilla la enfoca por la via normal del navegador, que
+            // abriria el teclado: se pasa antes a "none" y se rehace el foco.
+            if (keyboardOnRef.current || !inputRef.current) return;
+            inputRef.current.inputMode = 'none';
+            focusScanner();
+          }}
           onBlur={e => {
             // Si el foco se fue a otro control (el input de la tasa, un boton),
             // se respeta. Si se fue a la nada, vuelve al escaner. Con la camara
@@ -439,7 +503,7 @@ export default function ConsultarPrecioPage() {
             if (cameraOpenRef.current) return;
             const next = e.relatedTarget as HTMLElement | null;
             if (next && next.closest('input, button, select, textarea, a')) return;
-            setTimeout(() => inputRef.current?.focus(), 120);
+            focusScanner(120);
           }}
           placeholder="Escanear o escribir código..."
           className="flex-1 min-w-0 py-2 text-base font-mono bg-transparent text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:outline-none"
@@ -450,10 +514,7 @@ export default function ConsultarPrecioPage() {
           title="Escanear con la cámara"
         />
         <button
-          onClick={() => {
-            setKeyboardOn(v => !v);
-            setTimeout(() => inputRef.current?.focus(), 10);
-          }}
+          onClick={toggleKeyboard}
           title={keyboardOn ? 'Ocultar el teclado' : 'Escribir a mano'}
           aria-label={keyboardOn ? 'Ocultar el teclado' : 'Escribir a mano'}
           className={`shrink-0 p-2 rounded-lg border transition cursor-pointer ${

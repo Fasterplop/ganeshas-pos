@@ -65,8 +65,12 @@ completa).
 
 El empleado entra con su propio usuario y la sesión queda abierta. La casilla de escaneo está
 siempre enfocada: **no hay que tocar la pantalla entre lectura y lectura**, y el teclado virtual no
-aparece (`inputMode="none"`). Hay un botón **Teclado** para escribir a mano cuando la etiqueta está
-rayada.
+aparece. Hay un botón **Teclado** para escribir a mano cuando la etiqueta está rayada.
+
+La casilla toma el foco con `inputmode="none"` y, ya enfocada, pasa a `"text"` (`focusScanner`). El
+segundo paso existe por Chrome para Android: con `"none"` esconde el teclado pero tampoco le abre al
+sistema la conexión de texto de la casilla, y el escáner del SVANTTO escribe por esa conexión en vez
+de simular teclas. Con `"none"` a secas la lectura se perdía hasta que alguien tocaba **Teclado**.
 
 ### Qué muestra
 
@@ -250,8 +254,9 @@ directo del formulario ya no manda `sku_barcode`.
    `sale_items.unit_price`.
 8. Cambio de producto llevándose un producto en oferta: el total del modal es el que acepta el RPC.
 9. Poner `ends_at` de ayer → la oferta desaparece sola de la caja y del teléfono.
-10. En el teléfono: escanear tres productos seguidos sin tocar la pantalla; el foco no se pierde y
-    el teclado virtual no aparece.
+10. En el teléfono: recién abierta la pantalla y **sin tocar Teclado**, escanear tres productos
+    seguidos sin tocar la pantalla; el foco no se pierde y el teclado virtual no aparece. Repetir
+    después de tocar una variante, de tocar la casilla y de prender y apagar **Teclado**.
 11. Escanear una variante de un modelo con varias tallas → salen **todas** las hermanas con su stock.
 12. Escanear un código inventado, y un producto eliminado.
 13. Entrar sin tasa del día → la pide una vez; recargar → ya no la pide; «Actualizar tasa» la cambia.
