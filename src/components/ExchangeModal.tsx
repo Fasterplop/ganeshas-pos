@@ -21,6 +21,7 @@ import {
 } from '@/lib/exchange';
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { offersAvailable, pricedFallback } from '@/lib/pricedProducts';
+import { checkTransfersAvailable, fetchForeignSellable, isForeign } from '@/lib/transfers';
 
 // ============================================================================
 // Modal de CAMBIO DE PRODUCTO.
@@ -65,6 +66,9 @@ interface ProductHit {
   talla: string | null;
   color: string | null;
   sku_barcode: string;
+  // Tienda dueña. Si no es la tienda activa, el producto es de la otra tienda
+  // y en un cambio solo se pueden llevar las unidades que ya estén acá.
+  owner_store_id?: string | null;
   store_stock?: { stock: number; store_id: string }[];
   // Oferta vigente (vista v_products_priced). Tiene que salir de la MISMA
   // fuente que usa register_exchange en el servidor: si el modal calcula el
@@ -115,11 +119,11 @@ const SALE_SELECT = `
               products (name, talla, color))
 `;
 
-const PRODUCT_SELECT = 'id, name, price, talla, color, sku_barcode, store_stock (stock, store_id)';
+const PRODUCT_SELECT = 'id, name, price, talla, color, sku_barcode, owner_store_id, store_stock (stock, store_id)';
 // En la vista de precios el stock NO se embebe: PostgREST no siempre resuelve
 // products -> store_stock a través de una vista. Se pide aparte y se arma la
 // misma forma (`store_stock`) que espera stockOf().
-const PRODUCT_SELECT_PRICED = 'id, name, price, talla, color, sku_barcode, effective_price, offer_id, offer_percent';
+const PRODUCT_SELECT_PRICED = 'id, name, price, talla, color, sku_barcode, owner_store_id, effective_price, offer_id, offer_percent';
 
 const MIGRATION_MISSING = 'La base de datos aún no tiene la migración de cambios (aplicar db/exchange_02_schema_and_rpc.sql).';
 const DISCOUNT_MIGRATION_MISSING = 'La base de datos aún no acepta descuentos en los cambios (aplicar db/exchange_03_discount.sql). Quita el descuento para registrar el cambio.';
@@ -315,14 +319,44 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     return hits.map(h => ({ ...h, store_stock: byProduct[h.id] ?? [] }));
   };
 
+  // Productos de la otra tienda que YA tienen unidades acá (traídos y sin
+  // vender): también se pueden llevar en un cambio. Los que no se han traído
+  // no: register_exchange descuenta el stock de esta tienda sin validar la
+  // tienda dueña, y dejaría un negativo que ninguna pantalla muestra.
+  // Con el SQL de transferencias sin aplicar devuelve vacío y nada cambia.
+  // Se consulta una vez por búsqueda (al empezar a escribir), no con cada tecla.
+  const foreignCache = useRef<Record<string, number> | null>(null);
+  const foreignHereStock = async (storeId: string, refresh: boolean): Promise<Record<string, number>> => {
+    if (!(await checkTransfersAvailable(supabase))) return {};
+    if (foreignCache.current && !refresh) return foreignCache.current;
+    const stock = await fetchForeignSellable(supabase, storeId);
+    foreignCache.current = stock;
+    return stock;
+  };
+
+  // Cada búsqueda lleva un número: la respuesta de una búsqueda vieja se descarta.
+  const hitSeq = useRef(0);
+
   const handleProductSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setProductSearch(val);
+    const seq = ++hitSeq.current;
     if (val.trim().length > 1 && currentStore) {
       const hits = await findProducts((q: any) =>
         q.eq('is_active', true).eq('owner_store_id', currentStore.id).or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`).limit(50),
       );
-      setProductHits(hits ?? []);
+      if (seq !== hitSeq.current) return;
+      const own = hits ?? [];
+      setProductHits(own);
+
+      const ids = Object.keys(await foreignHereStock(currentStore.id, val.trim().length <= 2));
+      const term = val.replace(/[%*_,()\\]/g, ' ').trim();
+      if (ids.length === 0 || !term) return;
+      const extra = await findProducts(q =>
+        q.eq('is_active', true).in('id', ids).or(`sku_barcode.ilike.%${term}%,name.ilike.%${term}%`).limit(50),
+      );
+      if (seq !== hitSeq.current || !extra?.length) return;
+      setProductHits([...own, ...extra]);
     } else {
       setProductHits([]);
     }
@@ -338,12 +372,39 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     );
     if (hits && hits.length > 0) {
       addNewItem(hits[0]);
-    } else {
-      setError(`Producto no encontrado en ${currentStore.name}: ${barcode}`);
+      return;
     }
+
+    // No es de esta tienda. ¿Es de la otra? Solo se busca después del fallo.
+    if (await checkTransfersAvailable(supabase)) {
+      const others = await findProducts(q =>
+        q.eq('sku_barcode', barcode).eq('is_active', true).limit(1),
+      );
+      const other = others?.[0];
+      if (other && isForeign(other.owner_store_id, currentStore.id)) {
+        addNewItem(other); // addNewItem aplica el tope y avisa si no hay unidades acá
+        return;
+      }
+    }
+    setError(`Producto no encontrado en ${currentStore.name}: ${barcode}`);
   };
 
   const addNewItem = (product: ProductHit) => {
+    // De la otra tienda: solo las unidades que ya estén acá. Para llevar más
+    // hay que traerlas primero (escaneándolo en la caja o desde Inventario).
+    if (isForeign(product.owner_store_id, currentStore?.id)) {
+      const already = newItems.find(i => i.product.id === product.id)?.quantity ?? 0;
+      if (already + 1 > stockOf(product)) {
+        setError(
+          stockOf(product) > 0
+            ? `${product.name} es de la otra tienda y aquí solo hay ${stockOf(product)}. Para llevar más, tráelo primero.`
+            : `${product.name} es de la otra tienda y no hay unidades aquí. Tráelo primero: escanéalo en la caja o transfiérelo desde Inventario.`,
+        );
+        setProductSearch('');
+        setProductHits([]);
+        return;
+      }
+    }
     setNewItems(prev => {
       const existing = prev.find(i => i.product.id === product.id);
       if (existing) return prev.map(i => i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
@@ -357,7 +418,14 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
 
   const changeNewItemQty = (productId: string, delta: number) => {
     setNewItems(prev => prev
-      .map(i => i.product.id === productId ? { ...i, quantity: i.quantity + delta } : i)
+      .map(i => {
+        if (i.product.id !== productId) return i;
+        // De la otra tienda: nunca más de las unidades que hay acá.
+        const max = isForeign(i.product.owner_store_id, currentStore?.id)
+          ? Math.max(0, stockOf(i.product))
+          : Infinity;
+        return { ...i, quantity: Math.min(max, i.quantity + delta) };
+      })
       .filter(i => i.quantity > 0));
   };
 
@@ -672,6 +740,9 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
                         <p className="font-semibold text-slate-800 truncate">{p.name}</p>
                         <p className="text-xs text-slate-500">
                           {formatVariant(p.talla, p.color) && `${formatVariant(p.talla, p.color)} · `}SKU {p.sku_barcode} · Stock {stockOf(p)}
+                          {isForeign(p.owner_store_id, currentStore?.id) && (
+                            <span className="ml-1 font-semibold text-amber-700">· de la otra tienda</span>
+                          )}
                         </p>
                       </div>
                       <span className="text-right shrink-0">
