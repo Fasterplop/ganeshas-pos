@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { usePOSStore } from '@/store/usePOSStore';
+import { usePOSStore, type CartItem } from '@/store/usePOSStore';
 import { notifySaleWhatsApp } from './actions';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
@@ -12,6 +12,17 @@ import CasheaLogo from '@/components/CasheaLogo';
 import ExchangeModal from '@/components/ExchangeModal';
 import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import { findProductByBarcode } from '@/lib/barcodeLookup';
+import TransferModal from '@/components/TransferModal';
+import {
+  checkTransfersAvailable,
+  fetchForeignSellable,
+  fetchStores,
+  isForeign,
+  localStockOf,
+  type StoreLite,
+  type TransferProduct,
+  type TransferResult,
+} from '@/lib/transfers';
 
 
 // Una variante hermana dentro del mismo producto padre (para el "cambiar"
@@ -24,6 +35,7 @@ interface SiblingVariant {
   color: string | null;
   sku_barcode: string;
   parent_group_id: string | null;
+  owner_store_id?: string | null;
   store_stock?: { stock: number }[];
   // Precio con la oferta vigente aplicada (vista v_products_priced). Ausente
   // mientras db/scanner_03_offers.sql no esté aplicado.
@@ -31,6 +43,15 @@ interface SiblingVariant {
   offer_id?: string | null;
   offer_percent?: number | null;
 }
+
+// Pedido de "traer de la otra tienda" en curso: la ventana abierta y la promesa
+// que espera quien la pidio (se resuelve con la transferencia, o con null).
+type TransferAsk = {
+  product: TransferProduct;
+  fromStoreId: string;
+  quantity: number;
+  resolve: (r: TransferResult | null) => void;
+};
 
 type PaymentMethod = 'efectivo' | 'zelle' | 'pago_movil' | 'punto_de_venta' | 'cashea';
 type DiscountType = 'none' | 'percent' | 'fixed';
@@ -114,6 +135,16 @@ export default function POSPage() {
   const [redeemBlocks, setRedeemBlocks] = useState(0);
   const redeemTouchedRef = useRef(false); // ¿el cajero ya ajustó el canje manualmente?
 
+  // Transferencias entre tiendas (ver el bloque "PRODUCTOS DE LA OTRA TIENDA"
+  // más abajo). Estos van acá arriba porque el cambio de tienda los resetea.
+  const [transferAsk, setTransferAsk] = useState<TransferAsk | null>(null);
+  const transferAskRef = useRef<TransferAsk | null>(null);
+  const transferDoneRef = useRef<TransferResult | null>(null);
+  // Productos de la otra tienda con unidades acá. Se consulta una vez por
+  // búsqueda (al empezar a escribir) y no con cada tecla; se invalida al traer
+  // un producto y al cambiar de tienda.
+  const foreignCache = useRef<{ storeId: string; stock: Record<string, number> } | null>(null);
+
   // ==========================================
   // MITIGACIÓN CASO #2 TDD: Cambio de Tienda
   // ==========================================
@@ -141,6 +172,13 @@ export default function POSPage() {
     setWaOptedOut(false);
     setShowExchange(false);
     redeemTouchedRef.current = false;
+    // Transferencias: lo traído que se tenía guardado era de la tienda
+    // anterior, y una ventana de "traer" abierta ya no aplica (se cierra como
+    // cancelada; si la transferencia ya se hizo, quedó hecha).
+    foreignCache.current = null;
+    transferAskRef.current?.resolve(null);
+    transferAskRef.current = null;
+    setTransferAsk(null);
   }, [currentStore?.id, clearCart]);
 
   // Cargar la configuración de lealtad de la sucursal activa (fallback 10/10)
@@ -380,9 +418,118 @@ export default function POSPage() {
     if (notificationTimer.current) clearTimeout(notificationTimer.current);
   }, []);
 
+  // ==========================================
+  // PRODUCTOS DE LA OTRA TIENDA (transferencias)
+  // ==========================================
+  // La caja vende lo propio O lo que tenga unidades traídas a esta tienda. Un
+  // producto de la otra tienda sin unidades acá no se vende: primero se trae
+  // (RPC transfer_stock), y recién ahí entra al carrito. La transferencia se
+  // hace AL AGREGAR y no al cobrar, a propósito: handleCheckout no se toca y
+  // sigue descontando la fila de esta tienda, que ya tiene la unidad.
+  //
+  // transfersOn = el SQL de transferencias está aplicado. Mientras no lo esté,
+  // nada de este bloque se activa y la caja se comporta como siempre.
+  const [allStores, setAllStores] = useState<StoreLite[]>([]);
+  const [transfersOn, setTransfersOn] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [stores, ok] = await Promise.all([fetchStores(supabase), checkTransfersAvailable(supabase)]);
+      if (cancelled) return;
+      setAllStores(stores);
+      setTransfersOn(ok);
+    })();
+    return () => { cancelled = true; };
+  }, [supabase]);
+
+  const storeNameOf = (id?: string | null) => allStores.find(s => s.id === id)?.name ?? 'la otra tienda';
+
+  // La ventana "este producto es de la otra tienda". Quien la pide espera una
+  // promesa que se resuelve al cerrarla: con la transferencia hecha, o con null
+  // si se canceló. Mientras tanto la cámara no lee (espera a onScan) y el
+  // lector de códigos no puede teclear (la ventana anula el teclado).
+  const askTransfer = (product: TransferProduct, fromStoreId: string, quantity: number) =>
+    new Promise<TransferResult | null>(resolve => {
+      const ask: TransferAsk = { product, fromStoreId, quantity, resolve };
+      transferDoneRef.current = null;
+      transferAskRef.current = ask;
+      setTransferAsk(ask);
+    });
+
+  const closeTransferAsk = () => {
+    const ask = transferAskRef.current;
+    if (!ask) return;
+    transferAskRef.current = null;
+    setTransferAsk(null);
+    ask.resolve(transferDoneRef.current);
+    transferDoneRef.current = null;
+  };
+
+  const foreignSellable = async (storeId: string, refresh: boolean) => {
+    const c = foreignCache.current;
+    if (c && c.storeId === storeId && !refresh) return c.stock;
+    const stock = await fetchForeignSellable(supabase, storeId);
+    foreignCache.current = { storeId, stock };
+    return stock;
+  };
+
+  // PUNTO DE CONTROL ÚNICO. Todo lo que SUMA unidades al carrito pasa por acá:
+  // el escaneo, el clic en el buscador, el botón "+" y el cambio de variante.
+  // El carrito no tiene tope de cantidad y el cobro no valida la tienda dueña,
+  // así que si un producto ajeno entrara por otro lado, se vendería sin
+  // traerlo y dejaría el stock en negativo donde ninguna pantalla lo muestra.
+  //
+  //   'added'      -> se agregó (es de esta tienda, o ya había unidades acá)
+  //   'cancelled'  -> el cajero canceló la ventana: NO se agregó
+  //   {resultado}  -> se trajo de la otra tienda y se agregó
+  const guardBusy = useRef(false);
+  const addGuarded = async (item: CartItem): Promise<'added' | 'cancelled' | TransferResult> => {
+    if (!currentStore || !transfersOn || !isForeign(item.owner_store_id, currentStore.id) || item.quantity <= 0) {
+      addToCart(item);
+      return 'added';
+    }
+    if (guardBusy.current) return 'cancelled';
+    guardBusy.current = true;
+    try {
+      // Stock fresco, no el de la lista: otro cajero pudo vender o traer entre tanto.
+      const inCart = usePOSStore.getState().cart.find(i => i.id === item.id)?.quantity ?? 0;
+      const local = Math.max(0, (await localStockOf(supabase, item.id, currentStore.id)) ?? 0);
+      const missing = inCart + item.quantity - local;
+      if (missing <= 0) {
+        addToCart(item);
+        return 'added';
+      }
+
+      const result = await askTransfer(
+        {
+          id: item.id, name: item.name, talla: item.talla, color: item.color,
+          owner_store_id: item.owner_store_id ?? null, price: item.price,
+        },
+        item.owner_store_id as string,
+        missing,
+      );
+      if (!result) return 'cancelled';
+
+      foreignCache.current = null;
+      setSiblingsByGroup({}); // el "Stock N" de las variantes quedó viejo
+      // Si trajo más de lo que faltaba, esas unidades también van a la venta
+      // (la ventana dice "traer y agregar a la venta").
+      addToCart({ ...item, quantity: item.quantity + Math.max(0, result.quantity - missing) });
+      return result;
+    } finally {
+      guardBusy.current = false;
+    }
+  };
+
+  // Cada búsqueda por nombre lleva un número: si llega la respuesta de una
+  // búsqueda vieja (o ya se escaneó un código), se descarta.
+  const searchSeq = useRef(0);
+
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setProductSearch(val);
+    const seq = ++searchSeq.current;
 
     if (val.trim().length > 1 && currentStore) {
       const filter = `sku_barcode.ilike.%${val}%,name.ilike.%${val}%`;
@@ -400,8 +547,30 @@ export default function POSPage() {
 
       let res = await run(pricedTable());
       if (pricedFallback(res.error)) res = await run(pricedTable());
+      if (seq !== searchSeq.current) return;
 
-      setSearchResults(res.data || []);
+      const own = res.data || [];
+      setSearchResults(own);
+
+      // Además de lo propio: productos de la otra tienda que YA tienen unidades
+      // acá (traídos y sin vender). Van al final y marcados, para que no se
+      // confundan con un producto parecido de esta tienda. Es una consulta
+      // aparte y su error se ignora: nunca se le pasa a pricedFallback, que
+      // degradaría la caja entera a cobrar sin ofertas.
+      if (!transfersOn) return;
+      const stock = await foreignSellable(currentStore.id, val.trim().length <= 2);
+      const ids = Object.keys(stock);
+      const term = val.replace(/[%*_,()\\]/g, ' ').trim();
+      if (ids.length === 0 || !term) return;
+      const extra = await supabase
+        .from(pricedTable())
+        .select('*')
+        .eq('is_active', true)
+        .in('id', ids)
+        .or(`sku_barcode.ilike.%${term}%,name.ilike.%${term}%`)
+        .limit(50);
+      if (seq !== searchSeq.current || extra.error || !extra.data?.length) return;
+      setSearchResults([...own, ...extra.data.map(p => ({ ...p, _localStock: stock[p.id] ?? 0 }))]);
     } else {
       setSearchResults([]);
     }
@@ -412,18 +581,44 @@ export default function POSPage() {
   const addByBarcode = async (code: string): Promise<string> => {
     const barcode = code.trim();
     if (!currentStore) return '✗ No hay tienda activa';
+    searchSeq.current++; // lo que venga de una búsqueda por nombre ya no aplica
     // Mismo filtro por tienda que la búsqueda por nombre (ver handleSearchChange).
     const { product: data } = await findProductByBarcode(supabase, barcode, currentStore.id);
 
     if (data) {
       // price = lo que se cobra (con oferta); base_price = el de lista, solo
       // para poder tacharlo en pantalla. `sale_items.unit_price` guarda price.
-      addToCart({ id: data.id, name: data.name, price: priceOf(data), base_price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null });
+      addToCart({ id: data.id, name: data.name, price: priceOf(data), base_price: data.price, quantity: 1, talla: data.talla ?? null, color: data.color ?? null, parent_group_id: data.parent_group_id ?? null, owner_store_id: data.owner_store_id ?? null });
       setProductSearch('');
       setSearchResults([]);
       const variant = formatVariant(data.talla, data.color);
       return `✓ ${data.name}${variant ? ` (${variant})` : ''} · $${priceOf(data).toFixed(2)}`;
     }
+
+    // No es de esta tienda. Antes de decir "no encontrado": ¿es de la otra?
+    // Esta segunda consulta (sin filtro de tienda) solo se hace después de un
+    // fallo, así que el escaneo normal no paga nada extra.
+    if (transfersOn) {
+      const { product: other } = await findProductByBarcode(supabase, barcode);
+      if (other && isForeign(other.owner_store_id, currentStore.id)) {
+        setProductSearch('');
+        setSearchResults([]);
+        const variant = formatVariant(other.talla, other.color);
+        const label = `${other.name}${variant ? ` (${variant})` : ''}`;
+        const from = storeNameOf(other.owner_store_id);
+        const price = `$${priceOf(other).toFixed(2)}`;
+        // Si ya hay unidades acá entra directo; si no, addGuarded abre la
+        // ventana para traerlo y espera a que el cajero decida.
+        const outcome = await addGuarded({ id: other.id, name: other.name, price: priceOf(other), base_price: other.price, quantity: 1, talla: other.talla ?? null, color: other.color ?? null, parent_group_id: other.parent_group_id ?? null, owner_store_id: other.owner_store_id ?? null });
+        if (outcome === 'cancelled') {
+          showNotification(`No se agregó: ${label} es de ${from}`, 'error');
+          return `✗ No agregado: ${label} es de ${from}`;
+        }
+        if (outcome === 'added') return `✓ ${label} (de ${from}) · ${price}`;
+        return `✓ Traído de ${from} · ${label} · ${price}`;
+      }
+    }
+
     showNotification(`Producto no encontrado en ${currentStore.name}: ${barcode}`, 'error');
     setProductSearch('');
     return `✗ No encontrado en ${currentStore.name}: ${barcode}`;
@@ -442,10 +637,10 @@ export default function POSPage() {
     }
   };
 
-  const handleAddFromSearch = (product: any) => {
-    addToCart({ id: product.id, name: product.name, price: priceOf(product), base_price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null, parent_group_id: product.parent_group_id ?? null });
+  const handleAddFromSearch = async (product: any) => {
     setProductSearch('');
     setSearchResults([]);
+    await addGuarded({ id: product.id, name: product.name, price: priceOf(product), base_price: product.price, quantity: 1, talla: product.talla ?? null, color: product.color ?? null, parent_group_id: product.parent_group_id ?? null, owner_store_id: product.owner_store_id ?? null });
     searchInputRef.current?.focus();
   };
 
@@ -476,7 +671,7 @@ export default function POSPage() {
       if (offersAvailable()) {
         const res = await supabase
           .from('v_products_priced')
-          .select('id, name, price, talla, color, sku_barcode, parent_group_id, effective_price, offer_id, offer_percent')
+          .select('id, name, price, talla, color, sku_barcode, parent_group_id, owner_store_id, effective_price, offer_id, offer_percent')
           .eq('parent_group_id', groupId)
           .eq('is_active', true)
           .order('talla')
@@ -490,7 +685,7 @@ export default function POSPage() {
       if (!resolved) {
         const res = await supabase
           .from('products')
-          .select('id, name, price, talla, color, sku_barcode, parent_group_id')
+          .select('id, name, price, talla, color, sku_barcode, parent_group_id, owner_store_id')
           .eq('parent_group_id', groupId)
           .eq('is_active', true)
           .order('talla')
@@ -516,10 +711,10 @@ export default function POSPage() {
     }
   };
 
-  const handleSwapVariant = (cartItem: import('@/store/usePOSStore').CartItem, sibling: SiblingVariant) => {
-    if (sibling.id === cartItem.id) { setOpenVariantSwitcherFor(null); return; }
-    removeFromCart(cartItem.id);
-    addToCart({
+  const handleSwapVariant = async (cartItem: import('@/store/usePOSStore').CartItem, sibling: SiblingVariant) => {
+    setOpenVariantSwitcherFor(null);
+    if (sibling.id === cartItem.id) return;
+    const next: CartItem = {
       id: sibling.id,
       name: sibling.name,
       price: priceOf(sibling),
@@ -528,8 +723,22 @@ export default function POSPage() {
       talla: sibling.talla ?? null,
       color: sibling.color ?? null,
       parent_group_id: sibling.parent_group_id ?? null,
-    });
-    setOpenVariantSwitcherFor(null);
+      owner_store_id: sibling.owner_store_id ?? null,
+    };
+
+    // Variante de un producto de la otra tienda: las hermanas también son de
+    // allá y puede que esta talla no se haya traído. Primero el punto de
+    // control; solo si la deja pasar se quita la que estaba (si el cajero
+    // cancela, el carrito queda como estaba).
+    if (transfersOn && currentStore && isForeign(next.owner_store_id, currentStore.id)) {
+      const outcome = await addGuarded(next);
+      if (outcome !== 'cancelled') removeFromCart(cartItem.id);
+      searchInputRef.current?.focus();
+      return;
+    }
+
+    removeFromCart(cartItem.id);
+    addToCart(next);
   };
 
   const handleAddQuickProduct = () => {
@@ -932,6 +1141,24 @@ export default function POSPage() {
         initialSaleId={null}
       />
 
+      {/* Producto de la otra tienda: traerlo y agregarlo a la venta. Queda por
+          encima del visor de la cámara y anula el teclado mientras está abierta
+          (el lector de códigos no puede confirmarla por accidente). */}
+      <TransferModal
+        isOpen={!!transferAsk}
+        onClose={closeTransferAsk}
+        onDone={(result) => { transferDoneRef.current = result; }}
+        product={transferAsk?.product ?? null}
+        stores={allStores}
+        fromStoreId={transferAsk?.fromStoreId ?? null}
+        toStoreId={currentStore.id}
+        source="pos"
+        title={`Este producto es de ${storeNameOf(transferAsk?.fromStoreId)}`}
+        confirmLabel="Traer y agregar a la venta"
+        minQuantity={transferAsk?.quantity}
+        scannerSafe
+      />
+
       <CameraScanner
         isOpen={cameraOpen}
         onClose={() => setCameraOpen(false)}
@@ -1056,6 +1283,11 @@ export default function POSPage() {
                           <p className="text-sm text-slate-500">{formatVariant(p.talla, p.color)}</p>
                         )}
                         <p className="text-sm text-slate-500">SKU: {p.sku_barcode}</p>
+                        {p._localStock != null && (
+                          <p className="text-xs font-semibold text-amber-700">
+                            De {storeNameOf(p.owner_store_id)} · {p._localStock} aquí
+                          </p>
+                        )}
                         {p.parent_group_id && (
                           <p className="text-xs font-semibold text-purple-600">👕 tiene variantes</p>
                         )}
@@ -1137,6 +1369,9 @@ export default function POSPage() {
                         {formatVariant(item.talla, item.color) && (
                           <p className="text-sm text-slate-500">{formatVariant(item.talla, item.color)}</p>
                         )}
+                        {transfersOn && isForeign(item.owner_store_id, currentStore.id) && (
+                          <p className="text-xs font-semibold text-amber-700">De {storeNameOf(item.owner_store_id)}</p>
+                        )}
                         {item.parent_group_id && (
                           <button
                             type="button"
@@ -1182,7 +1417,12 @@ export default function POSPage() {
                           </button>
                           <span className="w-8 text-center text-xl font-bold text-slate-800">{item.quantity}</span>
                           <button
-                            onClick={() => addToCart({ ...item, quantity: 1 })}
+                            onClick={async () => {
+                              // Si hubo que abrir la ventana de "traer", el foco
+                              // se perdió: vuelve al buscador para seguir escaneando.
+                              const outcome = await addGuarded({ ...item, quantity: 1 });
+                              if (outcome !== 'added') searchInputRef.current?.focus();
+                            }}
                             className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
                           >
                             +

@@ -21,6 +21,12 @@ export interface CartItem {
   talla?: string | null;
   color?: string | null;
   parent_group_id?: string | null;
+  /**
+   * Tienda dueña del producto. Si no es la tienda activa, el producto es de la
+   * otra tienda y solo se vende lo que se haya traído (ver src/lib/transfers.ts).
+   * No se guarda una foto del stock: se lee fresco cada vez que se suma.
+   */
+  owner_store_id?: string | null;
 }
 
 interface POSState {
