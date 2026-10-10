@@ -49,15 +49,16 @@
 --
 -- LO QUE NO SE TOCA: register_exchange y delete_sale_and_revert siguen
 -- devolviendo el stock a la tienda DE LA VENTA. Con la regla nueva, esa unidad
--- queda visible en esa tienda («De la otra tienda») y se puede devolver a su
--- tienda de origen. restock_stock, etiquetas, ofertas, bulk_update_prices y
+-- se puede volver a vender en esa tienda o devolver a su tienda de origen
+-- desde el inventario. restock_stock, etiquetas, ofertas, bulk_update_prices y
 -- set_product_barcode cuelgan de owner_store_id, que no cambia.
 --
 -- LOS DESCUADRES VIEJOS NO SE CORRIGEN ACÁ. Las filas no dueñas que quedaron
 -- en -1 por ventas cruzadas anteriores al filtro se revisan una por una desde
--- Inventario («Regularizar»): en el SQL Editor auth.uid() es NULL (no habría
--- autor que anotar) y no todas son ventas cruzadas de verdad (alguna puede ser
--- una ficha parecida de la propia tienda).
+-- Inventario (en la tienda dueña, la fila del producto dice «-1 en la otra
+-- tienda»; se corrige transfiriendo esa unidad): en el SQL Editor auth.uid()
+-- es NULL (no habría autor que anotar) y no todas son ventas cruzadas de
+-- verdad (alguna puede ser una ficha parecida de la propia tienda).
 --
 -- ORDEN DE BLOQUEO: las dos filas del producto, ordenadas por store_id.
 -- register_exchange y delete_sale_and_revert bloquean filas de UNA sola

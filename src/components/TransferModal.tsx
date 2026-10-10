@@ -3,7 +3,7 @@
 // Ventana para pasar unidades de un producto de una tienda a la otra.
 //
 // La comparten la caja ("este producto es de la otra tienda: traerlo y
-// agregarlo a la venta") y el inventario (transferir, devolver, regularizar).
+// agregarlo a la venta") y el inventario (transferir, en un sentido o en el otro).
 // El movimiento lo hace el RPC `transfer_stock`; ver src/lib/transfers.ts.
 //
 // Tiene su propia capa (z-[130]) en vez de usar <Modal>: en la caja tiene que
@@ -35,12 +35,6 @@ interface Props {
   confirmLabel?: string;
   /** Cantidad inicial y mínima (la caja pide al menos lo que falta). */
   minQuantity?: number;
-  /** Cantidad con la que abre el selector (devolver: todo lo que hay acá). */
-  initialQuantity?: number;
-  /** Cantidad fija, sin selector (regularizar un descuadre). */
-  fixedQuantity?: number;
-  /** Texto de contexto encima del producto. */
-  intro?: string;
   /** Inventario: permite invertir el sentido (enviar / traer de vuelta). */
   allowFlip?: boolean;
   /** Inventario: campo de nota opcional. */
@@ -92,7 +86,7 @@ function newRequestId(): string | null {
 
 function TransferModalBody({
   onClose, onDone, product, stores, fromStoreId, toStoreId, source,
-  title, confirmLabel, minQuantity, initialQuantity, fixedQuantity, intro,
+  title, confirmLabel, minQuantity,
   allowFlip, showNote, scannerSafe, confirmNegative, showSuccess,
 }: BodyProps) {
   const supabase = createClient();
@@ -107,9 +101,7 @@ function TransferModalBody({
   const toId = flipped ? fromStoreId : toStoreId;
 
   const minQty = Math.max(1, Math.floor(minQuantity ?? 1));
-  const [quantity, setQuantity] = useState(
-    fixedQuantity ?? Math.min(MAX_QTY, Math.max(minQty, Math.floor(initialQuantity ?? minQty))),
-  );
+  const [quantity, setQuantity] = useState(Math.min(MAX_QTY, minQty));
   const [note, setNote] = useState('');
   const [stocks, setStocks] = useState<Record<string, number> | null>(null);
   const [acceptNegative, setAcceptNegative] = useState(false);
@@ -274,8 +266,6 @@ function TransferModalBody({
             </>
           ) : (
             <>
-              {intro && <p className="text-sm text-slate-600">{intro}</p>}
-
               <div>
                 <p className="text-lg font-bold text-slate-900 leading-snug">{product.name}</p>
                 {variant && <p className="text-sm text-slate-500">{variant}</p>}
@@ -312,37 +302,30 @@ function TransferModalBody({
                 </button>
               )}
 
-              {fixedQuantity == null ? (
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-base font-medium text-slate-700">
-                    {source === 'pos' ? '¿Cuántas traes?' : '¿Cuántas unidades?'}
-                  </span>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => changeQty(-1)}
-                      disabled={submitting || quantity <= minQty}
-                      className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-xl disabled:opacity-40"
-                    >
-                      −
-                    </button>
-                    <span className="w-9 text-center text-2xl font-bold text-slate-800">{quantity}</span>
-                    <button
-                      type="button"
-                      onClick={() => changeQty(1)}
-                      disabled={submitting || loading || quantity >= maxQty}
-                      className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl disabled:opacity-40"
-                    >
-                      +
-                    </button>
-                  </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-base font-medium text-slate-700">
+                  {source === 'pos' ? '¿Cuántas traes?' : '¿Cuántas unidades?'}
+                </span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => changeQty(-1)}
+                    disabled={submitting || quantity <= minQty}
+                    className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-bold text-xl disabled:opacity-40"
+                  >
+                    −
+                  </button>
+                  <span className="w-9 text-center text-2xl font-bold text-slate-800">{quantity}</span>
+                  <button
+                    type="button"
+                    onClick={() => changeQty(1)}
+                    disabled={submitting || loading || quantity >= maxQty}
+                    className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl disabled:opacity-40"
+                  >
+                    +
+                  </button>
                 </div>
-              ) : (
-                <p className="text-base text-slate-700">
-                  Se {fixedQuantity === 1 ? 'pasa' : 'pasan'}{' '}
-                  <strong>{fixedQuantity} {fixedQuantity === 1 ? 'unidad' : 'unidades'}</strong>.
-                </p>
-              )}
+              </div>
 
               {blocked && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">

@@ -18,11 +18,10 @@ import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import TransferModal from '@/components/TransferModal';
 import {
   checkTransfersAvailable,
-  fetchForeignStock,
+  fetchAwayStock,
   fetchTransferHistory,
   otherStore,
   TRANSFER_SOURCE_LABEL,
-  type ForeignStockRow,
   type TransferHistoryRow,
   type TransferProduct,
 } from '@/lib/transfers';
@@ -326,18 +325,14 @@ export default function InventoryPage() {
   // Van en estado PROPIO y nunca dentro de `products`: esa lista alimenta los
   // totales, el Excel, el ajuste masivo de precios y la eliminación masiva, y
   // ahí solo pueden estar los productos de la tienda dueña.
-  //   foreignHere   -> productos de la otra tienda con unidades (o un descuadre) acá.
   //   awayByProduct -> de los productos de esta tienda, cuántas unidades están en la otra.
   // transfersOn = el SQL está aplicado; mientras no, la pantalla es la de siempre.
   const [transfersOn, setTransfersOn] = useState(false);
-  const [foreignHere, setForeignHere] = useState<ForeignStockRow[]>([]);
   const [awayByProduct, setAwayByProduct] = useState<Record<string, number>>({});
   const [transferTarget, setTransferTarget] = useState<{
-    mode: 'send' | 'return' | 'fix';
     product: TransferProduct;
     fromStoreId: string;
     toStoreId: string;
-    quantity?: number;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<TransferHistoryRow[]>([]);
@@ -558,10 +553,7 @@ export default function InventoryPage() {
   async function fetchTransfersInfo(storeId: string) {
     const ok = await checkTransfersAvailable(supabase);
     setTransfersOn(ok);
-    if (!ok) { setForeignHere([]); setAwayByProduct({}); return; }
-    const info = await fetchForeignStock(supabase, storeId);
-    setForeignHere(info.foreignHere);
-    setAwayByProduct(info.awayByProduct);
+    setAwayByProduct(ok ? await fetchAwayStock(supabase, storeId) : {});
   }
 
   async function refreshInventory(storeId: string) {
@@ -1658,11 +1650,12 @@ const handleExportCSV = async () => {
     );
   };
 
-  // Botón de la fila: enviar unidades de la tienda que se ve a la otra.
+  // Botón de la fila: enviar unidades de la tienda que se ve a la otra. Si ya
+  // hay unidades allá, la ventana deja invertir el sentido para traerlas de
+  // vuelta: es la única forma de devolver.
   const openSendTransfer = (product: Product) => {
     if (!otherViewStore) return;
     setTransferTarget({
-      mode: 'send',
       product: {
         id: product.id, name: product.name, sku_barcode: product.sku_barcode,
         talla: product.talla, color: product.color, owner_store_id: product.owner_store_id,
@@ -2237,69 +2230,6 @@ const handleExportCSV = async () => {
             onClick={() => toggleStockFilter('out')}
           />
         </div>
-
-        {/* De la otra tienda: productos cuya tienda dueña es la OTRA y que tienen
-            unidades acá (traídos) o un descuadre (vendidos sin traer). Lista
-            aparte: no entran en los totales ni en el Excel de esta tienda. */}
-        {transfersOn && foreignHere.length > 0 && (
-          <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 md:p-4">
-            <div className="flex items-baseline justify-between gap-x-4 gap-y-1 flex-wrap mb-2">
-              <h2 className="text-sm md:text-base font-bold text-amber-800">De la otra tienda ({foreignHere.length})</h2>
-              <p className="text-xs text-amber-700">
-                Productos de {otherViewStore?.name ?? 'la otra tienda'} que están en {effectiveStore?.name}. No cuentan en los totales de arriba.
-              </p>
-            </div>
-            <ul className="divide-y divide-amber-100 bg-white border border-amber-100 rounded-lg overflow-y-auto max-h-56">
-              {foreignHere.map(row => {
-                const variant = formatVariant(row.product.talla, row.product.color);
-                const ownerId = row.product.owner_store_id;
-                return (
-                  <li key={row.product.id} className="p-3 flex items-center justify-between gap-3 flex-wrap">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-slate-800 text-sm">{row.product.name}</p>
-                      <p className="text-xs text-slate-500">
-                        {variant && `${variant} · `}<span className="font-mono">{row.product.sku_barcode}</span> · ${row.product.price.toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      {row.stock > 0 ? (
-                        <span className="text-xs font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2.5 py-1 rounded-full whitespace-nowrap">
-                          {row.stock} aquí
-                        </span>
-                      ) : (
-                        <span className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full whitespace-nowrap">
-                          {row.stock} · se vendió sin traerlo
-                        </span>
-                      )}
-                      {canTransfer && ownerId && row.stock > 0 && (
-                        <button
-                          onClick={() => setTransferTarget({
-                            mode: 'return', product: row.product,
-                            fromStoreId: viewStoreId, toStoreId: ownerId, quantity: row.stock,
-                          })}
-                          className="px-3 py-1.5 border border-teal-600 text-teal-700 rounded-lg text-sm font-semibold hover:bg-teal-50 transition cursor-pointer"
-                        >
-                          Devolver
-                        </button>
-                      )}
-                      {canTransfer && ownerId && row.stock < 0 && (
-                        <button
-                          onClick={() => setTransferTarget({
-                            mode: 'fix', product: row.product,
-                            fromStoreId: ownerId, toStoreId: viewStoreId, quantity: -row.stock,
-                          })}
-                          className="px-3 py-1.5 border border-amber-600 text-amber-700 rounded-lg text-sm font-semibold hover:bg-amber-50 transition cursor-pointer"
-                        >
-                          Regularizar
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
 
         {/* Contenido: tabla + descuento rápido (lado a lado solo en PC) */}
         <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
@@ -3551,8 +3481,7 @@ const handleExportCSV = async () => {
         </Modal>
       </div>
 
-      {/* TRANSFERENCIAS ENTRE TIENDAS: ventana de transferir / devolver /
-          regularizar, y el historial. */}
+      {/* TRANSFERENCIAS ENTRE TIENDAS: ventana de transferir y el historial. */}
       <div className="print:hidden">
         <TransferModal
           isOpen={!!transferTarget}
@@ -3562,26 +3491,10 @@ const handleExportCSV = async () => {
           stores={stores}
           fromStoreId={transferTarget?.fromStoreId ?? null}
           toStoreId={transferTarget?.toStoreId ?? null}
-          source={transferTarget?.mode === 'fix' ? 'ajuste' : 'inventory'}
-          title={
-            transferTarget?.mode === 'return' ? 'Devolver a su tienda'
-              : transferTarget?.mode === 'fix' ? 'Regularizar un descuadre'
-              : 'Transferir a la otra tienda'
-          }
-          confirmLabel={
-            transferTarget?.mode === 'return' ? 'Devolver'
-              : transferTarget?.mode === 'fix' ? 'Regularizar'
-              : 'Transferir'
-          }
-          intro={
-            transferTarget?.mode === 'fix'
-              ? 'Este producto es de la otra tienda y se vendió aquí sin haberlo traído. Regularizar pasa las unidades que faltan desde su tienda para que el conteo cuadre. Hazlo solo si la pieza que se vendió era realmente de la otra tienda.'
-              : undefined
-          }
-          initialQuantity={transferTarget?.mode === 'return' ? transferTarget.quantity : undefined}
-          fixedQuantity={transferTarget?.mode === 'fix' ? transferTarget.quantity : undefined}
-          allowFlip={transferTarget?.mode === 'send' && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
-          showNote={transferTarget?.mode !== 'fix'}
+          source="inventory"
+          title="Transferir a la otra tienda"
+          allowFlip={!!transferTarget && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
+          showNote
           confirmNegative
           showSuccess
         />

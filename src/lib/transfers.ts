@@ -52,13 +52,6 @@ export interface TransferResult {
   replayed: boolean;
 }
 
-/** Un producto de la otra tienda con unidades (o un descuadre) en esta. */
-export interface ForeignStockRow {
-  product: TransferProduct & { price: number };
-  /** Stock en la tienda que se está viendo. Negativo = se vendió sin traerlo. */
-  stock: number;
-}
-
 export interface TransferHistoryRow {
   id: string;
   created_at: string;
@@ -230,55 +223,22 @@ export async function transferStock(
 const PAGE = 1000; // tope duro de PostgREST por respuesta
 
 /**
- * Lo que el inventario de UNA tienda necesita saber de la otra:
- *   - foreignHere: productos de la otra tienda con stock distinto de 0 acá
- *     (positivo = traídos; negativo = vendidos sin traer, para regularizar).
- *   - awayByProduct: de MIS productos, cuántas unidades están en la otra.
+ * De los productos de UNA tienda, cuántas unidades están en la otra:
+ * { [product_id]: unidades }. Positivo = transferidas y sin vender; negativo =
+ * se vendió allá sin transferirlo. Es el aviso «N en {otra tienda}» que el
+ * inventario pinta junto al stock.
  *
- * Va en consultas aparte y NUNCA se mezcla con la lista de productos del
+ * Va en una consulta aparte y NUNCA se mezcla con la lista de productos del
  * inventario, que alimenta totales, Excel y el ajuste masivo de precios.
  * No lanza: si algo falla devuelve vacío y el inventario se ve como siempre.
  */
-export async function fetchForeignStock(
+export async function fetchAwayStock(
   supabase: SupabaseClient,
   storeId: string,
-): Promise<{ foreignHere: ForeignStockRow[]; awayByProduct: Record<string, number> }> {
-  const foreignHere: ForeignStockRow[] = [];
+): Promise<Record<string, number>> {
   const awayByProduct: Record<string, number> = {};
 
   try {
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await supabase
-        .from('store_stock')
-        .select('product_id, stock, products!inner(id, name, sku_barcode, talla, color, price, owner_store_id, is_active)')
-        .eq('store_id', storeId)
-        .neq('stock', 0)
-        .neq('products.owner_store_id', storeId)
-        .eq('products.is_active', true)
-        .order('product_id')
-        .range(from, from + PAGE - 1);
-      if (error) break;
-      for (const row of data ?? []) {
-        // PostgREST devuelve la relación a-uno como objeto; el tipo generado
-        // por supabase-js la marca como arreglo.
-        const p = (Array.isArray(row.products) ? row.products[0] : row.products) as Record<string, unknown> | null;
-        if (!p) continue;
-        foreignHere.push({
-          stock: Number(row.stock) || 0,
-          product: {
-            id: String(p.id),
-            name: String(p.name ?? ''),
-            sku_barcode: (p.sku_barcode as string) ?? null,
-            talla: (p.talla as string) ?? null,
-            color: (p.color as string) ?? null,
-            owner_store_id: (p.owner_store_id as string) ?? null,
-            price: Number(p.price) || 0,
-          },
-        });
-      }
-      if ((data ?? []).length < PAGE) break;
-    }
-
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await supabase
         .from('store_stock')
@@ -300,8 +260,7 @@ export async function fetchForeignStock(
     // Sin conexión o respuesta rara: el inventario sigue sin estos datos.
   }
 
-  foreignHere.sort((a, b) => a.product.name.localeCompare(b.product.name));
-  return { foreignHere, awayByProduct };
+  return awayByProduct;
 }
 
 /**
