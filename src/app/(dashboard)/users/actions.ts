@@ -50,16 +50,17 @@ export async function createCashierAction(formData: any) {
     });
 
     if (profileError) {
-      // El valor 'consulta' del enum se agrega a mano en Supabase
-      // (db/role_consulta_01_enum.sql). Si el SQL no se corrió, Postgres
-      // responde 22P02 "invalid input value for enum". Sin este aviso el
-      // dueño ve "falló el perfil" y no tiene forma de saber qué falta.
+      // Los valores 'consulta' y 'vendedor' del enum se agregan a mano en
+      // Supabase (db/role_consulta_01_enum.sql y db/role_vendedor.sql). Si el
+      // SQL no se corrió, Postgres responde 22P02 "invalid input value for
+      // enum". Sin este aviso el dueño ve "falló el perfil" y no tiene forma
+      // de saber qué falta.
       const esEnumSinAplicar =
         profileError.code === '22P02' || /invalid input value for enum/i.test(profileError.message ?? '');
       if (esEnumSinAplicar && rol !== 'cashier') {
         return {
           success: false,
-          error: `El rol "${rol}" todavía no existe en la base de datos. Falta correr db/role_consulta_01_enum.sql en Supabase.`,
+          error: `El rol "${rol}" todavía no existe en la base de datos. Falta correr ${rol === 'vendedor' ? 'db/role_vendedor.sql' : 'db/role_consulta_01_enum.sql'} en Supabase.`,
         };
       }
       return { success: false, error: 'Usuario en Auth creado, pero falló el perfil.' };

@@ -30,10 +30,10 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
 
   const menuItems = [
     { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
-    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier'] }, 
+    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
-    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'consulta'] },
+    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'vendedor', 'consulta'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
     { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
     { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },

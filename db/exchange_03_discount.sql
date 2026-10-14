@@ -45,6 +45,12 @@
 --   de punto de venta, movimiento de stock, puntos ganados— es idéntico,
 --   carácter por carácter.
 --
+-- 2026-10-13: la lista de roles del paso 1 admite también 'vendedor', el rol
+-- que consulta precios y cobra (db/role_vendedor.sql). Igual que al cajero, se
+-- le exige que la venta sea de su tienda. Es el único cambio; quien ya tenía
+-- aplicado este archivo NO necesita volver a correrlo: role_vendedor.sql le
+-- cambia la lista a la función que está en la base.
+--
 -- POR QUÉ HAY UN DROP: agregar un parámetro cambia la firma, y CREATE OR
 -- REPLACE con otra firma NO reemplaza: crea una SEGUNDA función con el mismo
 -- nombre. Con las dos vivas PostgREST no sabe a cuál llamar y todo cambio de
@@ -146,8 +152,9 @@ BEGIN
   -- tener un perfil activo y la tienda correcta: el rol no se miraba. Con el
   -- rol 'consulta' (el telefono del piso de venta, que solo mira precios) eso
   -- deja de ser aceptable, porque podria registrar cambios llamando al RPC
-  -- desde la consola del navegador. Ahora se exige caja o dueno.
-  IF v_role NOT IN ('owner', 'cashier') THEN
+  -- desde la consola del navegador. Ahora se exige un rol que cobre: dueno,
+  -- cajero o 'vendedor' (db/role_vendedor.sql).
+  IF v_role NOT IN ('owner', 'cashier', 'vendedor') THEN
     RAISE EXCEPTION 'NOT_AUTHORIZED';
   END IF;
 
@@ -414,7 +421,7 @@ NOTIFY pgrst, 'reload schema';
 --   versiones_de_la_funcion      = 1   (2 = quedaron las dos firmas vivas)
 --   parametros                   = 10
 --   valida_descuento             = true
---   exige_caja_o_dueno           = true
+--   exige_caja_o_dueno           = true   (la lista de roles que cobran)
 --   usa_precio_efectivo          = 2
 --   ventas_que_cambian_de_credito = 0  (la fórmula nueva del paso 3 da el
 --                                       mismo resultado que la vieja en todas
@@ -438,7 +445,7 @@ SELECT jsonb_pretty(jsonb_build_object(
      WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
   ),
   'exige_caja_o_dueno', (
-    SELECT bool_and(p.prosrc LIKE '%NOT IN (''owner'', ''cashier'')%')
+    SELECT bool_and(p.prosrc LIKE '%NOT IN (''owner'', ''cashier''%')
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = 'register_exchange'
   ),

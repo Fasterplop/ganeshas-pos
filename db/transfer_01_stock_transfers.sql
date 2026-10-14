@@ -25,8 +25,13 @@
 --
 -- QUIÉN PUEDE (decisión del dueño, 2026-10-09: "el dueño y todos los
 -- cajeros"): owner o cashier con perfil activo. El cajero, solo si una de las
--- dos tiendas es la suya. El rol 'consulta' no. El bloque 1 de la función es
--- el único que habría que tocar si esa decisión cambia.
+-- dos tiendas es la suya. El rol 'consulta' no. Desde el 2026-10-13 también el
+-- rol 'vendedor', con la misma regla del cajero: cobra en la caja, y la caja
+-- trae productos de la otra tienda (db/role_vendedor.sql; quien ya tenía
+-- aplicado este archivo NO necesita volver a correrlo, aquel le cambia la
+-- lista de roles a la función que está en la base). El historial
+-- (stock_transfers) sigue siendo de dueño y cajeros. El bloque 1 de la función
+-- es el único que habría que tocar si esa decisión cambia.
 --
 -- REGLA DE NEGATIVOS:
 --   * La fila de la tienda NO dueña nunca queda negativa por una transferencia
@@ -188,9 +193,10 @@ DECLARE
   v_prev        public.stock_transfers%ROWTYPE;
   v_source      text := lower(trim(COALESCE(p_source, '')));
 BEGIN
-  -- 1. Autorización: perfil activo, caja o dueño. La comprobación va aquí
-  --    dentro (no solo en el front) porque la clave anónima viaja en el
-  --    navegador: cualquiera podría llamar al RPC desde la consola.
+  -- 1. Autorización: perfil activo y un rol que cobre (dueño, cajero o
+  --    vendedor). La comprobación va aquí dentro (no solo en el front) porque
+  --    la clave anónima viaja en el navegador: cualquiera podría llamar al RPC
+  --    desde la consola.
   SELECT role::text, assigned_store_id, is_active
     INTO v_role, v_assigned, v_active
     FROM public.profiles
@@ -199,7 +205,7 @@ BEGIN
   IF v_role IS NULL OR COALESCE(v_active, false) = false THEN
     RAISE EXCEPTION 'NOT_AUTHORIZED';
   END IF;
-  IF v_role NOT IN ('owner', 'cashier') THEN
+  IF v_role NOT IN ('owner', 'cashier', 'vendedor') THEN
     RAISE EXCEPTION 'NOT_AUTHORIZED';
   END IF;
 

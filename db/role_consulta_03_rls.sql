@@ -185,9 +185,12 @@ SELECT jsonb_pretty(jsonb_build_object(
       FROM pg_policies
      WHERE schemaname = 'public' AND permissive = 'RESTRICTIVE'
   ),
+  -- Solo las de este archivo: desde db/role_vendedor.sql hay además trece
+  -- políticas restrictivas "vendedor_…", que no son de acá.
   'deben_ser_9', (
     SELECT COUNT(*) FROM pg_policies
      WHERE schemaname = 'public' AND permissive = 'RESTRICTIVE'
+       AND policyname LIKE 'consulta\_%'
   )
 ));
 

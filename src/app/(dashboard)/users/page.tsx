@@ -15,10 +15,11 @@ const userSchema = z.object({
   full_name: z.string().min(3, { message: 'El nombre debe tener al menos 3 letras' }),
   email: z.string().email({ message: 'Ingresa un correo válido' }),
   password: z.string().min(6, { message: 'Mínimo 6 caracteres' }),
-  // El dueño no se puede crear a sí mismo desde acá: solo cajero o consulta.
-  role: z.enum(['cashier', 'consulta']),
-  // La sucursal es obligatoria para los dos roles: el cajero factura en ella y
-  // el de consulta ve el stock de ella.
+  // El dueño no se puede crear a sí mismo desde acá: solo cajero, vendedor o
+  // consulta (la misma lista que ASSIGNABLE_ROLES).
+  role: z.enum(['cashier', 'vendedor', 'consulta']),
+  // La sucursal es obligatoria para los tres roles: el cajero y el vendedor
+  // facturan en ella y el de consulta ve el stock de ella.
   assigned_store_id: z.string().min(1, { message: 'Debes asignar una sucursal' }),
 });
 

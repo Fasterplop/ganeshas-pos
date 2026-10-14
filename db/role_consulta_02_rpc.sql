@@ -34,12 +34,20 @@
 -- chequeo de rol). Las versiones anteriores de las tres, sin el chequeo, ya no
 -- están en db/: quedaron en el historial de git.
 --
+-- 2026-10-13: existe un cuarto rol, 'vendedor', que consulta precios y cobra
+-- (db/role_vendedor.sql). redeem_points_global lo admite, porque el canje de
+-- puntos es parte del cobro; mark_label_printed sigue siendo solo de caja y
+-- dueño. 'consulta' sigue fuera de las dos. Quien ya tenía aplicado este
+-- archivo no necesita volver a correrlo: role_vendedor.sql le cambia la lista
+-- de roles a la función que está en la base.
+--
 -- Aplicar en el SQL Editor de Supabase DESPUÉS de db/role_consulta_01_enum.sql
 -- (necesita que el valor 'consulta' ya exista y esté confirmado).
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 1. Canje de puntos: solo caja y dueño.
+-- 1. Canje de puntos: quien cobra (dueño, cajero y, desde role_vendedor.sql,
+--    'vendedor').
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.redeem_points_global(
   p_document_id varchar,
@@ -58,12 +66,13 @@ DECLARE
 BEGIN
   -- Antes esta funcion no miraba NADA: cualquier usuario autenticado podia
   -- quemarle los puntos a cualquier cliente llamandola desde la consola del
-  -- navegador. Con el rol 'consulta' eso deja de ser tolerable.
+  -- navegador. Con el rol 'consulta' eso deja de ser tolerable. Solo pasan
+  -- los roles que cobran; 'vendedor' es uno de ellos (db/role_vendedor.sql).
   SELECT role::text, is_active INTO v_role, v_active
     FROM public.profiles WHERE id = auth.uid();
 
   IF v_role IS NULL OR COALESCE(v_active, true) = false
-     OR v_role NOT IN ('owner', 'cashier') THEN
+     OR v_role NOT IN ('owner', 'cashier', 'vendedor') THEN
     RAISE EXCEPTION 'NOT_AUTHORIZED';
   END IF;
 
@@ -144,17 +153,17 @@ $$;
 GRANT EXECUTE ON FUNCTION public.mark_label_printed(uuid) TO authenticated;
 
 -- ----------------------------------------------------------------------------
--- 3. Cambio de producto: solo caja y dueno.
+-- 3. Cambio de producto: quien cobra.
 --    register_exchange NO se define aca. Su unica definicion esta en
 --    db/exchange_03_discount.sql, que conserva este mismo chequeo de rol
 --    (la verificacion de abajo lo sigue comprobando).
 -- ----------------------------------------------------------------------------
 
 -- ============================================================================
--- VERIFICACION: las tres funciones deben mencionar el chequeo de rol.
--- Debe devolver true en las tres.
+-- VERIFICACION: las tres funciones deben mencionar el chequeo de rol (una
+-- lista blanca que empieza por dueno y cajero). Debe devolver true en las tres.
 -- ============================================================================
-SELECT jsonb_pretty(jsonb_object_agg(p.proname, p.prosrc LIKE '%NOT IN (''owner'', ''cashier'')%'))
+SELECT jsonb_pretty(jsonb_object_agg(p.proname, p.prosrc LIKE '%NOT IN (''owner'', ''cashier''%'))
   FROM pg_proc p
   JOIN pg_namespace n ON n.oid = p.pronamespace
  WHERE n.nspname = 'public'
