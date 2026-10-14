@@ -94,7 +94,10 @@ export default function POSPage() {
   // El cliente pidió la baja ("Cancelar promociones"): no se le vuelve a
   // escribir nunca, y el cajero no puede re-suscribirlo desde la caja.
   const [waOptedOut, setWaOptedOut] = useState(false);
-  
+  // En el teléfono los datos del cliente van plegados detrás de un botón (en
+  // la PC se ven siempre).
+  const [showCustomer, setShowCustomer] = useState(false);
+
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
   // Recargo 5% Punto de Venta: desmarcado por default, el cajero lo activa.
@@ -170,6 +173,7 @@ export default function POSPage() {
     setCustomerLookupName(null);
     setWaOptIn(false);
     setWaOptedOut(false);
+    setShowCustomer(false);
     setShowExchange(false);
     redeemTouchedRef.current = false;
     // Transferencias: lo traído que se tenía guardado era de la tienda
@@ -1037,8 +1041,9 @@ export default function POSPage() {
       setCustomerLookupName(null);
       setWaOptIn(false);
       setWaOptedOut(false);
+      setShowCustomer(false);
       redeemTouchedRef.current = false;
-      
+
       setTimeout(() => {
         searchInputRef.current?.focus();
       }, 100);
@@ -1059,9 +1064,46 @@ export default function POSPage() {
     );
   }
 
+  // Lo que se ve en el botón del cliente con los datos plegados (teléfono),
+  // para que no quede escondido que la venta ya lleva un cliente.
+  const customerSummary = docNumber.trim()
+    ? [
+        `${docType}${docNumber.trim()}`,
+        customerName.trim() || customerLookupName,
+        customerPoints !== null ? `${customerPoints} pts` : null,
+      ].filter(Boolean).join(' · ')
+    : null;
+
+  // Botones − cantidad + de una fila del carrito. En la PC van en la columna
+  // Cant.; en el teléfono, debajo del nombre.
+  const renderQtyControls = (item: CartItem) => (
+    <div className="flex items-center justify-center gap-1.5 md:gap-3">
+      <button
+        onClick={() => handleDecreaseQuantity(item)}
+        className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold text-xl shrink-0"
+      >
+        −
+      </button>
+      <span className="w-7 md:w-8 text-center text-lg md:text-xl font-bold text-slate-800">{item.quantity}</span>
+      <button
+        onClick={async () => {
+          // Si hubo que abrir la ventana de "traer", el foco
+          // se perdió: vuelve al buscador para seguir escaneando.
+          const outcome = await addGuarded({ ...item, quantity: 1 });
+          if (outcome !== 'added') searchInputRef.current?.focus();
+        }}
+        className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
+      >
+        +
+      </button>
+    </div>
+  );
+
   return (
-    <div className="relative font-sans h-auto lg:h-[calc(100vh-4rem)] lg:flex lg:flex-col lg:overflow-hidden">
-      
+    // En el teléfono el margen de 2rem del layout se come la pantalla: acá se
+    // deja en 1rem (desde md vuelve a ser el de siempre).
+    <div className="relative font-sans h-auto -mx-4 -mt-4 md:mx-0 md:mt-0 lg:h-[calc(100vh-4rem)] lg:flex lg:flex-col lg:overflow-hidden">
+
       {/* Notificación de ÉXITO: cartel centrado con botón OK; se cierra solo
           en 1.5 s o al tocar OK / el fondo. */}
       {notification && notification.type === 'success' && (
@@ -1112,7 +1154,7 @@ export default function POSPage() {
 
       {/* Notificación de ERROR: toast en la esquina */}
       {notification && notification.type === 'error' && (
-        <div className="fixed top-6 right-6 z-[100] animate-fade-in-down">
+        <div className="fixed top-4 left-4 right-4 md:top-6 md:left-auto md:right-6 z-[100] animate-fade-in-down">
           <div className="flex items-center gap-3 px-6 py-4 rounded-xl shadow-lg border bg-red-50 border-red-200 text-red-800">
             <span className="text-2xl">⚠️</span>
             <p className="font-medium">{notification.message}</p>
@@ -1123,13 +1165,14 @@ export default function POSPage() {
       {/* Indicador de Tienda Activa en el POS */}
       <div className="mb-2 flex items-center justify-between gap-3 shrink-0">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Terminal de Venta</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-slate-800">Terminal de Venta</h1>
           <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
+        {/* Los cambios se hacen en la PC: en el teléfono no se muestra. */}
         <button
           type="button"
           onClick={() => setShowExchange(true)}
-          className="px-4 py-2 rounded-lg font-bold border-2 bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 transition whitespace-nowrap"
+          className="hidden md:block px-4 py-2 rounded-lg font-bold border-2 bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 transition whitespace-nowrap"
         >
           🔁 Cambio de producto
         </button>
@@ -1170,103 +1213,135 @@ export default function POSPage() {
       <div className="flex flex-col lg:flex-row gap-4 pb-6 lg:pb-0 lg:flex-1 lg:min-h-0">
         
         {/* Columna Izquierda: Búsqueda y Carrito */}
-        <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden min-h-[600px] lg:min-h-0">
-          <div className="p-4 border-b border-slate-200 space-y-4 bg-slate-50 shrink-0">
+        <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden md:min-h-[600px] lg:min-h-0">
+          <div className="p-3 md:p-4 border-b border-slate-200 space-y-3 md:space-y-4 bg-slate-50 shrink-0">
             <div>
-              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <div className="flex">
-                  <select
-                    value={docType}
-                    onChange={(e) => setDocType(e.target.value)}
-                    className="bg-slate-100 border border-slate-300 border-r-0 rounded-l-lg px-2 text-slate-700 text-lg outline-none focus:ring-2 focus:ring-teal-600 transition font-medium"
-                  >
-                    <option value="V-">V-</option>
-                    <option value="J-">J-</option>
-                    <option value="E-">E-</option>
-                    <option value="G-">G-</option>
-                  </select>
-                  <input
-                    type="text"
-                    value={docNumber}
-                    onChange={(e) => setDocNumber(e.target.value)}
-                    placeholder="Número de Identificación..."
-                    className="w-full pl-3 pr-4 py-2.5 border border-slate-300 rounded-r-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
-                  />
+              <h3 className="hidden md:block text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
+              <button
+                type="button"
+                onClick={() => setShowCustomer(v => !v)}
+                aria-expanded={showCustomer}
+                className="md:hidden w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-left hover:bg-slate-50 transition"
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-xl shrink-0">👤</span>
+                  <span className="min-w-0">
+                    <span className="block text-base font-semibold text-slate-700">
+                      Cliente <span className="font-normal text-slate-400">(opcional)</span>
+                    </span>
+                    {customerSummary && (
+                      <span className="block text-sm font-medium text-teal-700 truncate">{customerSummary}</span>
+                    )}
+                  </span>
+                </span>
+                <span className={`text-slate-400 text-sm shrink-0 transition-transform ${showCustomer ? 'rotate-180' : ''}`}>▼</span>
+              </button>
+
+              <div className={`${showCustomer ? 'mt-3' : 'hidden'} md:block md:mt-0`}>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                  <div className="flex">
+                    <select
+                      value={docType}
+                      onChange={(e) => setDocType(e.target.value)}
+                      className="bg-slate-100 border border-slate-300 border-r-0 rounded-l-lg px-2 text-slate-700 text-lg outline-none focus:ring-2 focus:ring-teal-600 transition font-medium"
+                    >
+                      <option value="V-">V-</option>
+                      <option value="J-">J-</option>
+                      <option value="E-">E-</option>
+                      <option value="G-">G-</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={docNumber}
+                      onChange={(e) => setDocNumber(e.target.value)}
+                      placeholder="Número de Identificación..."
+                      className="w-full pl-3 pr-4 py-2.5 border border-slate-300 rounded-r-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    />
+                  </div>
+
+                  <div>
+                    <input
+                      type="text"
+                      value={customerPhone}
+                      onChange={(e) => setCustomerPhone(e.target.value)}
+                      placeholder="📱 Teléfono (Ej: 04141234567)"
+                      className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <input
                     type="text"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="📱 Teléfono (Ej: 04141234567)"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    placeholder="👤 Nombre Completo..."
                     className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
                 </div>
-              </div>
 
-              <div>
-                <input
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  placeholder="👤 Nombre Completo..."
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
-                />
-              </div>
-
-              {/* Consentimiento WhatsApp: obligatorio para poder enviarle el
-                  mensaje de puntos (la plantilla es de categoría MARKETING). */}
-              <div className="mt-3">
-                {waOptedOut ? (
-                  <p className="text-base text-slate-500 bg-slate-100 border border-slate-200 rounded-lg px-3 py-2.5">
-                    🔕 Este cliente pidió no recibir promociones. No se le enviará WhatsApp.
-                  </p>
-                ) : (
-                  <label className="flex items-start gap-3 cursor-pointer bg-white border border-slate-300 rounded-lg px-3 py-2.5 hover:bg-slate-50 transition">
-                    <input
-                      type="checkbox"
-                      checked={waOptIn}
-                      onChange={(e) => setWaOptIn(e.target.checked)}
-                      className="mt-1 w-5 h-5 accent-teal-600 shrink-0"
-                    />
-                    <span className="text-base text-slate-700 leading-snug">
-                      El cliente <strong>acepta recibir</strong> sus puntos y promociones por WhatsApp
-                      <span className="block text-sm text-slate-400">
-                        Preguntale antes de marcar. Sin esto no se le envía ningún mensaje.
+                {/* Consentimiento WhatsApp: obligatorio para poder enviarle el
+                    mensaje de puntos (la plantilla es de categoría MARKETING). */}
+                <div className="mt-3">
+                  {waOptedOut ? (
+                    <p className="text-base text-slate-500 bg-slate-100 border border-slate-200 rounded-lg px-3 py-2.5">
+                      🔕 Este cliente pidió no recibir promociones. No se le enviará WhatsApp.
+                    </p>
+                  ) : (
+                    <label className="flex items-start gap-3 cursor-pointer bg-white border border-slate-300 rounded-lg px-3 py-2.5 hover:bg-slate-50 transition">
+                      <input
+                        type="checkbox"
+                        checked={waOptIn}
+                        onChange={(e) => setWaOptIn(e.target.checked)}
+                        className="mt-1 w-5 h-5 accent-teal-600 shrink-0"
+                      />
+                      <span className="text-base text-slate-700 leading-snug">
+                        El cliente <strong>acepta recibir</strong> sus puntos y promociones por WhatsApp
+                        <span className="block text-sm text-slate-400">
+                          Preguntale antes de marcar. Sin esto no se le envía ningún mensaje.
+                        </span>
                       </span>
-                    </span>
-                  </label>
-                )}
+                    </label>
+                  )}
+                </div>
               </div>
             </div>
 
-            <hr className="border-slate-200" />
+            <hr className="hidden md:block border-slate-200" />
 
             {/* SECCIÓN DE BÚSQUEDA Y PRODUCTO RÁPIDO */}
             <div className="relative">
               <div className="flex gap-2">
-                <input 
+                <input
                   ref={searchInputRef}
-                  type="text" 
+                  type="text"
                   value={productSearch}
                   onChange={handleSearchChange}
                   onKeyDown={handleKeyDown}
                   autoFocus
                   placeholder="🛒 Busca por nombre o escanea código de barras..."
-                  className="w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
+                  className="flex-1 min-w-0 w-full pl-4 pr-4 py-3 border-2 border-slate-300 rounded-lg bg-white text-slate-800 text-base md:text-lg focus:outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 transition font-medium"
                 />
-                <ScanButton onClick={() => setCameraOpen(true)} className="lg:hidden px-4" />
+                {/* Escanear con la cámara: solo en tablet. En el teléfono se
+                    oculta (se escanea en la PC, con el lector) y deja el ancho
+                    al buscador. */}
+                <div className="hidden md:flex lg:hidden">
+                  <ScanButton onClick={() => setCameraOpen(true)} className="px-4" />
+                </div>
                 <button
                   onClick={() => setShowQuickAdd(!showQuickAdd)}
-                  className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
-                    showQuickAdd 
-                      ? 'bg-slate-200 text-slate-700 border-slate-300' 
+                  className={`px-3 md:px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 border-2 whitespace-nowrap ${
+                    showQuickAdd
+                      ? 'bg-slate-200 text-slate-700 border-slate-300'
                       : 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
                   }`}
                 >
-                  {showQuickAdd ? '✕ Cerrar' : 'Producto Rápido'}
+                  {showQuickAdd ? '✕ Cerrar' : (
+                    <>
+                      <span className="md:hidden">⚡ Rápido</span>
+                      <span className="hidden md:inline">Producto Rápido</span>
+                    </>
+                  )}
                 </button>
               </div>
               {searchResults.length > 0 && (
@@ -1310,15 +1385,16 @@ export default function POSPage() {
               {showQuickAdd && (
                 <div className="absolute z-10 w-full bg-white border-2 border-teal-500 shadow-xl rounded-lg mt-1 p-4 animate-fade-in-down">
                   <h4 className="text-sm font-bold text-teal-700 mb-3 uppercase tracking-wide">Añadir Producto Manual</h4>
-                  <div className="flex gap-3">
-                    <input 
-                      type="text" 
+                  {/* En el teléfono: nombre arriba; precio y "Añadir" debajo. */}
+                  <div className="flex flex-wrap md:flex-nowrap gap-3">
+                    <input
+                      type="text"
                       value={quickName}
                       onChange={(e) => setQuickName(e.target.value)}
                       placeholder="Nombre del producto..."
-                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                      className="w-full md:w-auto md:flex-1 px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
                     />
-                    <div className="relative w-32">
+                    <div className="relative flex-1 md:flex-none md:w-32">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
                       <input 
                         type="number" 
@@ -1344,13 +1420,15 @@ export default function POSPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto overflow-x-auto">
-            <table className="w-full text-left min-w-[450px]">
-              <thead className="bg-slate-600 text-white text-base sticky top-0 z-0">
+            {/* En el teléfono las columnas Cant. y Precio se esconden (van
+                debajo del nombre) para que la tabla entre sin desplazarse de lado. */}
+            <table className="w-full text-left md:min-w-[450px]">
+              <thead className="bg-slate-600 text-white text-sm md:text-base sticky top-0 z-0">
                 <tr>
-                  <th className="p-3 pl-4">Producto</th>
-                  <th className="p-3 text-center">Cant.</th>
-                  <th className="p-3 text-right">Precio</th>
-                  <th className="p-3 text-right pr-4">Subtotal</th>
+                  <th className="p-3 pl-3 md:pl-4">Producto</th>
+                  <th className="hidden md:table-cell p-3 text-center">Cant.</th>
+                  <th className="hidden md:table-cell p-3 text-right">Precio</th>
+                  <th className="p-3 text-right pr-3 md:pr-4">Subtotal</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1364,8 +1442,8 @@ export default function POSPage() {
                 ) : (
                   cart.map(item => (
                     <tr key={item.id} className="hover:bg-slate-50 transition">
-                      <td className="p-3 pl-4 relative">
-                        <p className="text-lg font-semibold text-slate-800">{item.name}</p>
+                      <td className="p-3 pl-3 md:pl-4 relative">
+                        <p className="text-base md:text-lg font-semibold text-slate-800 leading-snug">{item.name}</p>
                         {formatVariant(item.talla, item.color) && (
                           <p className="text-sm text-slate-500">{formatVariant(item.talla, item.color)}</p>
                         )}
@@ -1381,6 +1459,17 @@ export default function POSPage() {
                             👕 variantes <span className="text-[10px]">▾</span>
                           </button>
                         )}
+                        {/* En el teléfono no hay columnas Cant. ni Precio: el precio
+                            unitario y los botones van debajo del nombre. */}
+                        <div className="md:hidden mt-2 flex items-center justify-between gap-2">
+                          <p className="text-sm text-slate-500">
+                            ${item.price.toFixed(2)} c/u
+                            {item.base_price != null && item.base_price > item.price && (
+                              <span className="block text-xs text-red-500 font-bold">antes ${item.base_price.toFixed(2)}</span>
+                            )}
+                          </p>
+                          {renderQtyControls(item)}
+                        </div>
                         {item.parent_group_id && openVariantSwitcherFor === item.id && (
                           <div className="absolute z-20 left-3 top-full mt-1 w-72 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden">
                             {loadingSiblings && !siblingsByGroup[item.parent_group_id] ? (
@@ -1407,29 +1496,10 @@ export default function POSPage() {
                           </div>
                         )}
                       </td>
-                      <td className="p-3">
-                        <div className="flex items-center justify-center gap-3">
-                          <button
-                            onClick={() => handleDecreaseQuantity(item)}
-                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-red-100 hover:text-red-600 transition font-bold text-xl shrink-0"
-                          >
-                            −
-                          </button>
-                          <span className="w-8 text-center text-xl font-bold text-slate-800">{item.quantity}</span>
-                          <button
-                            onClick={async () => {
-                              // Si hubo que abrir la ventana de "traer", el foco
-                              // se perdió: vuelve al buscador para seguir escaneando.
-                              const outcome = await addGuarded({ ...item, quantity: 1 });
-                              if (outcome !== 'added') searchInputRef.current?.focus();
-                            }}
-                            className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-teal-100 hover:text-teal-700 transition font-bold text-xl shrink-0"
-                          >
-                            +
-                          </button>
-                        </div>
+                      <td className="hidden md:table-cell p-3">
+                        {renderQtyControls(item)}
                       </td>
-                      <td className="p-3 text-right text-lg text-slate-600">
+                      <td className="hidden md:table-cell p-3 text-right text-lg text-slate-600">
                         ${item.price.toFixed(2)}
                         {item.base_price != null && item.base_price > item.price && (
                           <span className="block text-xs text-red-500 font-bold">
@@ -1437,7 +1507,8 @@ export default function POSPage() {
                           </span>
                         )}
                       </td>
-                      <td className="p-3 text-right pr-4 text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
+                      {/* En el teléfono, a la altura de los botones de cantidad. */}
+                      <td className="p-3 pb-[18px] md:pb-3 align-bottom md:align-middle text-right pr-3 md:pr-4 text-base md:text-lg font-bold text-slate-800">${(item.price * item.quantity).toFixed(2)}</td>
                     </tr>
                   ))
                 )}
@@ -1445,15 +1516,15 @@ export default function POSPage() {
             </table>
           </div>
 
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
-            <p className="text-lg text-slate-600 font-medium">{totalItems} Artículos</p>
+          <div className="p-3 md:p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
+            <p className="text-base md:text-lg text-slate-600 font-medium">{totalItems} Artículos</p>
             <div className="text-right flex flex-col items-end">
               {(discountAmount + redemptionDiscount) > 0 && (
                 <p className="text-base text-red-500 line-through mb-1">${subtotalUSD.toFixed(2)}</p>
               )}
               <div className="flex gap-2 items-baseline">
                 <p className="text-lg text-slate-500">Total:</p>
-                <p className="text-3xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
+                <p className="text-2xl md:text-3xl font-bold text-slate-800">${totalUSD.toFixed(2)}</p>
               </div>
             </div>
           </div>
@@ -1487,10 +1558,10 @@ export default function POSPage() {
           {customerPoints !== null && (
             <div className="bg-white rounded-xl shadow-sm border-2 border-teal-200 p-4 shrink-0">
               <div className="flex items-center justify-between mb-0.5">
-                <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                  <span className="text-2xl text-teal-600">✪</span> Puntos de Lealtad
+                <h3 className="text-xl md:text-2xl font-bold text-slate-800 flex items-center gap-2">
+                  <span className="text-xl md:text-2xl text-teal-600">✪</span> Puntos de Lealtad
                 </h3>
-                <span className="text-2xl font-bold text-teal-700">{customerPoints} pts</span>
+                <span className="text-xl md:text-2xl font-bold text-teal-700 whitespace-nowrap">{customerPoints} pts</span>
               </div>
               {customerLookupName && (
                 <p className="text-base text-slate-500 mb-2">{customerLookupName}</p>
@@ -1542,7 +1613,7 @@ export default function POSPage() {
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col shrink-0">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xl font-bold text-slate-800">Método de Pago <span className="text-red-500">*</span></h3>
+              <h3 className="text-lg md:text-xl font-bold text-slate-800">Método de Pago <span className="text-red-500">*</span></h3>
               <button
                 onClick={toggleSplitPayment}
                 className={`text-sm font-bold px-3 py-1.5 rounded-lg border transition whitespace-nowrap ${
