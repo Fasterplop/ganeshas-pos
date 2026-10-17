@@ -115,6 +115,9 @@ SET lock_timeout = '5s';
 --    from_stock_after / to_stock_after guardan cómo quedó cada tienda justo
 --    después del movimiento: como no existe un libro de movimientos de stock,
 --    es lo único que permite reconstruir qué pasó si un conteo no cuadra.
+--
+--    db/transfer_02_move_product.sql le agrega la columna changes_owner y
+--    cambia el CHECK de quantity (acepta 0 en las filas que mudan un producto).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.stock_transfers (
   id               uuid NOT NULL DEFAULT uuid_generate_v4(),

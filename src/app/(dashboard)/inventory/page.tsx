@@ -22,6 +22,7 @@ import {
   fetchTransferHistory,
   otherStore,
   TRANSFER_SOURCE_LABEL,
+  type MoveResult,
   type TransferHistoryRow,
   type TransferProduct,
 } from '@/lib/transfers';
@@ -333,6 +334,7 @@ export default function InventoryPage() {
     product: TransferProduct;
     fromStoreId: string;
     toStoreId: string;
+    groupInfo: { name: string; variants: number } | null;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<TransferHistoryRow[]>([]);
@@ -1655,6 +1657,8 @@ const handleExportCSV = async () => {
   // vuelta: es la única forma de devolver.
   const openSendTransfer = (product: Product) => {
     if (!otherViewStore) return;
+    // Si es variante, la ventana ofrece pasar solo esta o el modelo entero.
+    const groupId = product.parent_group_id;
     setTransferTarget({
       product: {
         id: product.id, name: product.name, sku_barcode: product.sku_barcode,
@@ -1662,7 +1666,23 @@ const handleExportCSV = async () => {
       },
       fromStoreId: viewStoreId,
       toStoreId: otherViewStore.id,
+      groupInfo: groupId
+        ? {
+            name: groupsById.get(groupId)?.name ?? product.name,
+            variants: products.filter(p => p.parent_group_id === groupId).length,
+          }
+        : null,
     });
+  };
+
+  // El producto (o su modelo) ya es de la otra tienda: sale de esta lista.
+  // También de la selección, para que la desactivación masiva no se lleve
+  // una ficha que ya no se ve acá.
+  const handleProductMoved = (result: MoveResult) => {
+    const gone = new Set(result.product_ids);
+    setSelectedIds(prev => new Set([...prev].filter(id => !gone.has(id))));
+    setSelectedProduct(prev => (prev && gone.has(prev.id) ? null : prev));
+    if (viewStoreId) void refreshInventory(viewStoreId);
   };
 
   // --- Render de una fila de PRODUCTO (standalone o variante hija) --------
@@ -3487,12 +3507,15 @@ const handleExportCSV = async () => {
           isOpen={!!transferTarget}
           onClose={() => setTransferTarget(null)}
           onDone={() => { if (viewStoreId) void refreshInventory(viewStoreId); }}
+          onMoved={handleProductMoved}
           product={transferTarget?.product ?? null}
           stores={stores}
           fromStoreId={transferTarget?.fromStoreId ?? null}
           toStoreId={transferTarget?.toStoreId ?? null}
           source="inventory"
           title="Transferir a la otra tienda"
+          allowMove
+          groupInfo={transferTarget?.groupInfo ?? null}
           allowFlip={!!transferTarget && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
           showNote
           confirmNegative
@@ -3542,6 +3565,11 @@ const handleExportCSV = async () => {
                         <td className="py-2 pr-3 text-center font-bold text-slate-800">{t.quantity}</td>
                         <td className="py-2 pr-3 text-slate-700 whitespace-nowrap">
                           De {storeNameOf(t.from_store_id)} a {storeNameOf(t.to_store_id)}
+                          {t.changes_owner && (
+                            <span className="block text-xs font-semibold text-teal-700">
+                              Pasó a ser de {storeNameOf(t.to_store_id)}
+                            </span>
+                          )}
                         </td>
                         <td className="py-2 text-slate-600">{TRANSFER_SOURCE_LABEL[t.source] ?? t.source}</td>
                       </tr>

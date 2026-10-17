@@ -14,10 +14,14 @@
 // filas de dos tiendas y el cajero solo puede escribir la suya, así que desde
 // el navegador no se puede hacer bien. El RPC revalida rol y tienda, mueve por
 // delta con las filas bloqueadas y deja el registro en `stock_transfers`.
+//
+// PASAR un producto a la otra tienda (`move_product_to_store`,
+// db/transfer_02_…sql) es otra cosa: cambia la tienda dueña y se lleva todas
+// sus unidades. Es lo que se usa cuando el producto se muda para quedarse.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isMissingFunctionError } from '@/lib/exchange';
-import { isMissingTableError } from '@/lib/supabaseErrors';
+import { isMissingColumnError, isMissingTableError } from '@/lib/supabaseErrors';
 
 export interface StoreLite {
   id: string;
@@ -52,6 +56,27 @@ export interface TransferResult {
   replayed: boolean;
 }
 
+/** Lo que devuelve `move_product_to_store`. */
+export interface MoveResult {
+  product_id: string;
+  from_store_id: string;
+  to_store_id: string;
+  /** Todos los productos que cambiaron de tienda (varios si se mudó el modelo). */
+  product_ids: string[];
+  /** Unidades que pasaron de la tienda vieja a la nueva, sumando todos. */
+  units: number;
+  /** Cómo quedó cada tienda, del producto que se tocó. */
+  from_stock: number;
+  to_stock: number;
+  group_name: string | null;
+  /** Se mudó el modelo con todas sus variantes activas. */
+  group_moved: boolean;
+  /** Era una variante y salió de su modelo. */
+  detached: boolean;
+  /** true si era un reintento y se devolvió el movimiento ya hecho. */
+  replayed: boolean;
+}
+
 export interface TransferHistoryRow {
   id: string;
   created_at: string;
@@ -60,12 +85,17 @@ export interface TransferHistoryRow {
   note: string | null;
   from_store_id: string;
   to_store_id: string;
+  /** El producto pasó a ser de la tienda destino (false si el SQL 02 no está). */
+  changes_owner: boolean;
   products: { name: string; sku_barcode: string; talla: string | null; color: string | null } | null;
   profiles: { full_name: string } | null;
 }
 
 export const TRANSFER_MIGRATION_MISSING =
   'Las transferencias todavía no están instaladas en la base de datos (falta correr db/transfer_01_stock_transfers.sql en Supabase).';
+
+export const MOVE_MIGRATION_MISSING =
+  'Pasar un producto a la otra tienda todavía no está instalado en la base de datos (falta correr db/transfer_02_move_product.sql en Supabase).';
 
 // Mensajes para los códigos que lanza transfer_stock (RAISE EXCEPTION 'CODIGO').
 // NOT_AUTHORIZED_STORE contiene a NOT_AUTHORIZED: el orden del objeto importa
@@ -81,6 +111,10 @@ export const TRANSFER_ERRORS: Record<string, string> = {
   PRODUCT_NOT_FOUND: 'El producto ya no existe. Refresca e intenta de nuevo.',
   INVALID_SOURCE: 'No se pudo registrar la transferencia (origen desconocido).',
   INVALID_ARGUMENTS: 'Faltan datos para hacer la transferencia.',
+  // Solo de move_product_to_store.
+  ALREADY_OWNER: 'Este producto ya es de esa tienda. Refresca el inventario.',
+  NO_OWNER_STORE: 'Este producto no tiene tienda dueña: no se puede pasar.',
+  OWNER_STOCK_NEGATIVE: 'La tienda tiene este producto (o una de sus variantes) en negativo. Corrige el conteo antes de pasarlo a la otra tienda.',
 };
 
 /** Traduce el error del RPC a un mensaje para el cajero. */
@@ -220,6 +254,55 @@ export async function transferStock(
   };
 }
 
+/**
+ * Pasar el producto a otra tienda: cambia la tienda dueña y se lleva todas
+ * sus unidades. Si es una variante, `wholeGroup` muda el modelo entero; si no,
+ * sale del modelo (salvo que sea la última variante: ahí se muda el modelo
+ * igual). Las reglas viven en el SQL; ver db/transfer_02_move_product.sql.
+ */
+export async function moveProductToStore(
+  supabase: SupabaseClient,
+  args: {
+    productId: string;
+    toStoreId: string;
+    wholeGroup?: boolean;
+    note?: string | null;
+    /** Mismo id en un reintento = no se muda dos veces. */
+    requestId?: string | null;
+  },
+): Promise<{ result: MoveResult | null; error: string | null }> {
+  const { data, error } = await supabase.rpc('move_product_to_store', {
+    p_product_id: args.productId,
+    p_to_store_id: args.toStoreId,
+    p_whole_group: !!args.wholeGroup,
+    p_note: args.note?.trim() ? args.note.trim() : null,
+    p_request_id: args.requestId ?? null,
+  });
+
+  if (error) {
+    if (isMissingFunctionError(error)) return { result: null, error: MOVE_MIGRATION_MISSING };
+    return { result: null, error: transferErrorMessage(error, 'No se pudo pasar el producto a la otra tienda.') };
+  }
+
+  const r = (data ?? {}) as Record<string, unknown>;
+  return {
+    result: {
+      product_id: String(r.product_id ?? args.productId),
+      from_store_id: String(r.from_store_id ?? ''),
+      to_store_id: String(r.to_store_id ?? args.toStoreId),
+      product_ids: Array.isArray(r.product_ids) ? r.product_ids.map(String) : [args.productId],
+      units: Number(r.units) || 0,
+      from_stock: Number(r.from_stock) || 0,
+      to_stock: Number(r.to_stock) || 0,
+      group_name: r.group_name ? String(r.group_name) : null,
+      group_moved: !!r.group_moved,
+      detached: !!r.detached,
+      replayed: !!r.replayed,
+    },
+    error: null,
+  };
+}
+
 const PAGE = 1000; // tope duro de PostgREST por respuesta
 
 /**
@@ -290,15 +373,21 @@ export async function fetchTransferHistory(
   supabase: SupabaseClient,
   limit = 100,
 ): Promise<{ rows: TransferHistoryRow[]; error: string | null }> {
-  const { data, error } = await supabase
+  const query = (extra: string) => supabase
     .from('stock_transfers')
     .select(`
-      id, created_at, quantity, source, note, from_store_id, to_store_id,
+      id, created_at, quantity, source, note, from_store_id, to_store_id${extra},
       products (name, sku_barcode, talla, color),
       profiles (full_name)
     `)
     .order('created_at', { ascending: false })
     .limit(limit);
+
+  // changes_owner llega con db/transfer_02; sin él, el historial se ve como antes.
+  let { data, error } = await query(', changes_owner');
+  if (error && isMissingColumnError(error, 'changes_owner')) {
+    ({ data, error } = await query(''));
+  }
 
   if (error) {
     return {
@@ -306,7 +395,8 @@ export async function fetchTransferHistory(
       error: isMissingTableError(error) ? TRANSFER_MIGRATION_MISSING : (error.message || 'No se pudo cargar el historial.'),
     };
   }
-  return { rows: (data ?? []) as unknown as TransferHistoryRow[], error: null };
+  const rows = (data ?? []) as unknown as TransferHistoryRow[];
+  return { rows: rows.map(r => ({ ...r, changes_owner: !!r.changes_owner })), error: null };
 }
 
 /** Texto corto de "desde dónde se hizo" para el historial. */
