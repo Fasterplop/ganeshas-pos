@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 
 import { tieneTiendaFija, type AppRole } from '@/lib/roles';
+import { useNovedadesBadge } from '@/lib/useNovedadesBadge';
 
 type Role = AppRole;
 
@@ -21,6 +22,7 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
   const router = useRouter();
   const supabase = createClient();
   const { currentStore, setCurrentStore } = usePOSStore(); // <-- Estado global
+  const novedades = useNovedadesBadge(userRole === 'owner');
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -30,6 +32,7 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
 
   const menuItems = [
     { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
+    { name: 'Novedades', path: '/novedades', roles: ['owner'] },
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
@@ -96,6 +99,11 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
               }`}
             >
               {item.name}
+              {item.path === '/novedades' && novedades > 0 && (
+                <span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle">
+                  {novedades > 99 ? '99+' : novedades}
+                </span>
+              )}
             </Link>
           );
         })}

@@ -368,6 +368,68 @@ export async function fetchForeignSellable(
   return map;
 }
 
+/** Un producto de la otra tienda con unidades en esta, para el inventario. */
+export interface ForeignHereRow {
+  id: string;
+  sku_barcode: string;
+  name: string;
+  category: string;
+  price: number;
+  owner_store_id: string;
+  talla: string | null;
+  color: string | null;
+  /** Unidades en ESTA tienda (siempre > 0). */
+  stock: number;
+}
+
+/**
+ * Lo que esta tienda tiene de la otra (stock > 0 en su fila), con los datos
+ * del producto. El inventario lo muestra en su tabla, marcado con la tienda
+ * dueña. Va aparte de la lista de productos propios a propósito: esa alimenta
+ * el ajuste masivo de precios y la eliminación masiva, que son de la dueña.
+ * No lanza: si algo falla devuelve vacío y el inventario se ve como siempre.
+ */
+export async function fetchForeignHere(
+  supabase: SupabaseClient,
+  storeId: string,
+): Promise<ForeignHereRow[]> {
+  const rows: ForeignHereRow[] = [];
+  try {
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, sku_barcode, name, category, price, owner_store_id, talla, color, store_stock!inner(stock, store_id)')
+        .eq('is_active', true)
+        .neq('owner_store_id', storeId)
+        .eq('store_stock.store_id', storeId)
+        .gt('store_stock.stock', 0)
+        .order('name')
+        .order('id')
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      for (const raw of data ?? []) {
+        const r = raw as unknown as Omit<ForeignHereRow, 'stock'> & { store_stock?: { stock: number }[] };
+        if (!r.owner_store_id) continue;
+        rows.push({
+          id: r.id,
+          sku_barcode: r.sku_barcode ?? '',
+          name: r.name ?? '',
+          category: r.category ?? '',
+          price: Number(r.price) || 0,
+          owner_store_id: r.owner_store_id,
+          talla: r.talla ?? null,
+          color: r.color ?? null,
+          stock: Number(r.store_stock?.[0]?.stock) || 0,
+        });
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
+  } catch {
+    // Sin conexión o respuesta rara: el inventario sigue sin estas filas.
+  }
+  return rows;
+}
+
 /** Últimos movimientos, del más reciente al más antiguo. */
 export async function fetchTransferHistory(
   supabase: SupabaseClient,

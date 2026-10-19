@@ -4,6 +4,7 @@ import Sidebar from '@/components/Sidebar';
 import TopBarMenu from '@/components/TopBarMenu'; // <-- Importamos el menú
 import BcvModal from '@/components/BcvModal';
 import StoreGuard from '@/components/StoreGuard'; // <-- Importamos el nuevo Guard
+import PhoneModeGuard from '@/components/PhoneModeGuard';
 
 export default async function DashboardLayout({
   children,
@@ -19,15 +20,29 @@ export default async function DashboardLayout({
   }
 
   // 1. Obtenemos Perfil ampliando la selección para incluir id y assigned_store_id
-  const { data: profile } = await supabase
+  // phone_simple_mode llega con db/novedades_01…sql. Si la columna todavía no
+  // existe, la consulta falla entera: se repite sin ella para no mandar a
+  // todos al login.
+  let { data: profile } = await supabase
     .from('profiles')
-    .select('id, full_name, role, assigned_store_id')
+    .select('id, full_name, role, assigned_store_id, phone_simple_mode')
     .eq('id', user.id)
     .single();
+  if (!profile) {
+    const { data: basic } = await supabase
+      .from('profiles')
+      .select('id, full_name, role, assigned_store_id')
+      .eq('id', user.id)
+      .single();
+    profile = basic ? { ...basic, phone_simple_mode: false } : null;
+  }
 
   if (!profile) {
     redirect('/login');
   }
+
+  // Modo teléfono: solo para cajeros (en Usuarios no se ofrece a otros roles).
+  const phoneSimple = profile.role === 'cashier' && !!profile.phone_simple_mode;
 
   // 2. Obtenemos todas las tiendas disponibles
   const { data: stores } = await supabase
@@ -49,7 +64,10 @@ export default async function DashboardLayout({
         userRole={profile.role} 
         userName={profile.full_name} 
         stores={stores}
+        phoneSimple={phoneSimple}
       />
+
+      <PhoneModeGuard enabled={phoneSimple} />
 
       {/* Se mostrará SOLO en escritorio. Le pasamos stores */}
       <Sidebar 

@@ -88,12 +88,24 @@ export async function getUsersAction() {
       assigned_store_id: string | null;
       can_restock_all: boolean | null;
       can_restock_local?: boolean | null;
+      can_raise_prices?: boolean | null;
+      phone_simple_mode?: boolean | null;
     };
 
-    const primary = await supabaseAdmin
+    // Primero con los permisos de db/novedades_01…sql (subir precios y modo
+    // teléfono); sin esas columnas, la consulta de siempre.
+    const withPerms = await supabaseAdmin
       .from('profiles')
-      .select('id, full_name, role, is_active, assigned_store_id, can_restock_all, can_restock_local')
+      .select('id, full_name, role, is_active, assigned_store_id, can_restock_all, can_restock_local, can_raise_prices, phone_simple_mode')
       .order('full_name', { ascending: true });
+
+    const primary = withPerms.error
+      ? await supabaseAdmin
+          .from('profiles')
+          .select('id, full_name, role, is_active, assigned_store_id, can_restock_all, can_restock_local')
+          .order('full_name', { ascending: true })
+      : withPerms;
+    const permsInstalled = !withPerms.error;
 
     let profiles: ProfileRow[] | null = primary.data;
     if (primary.error) {
@@ -119,10 +131,12 @@ export async function getUsersAction() {
         assigned_store_id: profile.assigned_store_id, // <-- NUEVO CAMPO
         can_restock_all: profile.can_restock_all ?? false, // reponer en TODAS las tiendas
         can_restock_local: profile.can_restock_local ?? false, // reponer solo en su tienda
+        can_raise_prices: profile.can_raise_prices ?? false,   // subir precios (nunca bajarlos)
+        phone_simple_mode: profile.phone_simple_mode ?? false, // en el teléfono: solo precio y caja
       };
     });
 
-    return { success: true, users };
+    return { success: true, users, permsInstalled };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -149,6 +163,31 @@ export async function setRestockScopeAction(userId: string, scope: RestockScope)
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
+  }
+}
+
+// Permisos de db/novedades_01…sql. Van por el admin client, como la
+// reposición: el trigger profiles_perm_guard rechaza que un no-dueño los
+// cambie con su propia sesión.
+export async function setCanRaisePricesAction(userId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+  try {
+    const { error } = await supabaseAdmin.from('profiles').update({ can_raise_prices: value }).eq('id', userId);
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function setPhoneSimpleModeAction(userId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+  try {
+    const { error } = await supabaseAdmin.from('profiles').update({ phone_simple_mode: value }).eq('id', userId);
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

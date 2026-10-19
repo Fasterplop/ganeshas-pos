@@ -58,6 +58,17 @@ interface Props {
   /** Inventario: campo de nota opcional. */
   showNote?: boolean;
   /**
+   * Inventario: la nota pasa a ser el «Motivo» y es obligatoria. El dueño lo
+   * lee en Novedades y en el historial. Lo escriben a mano (no hay botones de
+   * motivos: así lo pidió el dueño).
+   */
+  requireNote?: boolean;
+  /**
+   * Caja: motivo fijo que se guarda sin mostrar ningún campo. La ventana de la
+   * caja anula el teclado (scannerSafe), así que ahí no se puede escribir.
+   */
+  fixedNote?: string;
+  /**
    * Caja: anula el teclado mientras la ventana está abierta. El lector de
    * códigos es un teclado que escribe y manda Enter; sin esto, escanear el
    * siguiente producto confirmaría la transferencia.
@@ -105,7 +116,7 @@ function newRequestId(): string | null {
 function TransferModalBody({
   onClose, onDone, onMoved, product, stores, fromStoreId, toStoreId, source,
   title, confirmLabel, minQuantity,
-  allowFlip, allowMove, groupInfo, showNote, scannerSafe, confirmNegative, showSuccess,
+  allowFlip, allowMove, groupInfo, showNote, requireNote, fixedNote, scannerSafe, confirmNegative, showSuccess,
 }: BodyProps) {
   const supabase = createClient();
   const boxRef = useRef<HTMLDivElement>(null);
@@ -191,7 +202,11 @@ function TransferModalBody({
   const blocked = !loading && !fromIsOwner && quantity > maxQty;
   const needsCheckbox = !!confirmNegative && goesNegative && fromIsOwner;
 
-  const canConfirm = !loading && !submitting && quantity >= 1 && !blocked
+  // Lo que se guarda como nota: el motivo fijo de la caja, o lo escrito.
+  const noteToSave = fixedNote ?? note;
+  const missingNote = !!requireNote && !fixedNote && note.trim() === '';
+
+  const canConfirm = !loading && !submitting && quantity >= 1 && !blocked && !missingNote
     && (!needsCheckbox || acceptNegative);
 
   // Pasar el producto: solo desde su tienda dueña (no al devolver).
@@ -203,7 +218,7 @@ function TransferModalBody({
   // Un negativo en la tienda dueña es un conteo por revisar: el SQL no lo
   // muda (OWNER_STOCK_NEGATIVE). Acá se avisa antes de que lo intenten.
   const moveBlocked = !loading && fromStock < 0;
-  const canConfirmMove = !loading && !submitting && !moveBlocked;
+  const canConfirmMove = !loading && !submitting && !moveBlocked && !missingNote;
 
   const chooseMode = (m: 'units' | 'move') => {
     setMode(m);
@@ -234,7 +249,7 @@ function TransferModalBody({
       toStoreId: toId,
       quantity,
       source,
-      note,
+      note: noteToSave,
       allowNegative: goesNegative && fromIsOwner,
       requestId: requestId.current,
     });
@@ -262,7 +277,7 @@ function TransferModalBody({
       productId: product.id,
       toStoreId: toId,
       wholeGroup: movesGroup,
-      note,
+      note: noteToSave,
       requestId: moveRequestId.current,
     });
     setSubmitting(false);
@@ -392,7 +407,7 @@ function TransferModalBody({
                     {
                       value: 'units' as const,
                       label: 'Mover unidades',
-                      help: `Siguen siendo de ${storeName(fromId)}. Para vender o exhibir allá un tiempo: no aparecen en el inventario de ${storeName(toId)}.`,
+                      help: `Siguen siendo de ${storeName(fromId)}. Para vender o exhibir allá un tiempo: en el inventario de ${storeName(toId)} salen marcadas como de ${storeName(fromId)}.`,
                     },
                     {
                       value: 'move' as const,
@@ -569,17 +584,24 @@ function TransferModalBody({
                 </>
               )}
 
-              {showNote && (moving || showUnits) && (
+              {showNote && !fixedNote && (moving || showUnits) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">Nota (opcional)</label>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">
+                    {requireNote
+                      ? <>Motivo <span className="text-red-600">(obligatorio)</span></>
+                      : 'Nota (opcional)'}
+                  </label>
                   <input
                     type="text"
                     value={note}
                     onChange={e => setNote(e.target.value)}
                     maxLength={200}
-                    placeholder="Ej.: para la vitrina de la entrada"
+                    placeholder={requireNote ? 'Ej.: lo pidió un cliente, aquí ya no hay…' : 'Ej.: para la vitrina de la entrada'}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600"
                   />
+                  {missingNote && (
+                    <p className="text-xs text-slate-500 mt-1">Escribe el motivo para poder confirmar. Gerardo lo ve en Novedades.</p>
+                  )}
                 </div>
               )}
 

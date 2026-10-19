@@ -19,6 +19,7 @@ import TransferModal from '@/components/TransferModal';
 import {
   checkTransfersAvailable,
   fetchAwayStock,
+  fetchForeignHere,
   fetchTransferHistory,
   otherStore,
   TRANSFER_SOURCE_LABEL,
@@ -26,6 +27,7 @@ import {
   type TransferHistoryRow,
   type TransferProduct,
 } from '@/lib/transfers';
+import { raiseProductPrice } from '@/lib/novedades';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -70,6 +72,8 @@ interface Product {
   created_at: string | null;       // alta del producto (null = anterior a la migración)
   label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
   parent_group_id: string | null;  // NULL = producto sin variantes (igual que hoy)
+  /** Producto de la OTRA tienda con unidades en la que se ve (transferido). */
+  foreign?: boolean;
 }
 
 // "Producto padre": agrupa variantes (talla/color) de productos ya existentes.
@@ -216,6 +220,7 @@ export default function InventoryPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [canRestockAll, setCanRestockAll] = useState(false);   // reponer en TODAS las tiendas
   const [canRestockLocal, setCanRestockLocal] = useState(false); // reponer solo en su tienda asignada
+  const [canRaisePrices, setCanRaisePrices] = useState(false);   // subir precios (nunca bajarlos)
 
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -330,11 +335,16 @@ export default function InventoryPage() {
   // transfersOn = el SQL está aplicado; mientras no, la pantalla es la de siempre.
   const [transfersOn, setTransfersOn] = useState(false);
   const [awayByProduct, setAwayByProduct] = useState<Record<string, number>>({});
+  //   foreignProducts -> lo de la otra tienda que tiene unidades en esta: se ve
+  //   en la tabla con su tienda dueña, pero no entra en `products`.
+  const [foreignProducts, setForeignProducts] = useState<Product[]>([]);
   const [transferTarget, setTransferTarget] = useState<{
     product: TransferProduct;
     fromStoreId: string;
     toStoreId: string;
     groupInfo: { name: string; variants: number } | null;
+    /** Devolver a su tienda dueña algo de la otra tienda que está acá. */
+    returning?: boolean;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<TransferHistoryRow[]>([]);
@@ -395,6 +405,11 @@ export default function InventoryPage() {
   const readOnly = !canAdd && !canEditRow;
   // Al EDITAR, el reponedor solo puede tocar el stock (al AÑADIR usa el formulario completo).
   const editStockOnly = isRestocker && !!editingProduct;
+  // Subir precios (permiso aparte en Usuarios): en la ventana de reponer, el
+  // precio se desbloquea solo hacia arriba. Lo hace cumplir el RPC
+  // raise_product_price; un trigger rechaza cualquier otro cambio de precio.
+  const canRaisePrice = isCashier && canRaisePrices;
+  const raisingPrice = editStockOnly && canRaisePrice;
 
   // Transferir entre tiendas: el dueño y cualquier cajero (decisión del dueño),
   // tenga o no permiso de reposición: transferir no crea ni borra mercancía,
@@ -421,6 +436,15 @@ export default function InventoryPage() {
   async function loadStores() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
+      // Permiso de subir precios (db/novedades_01…sql). Sin la columna, se
+      // sigue como siempre: el precio queda bloqueado para el cajero.
+      const { data: raise } = await supabase
+        .from('profiles')
+        .select('can_raise_prices')
+        .eq('id', user.id)
+        .single();
+      setCanRaisePrices(!!raise?.can_raise_prices);
+
       // Intentamos leer los permisos de reposición; si alguna columna aún no
       // existe (SQL sin aplicar), degradamos sin romper el resto de la vista.
       const { data: profile, error } = await supabase
@@ -555,7 +579,17 @@ export default function InventoryPage() {
   async function fetchTransfersInfo(storeId: string) {
     const ok = await checkTransfersAvailable(supabase);
     setTransfersOn(ok);
-    setAwayByProduct(ok ? await fetchAwayStock(supabase, storeId) : {});
+    const [away, foreign] = ok
+      ? await Promise.all([fetchAwayStock(supabase, storeId), fetchForeignHere(supabase, storeId)])
+      : [{}, []];
+    setAwayByProduct(away);
+    setForeignProducts(foreign.map(f => ({
+      ...f,
+      created_at: null,
+      label_printed_at: null,
+      parent_group_id: null, // su modelo es de la otra tienda: aquí va suelto
+      foreign: true,
+    })));
   }
 
   async function refreshInventory(storeId: string) {
@@ -884,16 +918,38 @@ export default function InventoryPage() {
     }
 
     // Cajero REPONEDOR editando: solo repone stock en la tienda que ve (cruza
-    // tiendas vía RPC), sin tocar ningún otro dato del producto.
+    // tiendas vía RPC), sin tocar ningún otro dato del producto. Si además
+    // tiene el permiso, puede SUBIR el precio (otro RPC). El stock se escribe
+    // solo si cambió: es un valor absoluto leído al abrir la lista, y subir
+    // solo el precio no debe pisar una venta hecha entre tanto.
     if (editingProduct && editStockOnly) {
-      const { error } = await supabase.rpc('restock_stock', {
-        p_product_id: editingProduct.id,
-        p_store_id: viewStoreId,
-        p_new_stock: data.stock,
-      });
-      if (error) {
-        setFormError('No se pudo reponer el stock: ' + error.message);
+      const newPrice = Math.round((Number(data.price) || 0) * 100) / 100;
+      const oldPrice = Math.round(editingProduct.price * 100) / 100;
+      const priceChanged = raisingPrice && newPrice !== oldPrice;
+      if (priceChanged && newPrice < oldPrice) {
+        setFormError(`No se puede bajar el precio: el mínimo es $${oldPrice.toFixed(2)}.`);
         return;
+      }
+      if (priceChanged) {
+        const raised = await raiseProductPrice(supabase, editingProduct.id, newPrice);
+        if ('error' in raised) {
+          setFormError(raised.error);
+          return;
+        }
+      }
+      if (data.stock !== editingProduct.stock) {
+        const { error } = await supabase.rpc('restock_stock', {
+          p_product_id: editingProduct.id,
+          p_store_id: viewStoreId,
+          p_new_stock: data.stock,
+        });
+        if (error) {
+          setFormError(priceChanged
+            ? 'El precio se subió, pero no se pudo reponer el stock: ' + error.message
+            : 'No se pudo reponer el stock: ' + error.message);
+          if (priceChanged) refreshInventory(viewStoreId);
+          return;
+        }
       }
       closeModal();
       refreshInventory(viewStoreId);
@@ -1325,7 +1381,8 @@ const handleExportCSV = async () => {
   let totalUnidades = 0;
   let totalValor = 0;
 
-  products.forEach(p => {
+  // Incluye lo traído de la otra tienda (marcado): el total es lo que hay en los estantes.
+  [...products, ...foreignProducts].forEach(p => {
     const stock = Number(p.stock) || 0;
     const precio = Number(p.price) || 0;
     const valor = precio * stock;
@@ -1334,7 +1391,7 @@ const handleExportCSV = async () => {
 
     const row = ws.addRow({
       sku: p.sku_barcode,
-      nombre: p.name,
+      nombre: p.foreign ? `${p.name} (de ${stores.find(st => st.id === p.owner_store_id)?.name ?? 'la otra tienda'})` : p.name,
       padre: p.parent_group_id ? (groupsById.get(p.parent_group_id)?.name ?? '') : '',
       variante: variantLabel(p.talla, p.color),
       categoria: categoryLabel(p.category),
@@ -1407,10 +1464,19 @@ const handleExportCSV = async () => {
   // Umbral de "stock bajo" de la tienda que se está viendo (juguetería: 1; resto: 2).
   const lowStockMax = lowStockMaxFor(effectiveStore?.name ?? currentStore?.name);
 
+  // Ventana de reponer con permiso de subir precio: cuánto sube, o si se pasó
+  // para abajo (en rojo y con Guardar bloqueado).
+  const typedPrice = raisingPrice ? Math.round((Number(watch('price')) || 0) * 100) / 100 : 0;
+  const basePrice = editingProduct ? Math.round(editingProduct.price * 100) / 100 : 0;
+  const priceTooLow = raisingPrice && typedPrice < basePrice;
+  const priceRise = raisingPrice ? Math.round((typedPrice - basePrice) * 100) / 100 : 0;
+
   // --- Resumen (sobre TODO el inventario de la tienda, ignora búsqueda/filtro) ---
-  const totalProducts = products.length;
-  const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
-  const totalCost = products.reduce((sum, p) => sum + (p.price || 0) * (p.stock || 0), 0);
+  // Productos, unidades y valor cuentan también lo traído de la otra tienda
+  // (lo que hay en los estantes); stock bajo y agotados, solo lo propio.
+  const totalProducts = products.length + foreignProducts.length;
+  const totalUnits = [...products, ...foreignProducts].reduce((sum, p) => sum + (p.stock || 0), 0);
+  const totalCost = [...products, ...foreignProducts].reduce((sum, p) => sum + (p.price || 0) * (p.stock || 0), 0);
   const lowCount = products.filter(p => isLow(p.stock, lowStockMax)).length;
   const outCount = products.filter(p => isOut(p.stock)).length;
 
@@ -1582,17 +1648,34 @@ const handleExportCSV = async () => {
   // Orden por Stock Local o por Talla/Color. En talla/color se compara el texto
   // visible ("Talla · Color") con colación numérica (8 < 10) y los productos
   // SIN variante ("N/A") van siempre al final, en ambas direcciones.
+  // Lo traído de la otra tienda va en la misma tabla (no en una lista aparte:
+  // ese panel se quitó el 2026-10-10 porque estorbaba). Solo con el filtro
+  // "Todos": no cuenta como stock bajo ni agotado de esta tienda. Sin orden
+  // elegido, se intercala por nombre con lo propio.
+  const foreignShown = stockFilter !== 'all' ? [] : foreignProducts.filter(p =>
+    (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower)) &&
+    (categoryFilter === 'all' || p.category === categoryFilter)
+  );
+  const withForeign: Product[] = sortKey ? [...statusFiltered, ...foreignShown] : (() => {
+    if (foreignShown.length === 0) return statusFiltered;
+    const out = [...statusFiltered];
+    for (const f of foreignShown) {
+      const at = out.findIndex(p => !p.foreign && p.name.localeCompare(f.name, 'es', { sensitivity: 'base' }) > 0);
+      out.splice(at === -1 ? out.length : at, 0, f);
+    }
+    return out;
+  })();
   const sortedProducts = sortKey === 'stock'
-    ? [...statusFiltered].sort((a, b) => (sortDir === 'asc' ? a.stock - b.stock : b.stock - a.stock))
+    ? [...withForeign].sort((a, b) => (sortDir === 'asc' ? a.stock - b.stock : b.stock - a.stock))
     : sortKey === 'variant'
-    ? [...statusFiltered].sort((a, b) => {
+    ? [...withForeign].sort((a, b) => {
         const va = variantLabel(a.talla, a.color);
         const vb = variantLabel(b.talla, b.color);
         if ((va === 'N/A') !== (vb === 'N/A')) return va === 'N/A' ? 1 : -1;
         const cmp = va.localeCompare(vb, 'es', { numeric: true, sensitivity: 'base' });
         return sortDir === 'asc' ? cmp : -cmp;
       })
-    : statusFiltered;
+    : withForeign;
 
   // Agrupa las variantes de un mismo producto padre en UNA sola fila de
   // pantalla ("N variantes"), en la posición del primer hijo encontrado en
@@ -1602,12 +1685,15 @@ const handleExportCSV = async () => {
   const groupsById = new Map(groups.map(g => [g.id, g] as const));
   type DisplayRow =
     | { type: 'standalone'; product: Product }
+    | { type: 'foreign'; product: Product }
     | { type: 'group'; groupId: string; group: ProductGroup | null; children: Product[] };
   const displayRows: DisplayRow[] = [];
   {
     const seenGroupIds = new Set<string>();
     for (const p of sortedProducts) {
-      if (p.parent_group_id) {
+      if (p.foreign) {
+        displayRows.push({ type: 'foreign', product: p });
+      } else if (p.parent_group_id) {
         if (seenGroupIds.has(p.parent_group_id)) continue;
         seenGroupIds.add(p.parent_group_id);
         const children = sortedProducts.filter(x => x.parent_group_id === p.parent_group_id);
@@ -1628,9 +1714,10 @@ const handleExportCSV = async () => {
 
   // Todos los productos que se ven en la página actual (las variantes cuentan
   // aunque su modelo esté colapsado: marcar el modelo las marca todas).
-  const pageProductIds = paginatedRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : [r.product.id]);
+  // Lo de la otra tienda no se selecciona: la desactivación masiva es de la dueña.
+  const pageProductIds = paginatedRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' ? [] : [r.product.id]);
   // Y los de TODAS las páginas del filtro actual, para "seleccionar los N".
-  const allFilteredIds = displayRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : [r.product.id]);
+  const allFilteredIds = displayRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' ? [] : [r.product.id]);
   const allGroupsExpanded = allGroupIds.length > 0 && allGroupIds.every(id => expandedGroups.has(id));
   const toggleAllGroupsExpanded = () =>
     setExpandedGroups(allGroupsExpanded ? new Set() : new Set(allGroupIds));
@@ -1788,6 +1875,108 @@ const handleExportCSV = async () => {
           )}
         </td>
       </tr>
+    );
+  };
+
+  // --- Lo de la otra tienda que está acá --------------------------------------
+  // Se ve y se devuelve; el precio y los datos se cambian desde su tienda.
+  const ownerNameOf = (product: Product) =>
+    stores.find(st => st.id === product.owner_store_id)?.name ?? 'la otra tienda';
+  const foreignChip = (product: Product) => (
+    <span
+      title={`Es de ${ownerNameOf(product)}: se cambia desde su tienda`}
+      className="shrink-0 text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full whitespace-nowrap"
+    >
+      De {ownerNameOf(product)}
+    </span>
+  );
+  const openReturnTransfer = (product: Product) => {
+    if (!product.owner_store_id) return;
+    setTransferTarget({
+      product: {
+        id: product.id, name: product.name, sku_barcode: product.sku_barcode,
+        talla: product.talla, color: product.color, owner_store_id: product.owner_store_id,
+      },
+      fromStoreId: viewStoreId,
+      toStoreId: product.owner_store_id,
+      groupInfo: null,
+      returning: true,
+    });
+  };
+  const returnButton = (product: Product, size: 'sm' | 'md') => canTransfer ? (
+    <button
+      onClick={(e) => { e.stopPropagation(); openReturnTransfer(product); }}
+      className={`inline-flex items-center gap-1 border border-teal-200 text-teal-700 hover:bg-teal-50 rounded-lg font-semibold transition cursor-pointer whitespace-nowrap ${size === 'sm' ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'}`}
+      title={`Devolver a ${ownerNameOf(product)}`}
+    >
+      <ArrowLeftRight size={size === 'sm' ? 14 : 16} /> Devolver
+    </button>
+  ) : <span className="text-slate-300">—</span>;
+
+  const renderForeignDesktopRow = (product: Product) => {
+    const tier = stockTier(product.stock, lowStockMax);
+    return (
+      <tr
+        key={`f-${product.id}`}
+        onClick={() => setSelectedProduct(product)}
+        className={`border-b border-slate-100 transition cursor-pointer ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'bg-blue-50/40 hover:bg-slate-50'}`}
+      >
+        {canDelete && <td className="p-3 pl-4 w-10" />}
+        <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
+        <td className="p-3 font-medium text-slate-800">
+          <span className="inline-flex items-center gap-2 flex-wrap">{product.name}{foreignChip(product)}</span>
+        </td>
+        <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
+        <td className="p-3">
+          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(product.category)}</span>
+        </td>
+        <td className="p-3 text-right font-medium text-slate-600">${product.price.toFixed(2)}</td>
+        <td className="p-3">
+          <div className="flex flex-col items-end gap-1">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {product.stock}
+            </span>
+          </div>
+        </td>
+        <td className="p-3 text-center">{returnButton(product, 'sm')}</td>
+      </tr>
+    );
+  };
+
+  const renderForeignMobileCard = (product: Product) => {
+    const tier = stockTier(product.stock, lowStockMax);
+    const variant = variantLabel(product.talla, product.color);
+    const selected = selectedProduct?.id === product.id;
+    return (
+      <div
+        key={`f-${product.id}`}
+        onClick={() => setSelectedProduct(product)}
+        className={`border rounded-xl p-3 shadow-sm flex flex-col gap-2 cursor-pointer transition ${selected ? 'border-teal-400 ring-2 ring-teal-100 bg-teal-50' : 'border-blue-200 bg-blue-50/40'}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-slate-800 text-sm leading-snug">{product.name}</h3>
+              {foreignChip(product)}
+            </div>
+            <p className="text-[11px] font-mono text-slate-500 mt-0.5">{product.sku_barcode}</p>
+          </div>
+          <div className="shrink-0 text-center">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {product.stock}
+            </span>
+            <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] capitalize">{categoryLabel(product.category)}</span>
+            {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
+            <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
+          </div>
+          <div className="shrink-0">{returnButton(product, 'md')}</div>
+        </div>
+      </div>
     );
   };
 
@@ -2379,7 +2568,7 @@ const handleExportCSV = async () => {
               ) : displayRows.length === 0 ? (
                 <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
               ) : (
-                paginatedRows.map((row) => row.type === 'standalone' ? renderMobileCard(row.product) : renderMobileGroup(row))
+                paginatedRows.map((row) => row.type === 'standalone' ? renderMobileCard(row.product) : row.type === 'foreign' ? renderForeignMobileCard(row.product) : renderMobileGroup(row))
               )}
             </div>
 
@@ -2433,7 +2622,7 @@ const handleExportCSV = async () => {
                   ) : displayRows.length === 0 ? (
                     <tr><td colSpan={canDelete ? 8 : 7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
-                    paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : renderDesktopGroup(row))
+                    paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : row.type === 'foreign' ? [renderForeignDesktopRow(row.product)] : renderDesktopGroup(row))
                   )}
                 </tbody>
               </table>
@@ -2684,8 +2873,17 @@ const handleExportCSV = async () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Precio Global ($)</label>
-                <input type="number" step="0.01" readOnly={editStockOnly} {...register('price', { valueAsNumber: true })} onFocus={(e) => e.target.select()} placeholder="0.00" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+                <input type="number" step="0.01" min={raisingPrice ? editingProduct?.price : undefined} readOnly={editStockOnly && !raisingPrice} {...register('price', { valueAsNumber: true })} onFocus={(e) => e.target.select()} placeholder="0.00" className={`w-full p-2.5 border rounded-lg bg-white text-slate-800 focus:ring-2 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed ${priceTooLow ? 'border-red-400 focus:ring-red-500' : 'border-slate-300 focus:ring-teal-600'}`} />
                 {errors.price && <p className="text-red-500 text-xs mt-1">{errors.price.message}</p>}
+                {raisingPrice && editingProduct && !errors.price && (
+                  priceTooLow ? (
+                    <p className="text-red-600 text-xs mt-1 font-semibold">No se puede bajar: el mínimo es ${editingProduct.price.toFixed(2)}</p>
+                  ) : priceRise > 0 ? (
+                    <p className="text-emerald-700 text-xs mt-1 font-semibold">▲ Sube de ${editingProduct.price.toFixed(2)} a ${(editingProduct.price + priceRise).toFixed(2)} (+${priceRise.toFixed(2)})</p>
+                  ) : (
+                    <p className="text-slate-500 text-xs mt-1">Solo se puede subir. Para bajarlo, el dueño.</p>
+                  )
+                )}
               </div>
             </div>
 
@@ -2843,7 +3041,7 @@ const handleExportCSV = async () => {
                   creaba un producto (o un modelo entero) repetido. */}
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || priceTooLow}
                 className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isSubmitting
@@ -3513,11 +3711,12 @@ const handleExportCSV = async () => {
           fromStoreId={transferTarget?.fromStoreId ?? null}
           toStoreId={transferTarget?.toStoreId ?? null}
           source="inventory"
-          title="Transferir a la otra tienda"
-          allowMove
+          title={transferTarget?.returning ? 'Devolver a su tienda' : 'Transferir a la otra tienda'}
+          allowMove={!transferTarget?.returning}
           groupInfo={transferTarget?.groupInfo ?? null}
-          allowFlip={!!transferTarget && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
+          allowFlip={!!transferTarget && !transferTarget.returning && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
           showNote
+          requireNote
           confirmNegative
           showSuccess
         />
@@ -3531,7 +3730,7 @@ const handleExportCSV = async () => {
             <p className="text-slate-500">Todavía no se ha hecho ninguna transferencia.</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm min-w-[640px]">
+              <table className="w-full text-left text-sm min-w-[760px]">
                 <thead className="text-slate-500 border-b border-slate-200">
                   <tr>
                     <th className="py-2 pr-3 font-semibold">Fecha</th>
@@ -3539,6 +3738,7 @@ const handleExportCSV = async () => {
                     <th className="py-2 pr-3 font-semibold">Producto</th>
                     <th className="py-2 pr-3 font-semibold text-center">Cant.</th>
                     <th className="py-2 pr-3 font-semibold">Movimiento</th>
+                    <th className="py-2 pr-3 font-semibold">Motivo</th>
                     <th className="py-2 font-semibold">Hecho desde</th>
                   </tr>
                 </thead>
@@ -3560,7 +3760,6 @@ const handleExportCSV = async () => {
                           <span className="block text-xs text-slate-500">
                             {variant && `${variant} · `}<span className="font-mono">{t.products?.sku_barcode}</span>
                           </span>
-                          {t.note && <span className="block text-xs text-slate-500 italic">{t.note}</span>}
                         </td>
                         <td className="py-2 pr-3 text-center font-bold text-slate-800">{t.quantity}</td>
                         <td className="py-2 pr-3 text-slate-700 whitespace-nowrap">
@@ -3571,6 +3770,7 @@ const handleExportCSV = async () => {
                             </span>
                           )}
                         </td>
+                        <td className="py-2 pr-3 text-slate-700 min-w-[10rem]">{t.note ?? <span className="text-slate-300">—</span>}</td>
                         <td className="py-2 text-slate-600">{TRANSFER_SOURCE_LABEL[t.source] ?? t.source}</td>
                       </tr>
                     );

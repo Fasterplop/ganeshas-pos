@@ -7,6 +7,8 @@ import { createClient } from '@/lib/supabase/client';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 
 import { type AppRole } from '@/lib/roles';
+import { PHONE_SIMPLE_PATHS } from '@/lib/phoneMode';
+import { useNovedadesBadge } from '@/lib/useNovedadesBadge';
 
 type Role = AppRole;
 
@@ -14,13 +16,16 @@ interface TopBarMenuProps {
   userRole: Role;
   userName: string;
   stores: Store[]; // <-- Nueva prop para recibir las tiendas
+  /** Modo teléfono de la cuenta: este menú (que es el del teléfono) muestra solo precio y caja. */
+  phoneSimple?: boolean;
 }
 
-export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuProps) {
+export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: TopBarMenuProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
   const { currentStore, setCurrentStore } = usePOSStore(); // <-- Estado global
+  const novedades = useNovedadesBadge(userRole === 'owner');
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -30,6 +35,7 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
 
   const menuItems = [
     { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
+    { name: 'Novedades', path: '/novedades', roles: ['owner'] },
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
@@ -40,7 +46,13 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
   ];
 
-  const filteredMenu = menuItems.filter(item => item.roles.includes(userRole));
+  // En modo teléfono, Consultar precio primero y la caja como «Vender».
+  const filteredMenu = phoneSimple
+    ? PHONE_SIMPLE_PATHS
+        .map(path => menuItems.find(item => item.path === path))
+        .filter((item): item is (typeof menuItems)[number] => !!item && item.roles.includes(userRole))
+        .map(item => (item.path === '/pos' ? { ...item, name: 'Vender' } : item))
+    : menuItems.filter(item => item.roles.includes(userRole));
 
   return (
     <header className="md:hidden w-full bg-[#0f5c5c] text-white print:hidden flex flex-col shadow-md shrink-0">
@@ -106,6 +118,11 @@ export default function TopBarMenu({ userRole, userName, stores }: TopBarMenuPro
               }`}
             >
               {item.name}
+              {item.path === '/novedades' && novedades > 0 && (
+                <span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle">
+                  {novedades > 99 ? '99+' : novedades}
+                </span>
+              )}
             </Link>
           );
         })}

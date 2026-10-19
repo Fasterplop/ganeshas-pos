@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
-import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction } from './actions';
+import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction, setCanRaisePricesAction, setPhoneSimpleModeAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
 import { ASSIGNABLE_ROLES, ROLE_BADGE, ROLE_BADGE_CLASS, ROLE_HELP, ROLE_LABEL, type AppRole } from '@/lib/roles';
 
@@ -64,6 +64,27 @@ function RestockScopeControl({ scope, onChange }: { scope: RestockScope; onChang
   );
 }
 
+// Selector de dos opciones (No / Sí), con el mismo aspecto que el de reposición.
+function TwoWayControl({ value, labels, onChange }: { value: boolean; labels: [string, string]; onChange: (v: boolean) => void; }) {
+  return (
+    <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[10px] font-bold uppercase tracking-wide">
+      {[false, true].map((o, i) => {
+        const active = value === o;
+        return (
+          <button
+            key={String(o)}
+            type="button"
+            onClick={() => onChange(o)}
+            className={`px-2.5 py-1.5 transition cursor-pointer whitespace-nowrap ${active ? (o ? 'bg-teal-100 text-teal-700' : 'bg-slate-200 text-slate-700') : 'bg-white text-slate-400 hover:bg-slate-50'} ${i > 0 ? 'border-l border-slate-200' : ''}`}
+          >
+            {labels[i]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function UsersPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -84,10 +105,15 @@ export default function UsersPage() {
   // cada tecla del formulario y hace que el compilador de React se rinda con
   // esta pantalla.
   const [rolElegido, setRolElegido] = useState<AppRole>('cashier');
+  // Columnas de db/novedades_01…sql: sin ellas no se muestran los dos controles.
+  const [permsInstalled, setPermsInstalled] = useState(false);
 
   const fetchUsers = async () => {
     const result = await getUsersAction();
-    if (result.success && result.users) setUsers(result.users);
+    if (result.success && result.users) {
+      setUsers(result.users);
+      setPermsInstalled(!!result.permsInstalled);
+    }
   };
 
   useEffect(() => {
@@ -156,6 +182,30 @@ export default function UsersPage() {
       } else {
         alert('Error al cambiar el permiso: ' + result.error);
       }
+    }
+  };
+
+  const handleSetRaise = async (userId: string, userName: string, current: boolean, next: boolean) => {
+    if (next === current) return;
+    const msg = next
+      ? `${userName} podrá SUBIR precios desde el inventario (nunca bajarlos). Cada subida te llega a Novedades. ¿Continuar?`
+      : `${userName} ya no podrá subir precios. ¿Continuar?`;
+    if (window.confirm(msg)) {
+      const result = await setCanRaisePricesAction(userId, next);
+      if (result.success) await fetchUsers();
+      else alert('Error al cambiar el permiso: ' + result.error);
+    }
+  };
+
+  const handleSetPhone = async (userId: string, userName: string, current: boolean, next: boolean) => {
+    if (next === current) return;
+    const msg = next
+      ? `En el teléfono, ${userName} verá solo Consultar precio y Vender. En la computadora, todo como hoy. ¿Continuar?`
+      : `${userName} verá todo también en el teléfono. ¿Continuar?`;
+    if (window.confirm(msg)) {
+      const result = await setPhoneSimpleModeAction(userId, next);
+      if (result.success) await fetchUsers();
+      else alert('Error al cambiar el permiso: ' + result.error);
     }
   };
 
@@ -312,6 +362,26 @@ export default function UsersPage() {
                     />
                   </div>
                 )}
+                {user.role === 'cashier' && permsInstalled && (
+                  <>
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-500">Subir precios</span>
+                      <TwoWayControl
+                        value={!!user.can_raise_prices}
+                        labels={['No', 'Sí']}
+                        onChange={(next) => handleSetRaise(user.id, user.full_name, !!user.can_raise_prices, next)}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-500">En el teléfono</span>
+                      <TwoWayControl
+                        value={!!user.phone_simple_mode}
+                        labels={['Todo', 'Precio y caja']}
+                        onChange={(next) => handleSetPhone(user.id, user.full_name, !!user.phone_simple_mode, next)}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -325,6 +395,8 @@ export default function UsersPage() {
                   <th className="px-6 py-4">Sucursal</th>
                   <th className="px-6 py-4">Rol</th>
                   <th className="px-6 py-4 text-center">Reposición</th>
+                  {permsInstalled && <th className="px-4 py-4 text-center">Subir precios</th>}
+                  {permsInstalled && <th className="px-4 py-4 text-center">En el teléfono</th>}
                   <th className="px-6 py-4">Estado</th>
                   <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
@@ -361,6 +433,28 @@ export default function UsersPage() {
                         <span className="block text-center text-xs text-slate-400 italic">—</span>
                       )}
                     </td>
+                    {permsInstalled && (
+                      <td className="px-4 py-4 text-center">
+                        {user.role === 'cashier' ? (
+                          <TwoWayControl
+                            value={!!user.can_raise_prices}
+                            labels={['No', 'Sí']}
+                            onChange={(next) => handleSetRaise(user.id, user.full_name, !!user.can_raise_prices, next)}
+                          />
+                        ) : <span className="text-xs text-slate-400 italic">—</span>}
+                      </td>
+                    )}
+                    {permsInstalled && (
+                      <td className="px-4 py-4 text-center">
+                        {user.role === 'cashier' ? (
+                          <TwoWayControl
+                            value={!!user.phone_simple_mode}
+                            labels={['Todo', 'Precio y caja']}
+                            onChange={(next) => handleSetPhone(user.id, user.full_name, !!user.phone_simple_mode, next)}
+                          />
+                        ) : <span className="text-xs text-slate-400 italic">—</span>}
+                      </td>
+                    )}
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${user.is_active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
                          <span className={`w-1.5 h-1.5 rounded-full ${user.is_active ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]' : 'bg-rose-500'}`}></span>
@@ -387,7 +481,7 @@ export default function UsersPage() {
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
+                    <td colSpan={permsInstalled ? 8 : 6} className="px-6 py-12 text-center text-slate-400">
                       <svg className="w-12 h-12 mx-auto mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                       <p className="text-base font-medium text-slate-500">No hay usuarios registrados</p>
                     </td>

@@ -1199,6 +1199,7 @@ export default function POSPage() {
         title={`Este producto es de ${storeNameOf(transferAsk?.fromStoreId)}`}
         confirmLabel="Traer y agregar a la venta"
         minQuantity={transferAsk?.quantity}
+        fixedNote="Para una venta en caja"
         scannerSafe
       />
 
