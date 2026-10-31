@@ -7,9 +7,11 @@
 // precio que no sea del dueño, así que bajar un precio no se puede ni desde la
 // consola del navegador.
 //
-// Novedades junta, para el dueño, esas subidas y las transferencias entre
-// tiendas que hicieron otros (`stock_transfers`, cuya nota es el motivo). Lo
-// "nuevo" es lo posterior a profiles.novedades_seen_at.
+// Novedades junta, para el dueño, esas subidas, las transferencias entre
+// tiendas que hicieron otros (`stock_transfers`, cuya nota es el motivo) y los
+// traslados (`store_shipments`, db/traslados_01.sql): los envíos de las
+// cajeras, cada «Falta algo» y lo que se deshizo. Lo "nuevo" es lo posterior a
+// profiles.novedades_seen_at.
 //
 // Sin el SQL aplicado todo degrada: la lista sale vacía, el contador en 0 y
 // subir un precio avisa qué archivo falta correr.
@@ -55,7 +57,10 @@ export async function raiseProductPrice(
 
 // --- Novedades ----------------------------------------------------------------
 
-export type NovedadKind = 'price' | 'transfer';
+export type NovedadKind = 'price' | 'transfer' | 'traslado';
+
+/** Qué pasó con un traslado. */
+export type TrasladoEvent = 'enviado' | 'incompleto' | 'deshecho';
 
 export interface Novedad {
   id: string;
@@ -76,6 +81,10 @@ export interface Novedad {
   note?: string | null;
   source?: string;
   changesOwner?: boolean;
+  // Traslado (fromStoreId, toStoreId y note se comparten con la transferencia)
+  event?: TrasladoEvent;
+  pieces?: number;
+  missing?: number;
 }
 
 type ProductEmbed = { name: string; sku_barcode: string; talla: string | null; color: string | null } | null;
@@ -83,14 +92,14 @@ type ProductEmbed = { name: string; sku_barcode: string; talla: string | null; c
 const LIMIT = 200;
 
 /**
- * Lo último de las dos fuentes, mezclado del más reciente al más antiguo. Las
- * transferencias del propio dueño no entran: no son novedad para él.
+ * Lo último de las tres fuentes, mezclado del más reciente al más antiguo. Lo
+ * que hizo el propio dueño no entra: no es novedad para él.
  */
 export async function fetchNovedades(
   supabase: SupabaseClient,
   ownerId: string,
 ): Promise<{ rows: Novedad[]; error: string | null }> {
-  const [prices, transfers] = await Promise.all([
+  const [prices, transfers, shipments] = await Promise.all([
     supabase
       .from('price_changes')
       .select('id, created_at, old_price, new_price, products (name, sku_barcode, talla, color), profiles (full_name)')
@@ -100,6 +109,16 @@ export async function fetchNovedades(
       .from('stock_transfers')
       .select('id, created_at, quantity, source, note, from_store_id, to_store_id, changes_owner, products (name, sku_barcode, talla, color), profiles (full_name)')
       .neq('created_by', ownerId)
+      .order('created_at', { ascending: false })
+      .limit(LIMIT),
+    // Sin db/traslados_01.sql la tabla no existe: el error se ignora abajo.
+    supabase
+      .from('store_shipments')
+      .select(
+        'id, created_at, created_by, received_at, undone_at, undone_by, status, pieces, note, from_store_id, to_store_id, ' +
+          'author:profiles!store_shipments_author_fkey (full_name), receiver:profiles!store_shipments_receiver_fkey (full_name), ' +
+          'undoer:profiles!store_shipments_undoer_fkey (full_name), store_shipment_items (missing)',
+      )
       .order('created_at', { ascending: false })
       .limit(LIMIT),
   ]);
@@ -152,6 +171,31 @@ export async function fetchNovedades(
       changesOwner: !!t.changes_owner,
     });
   }
+  if (!shipments.error) {
+    type Who = { full_name: string } | { full_name: string }[] | null;
+    const nameOf = (w: Who) => (Array.isArray(w) ? w[0]?.full_name : w?.full_name) ?? 'Desconocido';
+    for (const raw of shipments.data ?? []) {
+      const s = raw as unknown as {
+        id: string; created_at: string; created_by: string; received_at: string | null; undone_at: string | null;
+        undone_by: string | null; status: string; pieces: number; note: string; from_store_id: string; to_store_id: string;
+        author: Who; receiver: Who; undoer: Who; store_shipment_items: { missing: number }[] | null;
+      };
+      const base = {
+        kind: 'traslado' as const, productName: '', sku: '', talla: null, color: null,
+        pieces: Number(s.pieces) || 0, fromStoreId: s.from_store_id, toStoreId: s.to_store_id, note: s.note,
+      };
+      if (s.created_by !== ownerId) {
+        rows.push({ ...base, id: `s-${s.id}`, event: 'enviado', created_at: s.created_at, who: nameOf(s.author) });
+      }
+      if (s.status === 'incompleto' && s.received_at) {
+        const missing = (s.store_shipment_items ?? []).reduce((a, it) => a + (Number(it.missing) || 0), 0);
+        rows.push({ ...base, id: `si-${s.id}`, event: 'incompleto', created_at: s.received_at, who: nameOf(s.receiver), missing });
+      }
+      if (s.status === 'deshecho' && s.undone_at && s.undone_by !== ownerId) {
+        rows.push({ ...base, id: `sd-${s.id}`, event: 'deshecho', created_at: s.undone_at, who: nameOf(s.undoer) });
+      }
+    }
+  }
   rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
   return { rows, error: null };
 }
@@ -178,14 +222,23 @@ export async function fetchNovedadesCount(
   try {
     const { seenAt, installed } = await fetchNovedadesSeenAt(supabase, ownerId);
     if (!installed) return 0;
-    let prices = supabase.from('price_changes').select('id', { count: 'exact', head: true });
-    let transfers = supabase.from('stock_transfers').select('id', { count: 'exact', head: true }).neq('created_by', ownerId);
+    const head = { count: 'exact' as const, head: true };
+    let prices = supabase.from('price_changes').select('id', head);
+    let transfers = supabase.from('stock_transfers').select('id', head).neq('created_by', ownerId);
+    // Traslados: los mismos tres hechos que fetchNovedades.
+    let sent = supabase.from('store_shipments').select('id', head).neq('created_by', ownerId);
+    let incomplete = supabase.from('store_shipments').select('id', head).eq('status', 'incompleto');
+    let undone = supabase.from('store_shipments').select('id', head).eq('status', 'deshecho').neq('undone_by', ownerId);
     if (seenAt) {
       prices = prices.gt('created_at', seenAt);
       transfers = transfers.gt('created_at', seenAt);
+      sent = sent.gt('created_at', seenAt);
+      incomplete = incomplete.gt('received_at', seenAt);
+      undone = undone.gt('undone_at', seenAt);
     }
-    const [p, t] = await Promise.all([prices, transfers]);
-    return (p.error ? 0 : p.count ?? 0) + (t.error ? 0 : t.count ?? 0);
+    const results = await Promise.all([prices, transfers, sent, incomplete, undone]);
+    // Una fuente que falla (p. ej. traslados sin instalar) cuenta 0.
+    return results.reduce((a, r) => a + (r.error ? 0 : r.count ?? 0), 0);
   } catch {
     return 0;
   }

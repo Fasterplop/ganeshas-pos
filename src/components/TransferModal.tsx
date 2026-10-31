@@ -42,6 +42,11 @@ interface Props {
    * unidades. Solo aplica mientras el sentido sea desde la tienda dueña.
    */
   allowMove?: boolean;
+  /**
+   * Inventario, desde el ✏️ del dueño: SOLO pasar el producto (sin «Mover
+   * unidades»). Mandar piezas a la otra tienda se hace desde Traslados.
+   */
+  moveOnly?: boolean;
   /** Si el producto es una variante: su modelo y cuántas variantes activas tiene (ella incluida). */
   groupInfo?: { name: string; variants: number } | null;
   product: TransferProduct | null;
@@ -116,7 +121,7 @@ function newRequestId(): string | null {
 function TransferModalBody({
   onClose, onDone, onMoved, product, stores, fromStoreId, toStoreId, source,
   title, confirmLabel, minQuantity,
-  allowFlip, allowMove, groupInfo, showNote, requireNote, fixedNote, scannerSafe, confirmNegative, showSuccess,
+  allowFlip, allowMove, moveOnly, groupInfo, showNote, requireNote, fixedNote, scannerSafe, confirmNegative, showSuccess,
 }: BodyProps) {
   const supabase = createClient();
   const boxRef = useRef<HTMLDivElement>(null);
@@ -132,7 +137,7 @@ function TransferModalBody({
   const toId = flipped ? fromStoreId : toStoreId;
 
   // null = todavía no eligió (solo cuando se ofrece pasar el producto).
-  const [mode, setMode] = useState<'units' | 'move' | null>(allowMove ? null : 'units');
+  const [mode, setMode] = useState<'units' | 'move' | null>(moveOnly ? 'move' : allowMove ? null : 'units');
   const [wholeGroup, setWholeGroup] = useState(false);
   const [moved, setMoved] = useState<MoveResult | null>(null);
 
@@ -400,7 +405,7 @@ function TransferModalBody({
                 )}
               </div>
 
-              {canMove && (
+              {canMove && !moveOnly && (
                 <div className="space-y-2" role="radiogroup" aria-label="¿Qué quieres hacer?">
                   <p className="text-sm font-semibold text-slate-700">¿Qué quieres hacer?</p>
                   {([

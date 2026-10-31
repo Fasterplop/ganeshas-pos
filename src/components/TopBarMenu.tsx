@@ -9,6 +9,7 @@ import { usePOSStore, Store } from '@/store/usePOSStore';
 import { type AppRole } from '@/lib/roles';
 import { PHONE_SIMPLE_PATHS } from '@/lib/phoneMode';
 import { useNovedadesBadge } from '@/lib/useNovedadesBadge';
+import { useTrasladosBadge } from '@/lib/useTrasladosBadge';
 
 type Role = AppRole;
 
@@ -26,6 +27,8 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: 
   const supabase = createClient();
   const { currentStore, setCurrentStore } = usePOSStore(); // <-- Estado global
   const novedades = useNovedadesBadge(userRole === 'owner');
+  // Envíos que esperan que la tienda activa confirme.
+  const porRecibir = useTrasladosBadge(currentStore?.id, userRole === 'owner' || userRole === 'cashier');
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -38,6 +41,7 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: 
     { name: 'Novedades', path: '/novedades', roles: ['owner'] },
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
+    { name: 'Traslados', path: '/traslados', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
     { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'vendedor', 'consulta'] },
     { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
@@ -121,6 +125,14 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: 
               {item.path === '/novedades' && novedades > 0 && (
                 <span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle">
                   {novedades > 99 ? '99+' : novedades}
+                </span>
+              )}
+              {item.path === '/traslados' && porRecibir > 0 && (
+                <span
+                  title="Envíos por confirmar"
+                  className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle"
+                >
+                  {porRecibir}
                 </span>
               )}
             </Link>

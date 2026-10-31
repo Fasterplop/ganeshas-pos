@@ -7,7 +7,7 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import { usePOSStore, Store } from '@/store/usePOSStore';
-import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp, ArrowLeftRight } from 'lucide-react';
+import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant } from '@/lib/productVariant';
 import BarcodeLabel from '@/components/labels/BarcodeLabel';
@@ -338,13 +338,18 @@ export default function InventoryPage() {
   //   foreignProducts -> lo de la otra tienda que tiene unidades en esta: se ve
   //   en la tabla con su tienda dueña, pero no entra en `products`.
   const [foreignProducts, setForeignProducts] = useState<Product[]>([]);
+  //   foreignGroups -> el modelo (de la otra tienda) de lo ajeno que tiene
+  //   modelo: lo enviado «con su padre» se ve dentro de él, no suelto.
+  const [foreignGroups, setForeignGroups] = useState<Record<string, { name: string; category: string }>>({});
+  // «Pasar el producto a la otra tienda» (transfer_02), desde el ✏️ del dueño.
+  // El botón ⇄ de la fila se quitó el 2026-10-30 (propuesta Cashea +
+  // Traslados): mandar piezas a la otra tienda y devolverlas se hace desde
+  // Traslados.
   const [transferTarget, setTransferTarget] = useState<{
     product: TransferProduct;
     fromStoreId: string;
     toStoreId: string;
     groupInfo: { name: string; variants: number } | null;
-    /** Devolver a su tienda dueña algo de la otra tienda que está acá. */
-    returning?: boolean;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<TransferHistoryRow[]>([]);
@@ -411,12 +416,12 @@ export default function InventoryPage() {
   const canRaisePrice = isCashier && canRaisePrices;
   const raisingPrice = editStockOnly && canRaisePrice;
 
-  // Transferir entre tiendas: el dueño y cualquier cajero (decisión del dueño),
-  // tenga o no permiso de reposición: transferir no crea ni borra mercancía,
-  // solo la mueve, y queda en el historial. Hace falta que exista exactamente
-  // UNA otra tienda activa. El RPC transfer_stock revalida rol y tienda.
+  // Pasar un producto entero a la otra tienda (cuando se creó en la tienda
+  // equivocada): solo el dueño, desde el ✏️ de su tienda (propuesta v2:
+  // «Pasarlo entero lo hace Gerardo, desde el ✎»). Mandar piezas se hace en
+  // Traslados. Hace falta que exista exactamente UNA otra tienda activa.
   const otherViewStore = otherStore(stores, viewStoreId);
-  const canTransfer = transfersOn && (isOwner || isCashier) && !!otherViewStore;
+  const canMoveProduct = transfersOn && isOwner && isOwnStore && !!otherViewStore;
   const shortStoreName = (name?: string | null) => (name ?? '').replace(/^tienda de /i, '') || 'la otra tienda';
 
   // Tienda seleccionada en el formulario de alta (para el aviso y el prefijo del SKU).
@@ -587,9 +592,17 @@ export default function InventoryPage() {
       ...f,
       created_at: null,
       label_printed_at: null,
-      parent_group_id: null, // su modelo es de la otra tienda: aquí va suelto
       foreign: true,
     })));
+    // Su modelo es de la otra tienda: se lee aparte (fetchGroups trae solo los
+    // de esta) para mostrar la pieza dentro de él, marcada «De <tienda>».
+    const gids = [...new Set(foreign.map(f => f.parent_group_id).filter((g): g is string => !!g))];
+    const names: Record<string, { name: string; category: string }> = {};
+    for (let i = 0; i < gids.length; i += 100) {
+      const { data } = await supabase.from('product_groups').select('id, name, category').in('id', gids.slice(i, i + 100));
+      for (const g of (data ?? []) as { id: string; name: string; category: string }[]) names[g.id] = { name: g.name, category: g.category };
+    }
+    setForeignGroups(names);
   }
 
   async function refreshInventory(storeId: string) {
@@ -1653,7 +1666,8 @@ const handleExportCSV = async () => {
   // "Todos": no cuenta como stock bajo ni agotado de esta tienda. Sin orden
   // elegido, se intercala por nombre con lo propio.
   const foreignShown = stockFilter !== 'all' ? [] : foreignProducts.filter(p =>
-    (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower)) &&
+    (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower) ||
+     (p.parent_group_id ? (foreignGroups[p.parent_group_id]?.name ?? '').toLowerCase().includes(searchLower) : false)) &&
     (categoryFilter === 'all' || p.category === categoryFilter)
   );
   const withForeign: Product[] = sortKey ? [...statusFiltered, ...foreignShown] : (() => {
@@ -1686,12 +1700,20 @@ const handleExportCSV = async () => {
   type DisplayRow =
     | { type: 'standalone'; product: Product }
     | { type: 'foreign'; product: Product }
+    | { type: 'foreignGroup'; groupId: string; name: string; category: string; children: Product[] }
     | { type: 'group'; groupId: string; group: ProductGroup | null; children: Product[] };
   const displayRows: DisplayRow[] = [];
   {
     const seenGroupIds = new Set<string>();
     for (const p of sortedProducts) {
-      if (p.foreign) {
+      if (p.foreign && p.parent_group_id) {
+        // Lo traído de la otra tienda que tiene modelo: dentro de su modelo.
+        if (seenGroupIds.has(p.parent_group_id)) continue;
+        seenGroupIds.add(p.parent_group_id);
+        const children = sortedProducts.filter(x => x.foreign && x.parent_group_id === p.parent_group_id);
+        const g = foreignGroups[p.parent_group_id];
+        displayRows.push({ type: 'foreignGroup', groupId: p.parent_group_id, name: g?.name ?? p.name, category: g?.category ?? p.category, children });
+      } else if (p.foreign) {
         displayRows.push({ type: 'foreign', product: p });
       } else if (p.parent_group_id) {
         if (seenGroupIds.has(p.parent_group_id)) continue;
@@ -1710,14 +1732,14 @@ const handleExportCSV = async () => {
 
   // IDs de todos los productos padre visibles (con el filtro/búsqueda actual,
   // en todas las páginas) para el botón "expandir todos" del encabezado.
-  const allGroupIds = displayRows.filter((r): r is Extract<DisplayRow, { type: 'group' }> => r.type === 'group').map(r => r.groupId);
+  const allGroupIds = displayRows.flatMap(r => (r.type === 'group' || r.type === 'foreignGroup' ? [r.groupId] : []));
 
   // Todos los productos que se ven en la página actual (las variantes cuentan
   // aunque su modelo esté colapsado: marcar el modelo las marca todas).
   // Lo de la otra tienda no se selecciona: la desactivación masiva es de la dueña.
-  const pageProductIds = paginatedRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' ? [] : [r.product.id]);
+  const pageProductIds = paginatedRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' || r.type === 'foreignGroup' ? [] : [r.product.id]);
   // Y los de TODAS las páginas del filtro actual, para "seleccionar los N".
-  const allFilteredIds = displayRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' ? [] : [r.product.id]);
+  const allFilteredIds = displayRows.flatMap(r => r.type === 'group' ? r.children.map(c => c.id) : r.type === 'foreign' || r.type === 'foreignGroup' ? [] : [r.product.id]);
   const allGroupsExpanded = allGroupIds.length > 0 && allGroupIds.every(id => expandedGroups.has(id));
   const toggleAllGroupsExpanded = () =>
     setExpandedGroups(allGroupsExpanded ? new Set() : new Set(allGroupIds));
@@ -1739,11 +1761,11 @@ const handleExportCSV = async () => {
     );
   };
 
-  // Botón de la fila: enviar unidades de la tienda que se ve a la otra. Si ya
-  // hay unidades allá, la ventana deja invertir el sentido para traerlas de
-  // vuelta: es la única forma de devolver.
-  const openSendTransfer = (product: Product) => {
+  // «Pasar a <la otra tienda>» del formulario de edición: el producto (o su
+  // modelo entero) pasa a ser de la otra tienda con todas sus unidades.
+  const openMoveProduct = (product: Product) => {
     if (!otherViewStore) return;
+    closeModal();
     // Si es variante, la ventana ofrece pasar solo esta o el modelo entero.
     const groupId = product.parent_group_id;
     setTransferTarget({
@@ -1822,17 +1844,6 @@ const handleExportCSV = async () => {
           </div>
         </td>
         <td className="p-3 text-center">
-          {/* Transferir va FUERA del permiso de edición: lo ve también el
-              cajero sin reposición. */}
-          {canTransfer && (
-            <button
-              onClick={(e) => { e.stopPropagation(); openSendTransfer(product); }}
-              className={`text-slate-400 hover:text-teal-700 hover:bg-teal-50 rounded transition p-1.5 cursor-pointer ${canEditRow ? 'mr-2' : ''}`}
-              title={`Transferir a ${otherViewStore?.name ?? 'la otra tienda'}`}
-            >
-              <ArrowLeftRight size={16} className="inline align-middle" />
-            </button>
-          )}
           {canEditRow ? (
             <>
               <button
@@ -1871,7 +1882,7 @@ const handleExportCSV = async () => {
               )}
             </>
           ) : (
-            !canTransfer && <span className="text-slate-300">—</span>
+            <span className="text-slate-300">—</span>
           )}
         </td>
       </tr>
@@ -1890,30 +1901,9 @@ const handleExportCSV = async () => {
       De {ownerNameOf(product)}
     </span>
   );
-  const openReturnTransfer = (product: Product) => {
-    if (!product.owner_store_id) return;
-    setTransferTarget({
-      product: {
-        id: product.id, name: product.name, sku_barcode: product.sku_barcode,
-        talla: product.talla, color: product.color, owner_store_id: product.owner_store_id,
-      },
-      fromStoreId: viewStoreId,
-      toStoreId: product.owner_store_id,
-      groupInfo: null,
-      returning: true,
-    });
-  };
-  const returnButton = (product: Product, size: 'sm' | 'md') => canTransfer ? (
-    <button
-      onClick={(e) => { e.stopPropagation(); openReturnTransfer(product); }}
-      className={`inline-flex items-center gap-1 border border-teal-200 text-teal-700 hover:bg-teal-50 rounded-lg font-semibold transition cursor-pointer whitespace-nowrap ${size === 'sm' ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'}`}
-      title={`Devolver a ${ownerNameOf(product)}`}
-    >
-      <ArrowLeftRight size={size === 'sm' ? 14 : 16} /> Devolver
-    </button>
-  ) : <span className="text-slate-300">—</span>;
+  // Sin botón: se devuelve enviándolo desde Traslados (vuelve a su producto).
 
-  const renderForeignDesktopRow = (product: Product) => {
+  const renderForeignDesktopRow = (product: Product, opts?: { indent?: boolean }) => {
     const tier = stockTier(product.stock, lowStockMax);
     return (
       <tr
@@ -1922,9 +1912,10 @@ const handleExportCSV = async () => {
         className={`border-b border-slate-100 transition cursor-pointer ${selectedProduct?.id === product.id ? 'bg-teal-50' : 'bg-blue-50/40 hover:bg-slate-50'}`}
       >
         {canDelete && <td className="p-3 pl-4 w-10" />}
-        <td className="p-3 text-slate-500 font-mono text-sm">{product.sku_barcode}</td>
+        <td className={`p-3 text-slate-500 font-mono text-sm ${opts?.indent ? 'pl-8' : ''}`}>{product.sku_barcode}</td>
         <td className="p-3 font-medium text-slate-800">
-          <span className="inline-flex items-center gap-2 flex-wrap">{product.name}{foreignChip(product)}</span>
+          {/* La variante no repite el nombre ni la marca: ya están en la fila de su modelo. */}
+          {!opts?.indent && <span className="inline-flex items-center gap-2 flex-wrap">{product.name}{foreignChip(product)}</span>}
         </td>
         <td className="p-3 text-sm text-slate-600">{variantLabel(product.talla, product.color)}</td>
         <td className="p-3">
@@ -1938,9 +1929,54 @@ const handleExportCSV = async () => {
             </span>
           </div>
         </td>
-        <td className="p-3 text-center">{returnButton(product, 'sm')}</td>
+        <td className="p-3 text-center"><span className="text-slate-300">—</span></td>
       </tr>
     );
+  };
+
+  // Modelo de la otra tienda con piezas acá: misma fila que un modelo propio,
+  // marcada «De <tienda>» y sin acciones (se cambia desde su tienda).
+  const renderForeignDesktopGroup = (row: Extract<DisplayRow, { type: 'foreignGroup' }>) => {
+    const { groupId, name, category, children } = row;
+    const isExpanded = expandedGroups.has(groupId);
+    const totalStock = children.reduce((s, c) => s + c.stock, 0);
+    const prices = [...new Set(children.map(c => c.price))];
+    const priceLabel = prices.length === 1 ? `$${prices[0].toFixed(2)}` : `desde $${Math.min(...prices).toFixed(2)}`;
+    const tier = stockTier(totalStock, lowStockMax);
+    const rows: React.ReactElement[] = [
+      <tr
+        key={`fgroup-${groupId}`}
+        onClick={() => toggleGroupExpanded(groupId)}
+        className={`border-b transition cursor-pointer ${isExpanded ? 'border-slate-200 bg-blue-50 hover:bg-blue-100/60' : 'border-slate-100 bg-blue-50/40 hover:bg-slate-100'}`}
+      >
+        {canDelete && <td className="p-3 pl-4 w-10" />}
+        <td className="p-3 text-slate-500">
+          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </td>
+        <td className="p-3 font-semibold text-slate-800">
+          <span className="inline-flex items-center gap-2 flex-wrap">{name}{foreignChip(children[0])}</span>
+        </td>
+        <td className="p-3">
+          <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs font-semibold">
+            {children.length} {children.length === 1 ? 'variante' : 'variantes'}
+          </span>
+        </td>
+        <td className="p-3">
+          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs capitalize">{categoryLabel(category)}</span>
+        </td>
+        <td className="p-3 text-right font-medium text-slate-600">{priceLabel}</td>
+        <td className="p-3">
+          <div className="flex justify-end">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {totalStock}
+            </span>
+          </div>
+        </td>
+        <td className="p-3 text-center"><span className="text-slate-300">—</span></td>
+      </tr>,
+    ];
+    if (isExpanded) children.forEach(child => rows.push(renderForeignDesktopRow(child, { indent: true })));
+    return rows;
   };
 
   const renderForeignMobileCard = (product: Product) => {
@@ -1974,8 +2010,40 @@ const handleExportCSV = async () => {
             {variant !== 'N/A' && <span className="text-[11px] text-slate-500 truncate">{variant}</span>}
             <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
           </div>
-          <div className="shrink-0">{returnButton(product, 'md')}</div>
         </div>
+      </div>
+    );
+  };
+
+  const renderForeignMobileGroup = (row: Extract<DisplayRow, { type: 'foreignGroup' }>) => {
+    const { groupId, name, children } = row;
+    const isExpanded = expandedGroups.has(groupId);
+    const totalStock = children.reduce((s, c) => s + c.stock, 0);
+    const tier = stockTier(totalStock, lowStockMax);
+    return (
+      <div key={`fgroup-${groupId}`} className="space-y-2">
+        <div
+          onClick={() => toggleGroupExpanded(groupId)}
+          className={`border rounded-xl p-3 shadow-sm flex items-start justify-between gap-3 cursor-pointer transition ${isExpanded ? 'bg-blue-50 border-blue-300' : 'bg-blue-50/40 border-blue-200'}`}
+        >
+          <div className="min-w-0">
+            <h3 className="font-bold text-slate-800 text-sm leading-snug flex items-center gap-1">
+              {isExpanded ? <ChevronDown className="w-4 h-4 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
+              {name}
+            </h3>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              {foreignChip(children[0])}
+              <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-semibold">{children.length} {children.length === 1 ? 'variante' : 'variantes'}</span>
+            </div>
+          </div>
+          <div className="shrink-0 text-center">
+            <span className={`inline-flex items-center justify-center min-w-[2.5rem] px-2.5 py-1 rounded-lg font-bold text-sm ${TIER_BADGE[tier]}`}>
+              {totalStock}
+            </span>
+            <span className="block text-[9px] uppercase tracking-wide text-slate-400 mt-0.5">Stock</span>
+          </div>
+        </div>
+        {isExpanded && <div className="pl-2 space-y-2">{children.map(child => renderForeignMobileCard(child))}</div>}
       </div>
     );
   };
@@ -2131,15 +2199,6 @@ const handleExportCSV = async () => {
             <span className="text-sm font-bold text-slate-700">${product.price.toFixed(2)}</span>
           </div>
           <div className="shrink-0 flex items-center">
-            {canTransfer && (
-              <button
-                onClick={(e) => { e.stopPropagation(); openSendTransfer(product); }}
-                className="text-slate-400 hover:text-teal-700 hover:bg-teal-50 rounded transition p-2 mr-1 cursor-pointer"
-                title={`Transferir a ${otherViewStore?.name ?? 'la otra tienda'}`}
-              >
-                <ArrowLeftRight size={18} />
-              </button>
-            )}
             {canEditRow ? (
               <>
                 <button
@@ -2178,7 +2237,7 @@ const handleExportCSV = async () => {
                 )}
               </>
             ) : (
-              !canTransfer && <span className="text-slate-300 text-sm">—</span>
+              <span className="text-slate-300 text-sm">—</span>
             )}
           </div>
         </div>
@@ -2568,7 +2627,7 @@ const handleExportCSV = async () => {
               ) : displayRows.length === 0 ? (
                 <p className="p-6 text-center text-sm text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</p>
               ) : (
-                paginatedRows.map((row) => row.type === 'standalone' ? renderMobileCard(row.product) : row.type === 'foreign' ? renderForeignMobileCard(row.product) : renderMobileGroup(row))
+                paginatedRows.map((row) => row.type === 'standalone' ? renderMobileCard(row.product) : row.type === 'foreign' ? renderForeignMobileCard(row.product) : row.type === 'foreignGroup' ? renderForeignMobileGroup(row) : renderMobileGroup(row))
               )}
             </div>
 
@@ -2622,7 +2681,7 @@ const handleExportCSV = async () => {
                   ) : displayRows.length === 0 ? (
                     <tr><td colSpan={canDelete ? 8 : 7} className="p-8 text-center text-slate-500">{searchTerm || stockFilter !== 'all' || categoryFilter !== 'all' ? 'No hay productos que coincidan con el filtro.' : 'No hay productos en esta tienda.'}</td></tr>
                   ) : (
-                    paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : row.type === 'foreign' ? [renderForeignDesktopRow(row.product)] : renderDesktopGroup(row))
+                    paginatedRows.flatMap((row) => row.type === 'standalone' ? [renderDesktopRow(row.product)] : row.type === 'foreign' ? [renderForeignDesktopRow(row.product)] : row.type === 'foreignGroup' ? renderForeignDesktopGroup(row) : renderDesktopGroup(row))
                   )}
                 </tbody>
               </table>
@@ -2815,13 +2874,25 @@ const handleExportCSV = async () => {
               {editingProduct && (
                 <div className="mt-2">
                   {canAdd ? (
-                    <button
-                      type="button"
-                      onClick={() => openBarcodeModal(editingProduct)}
-                      className="text-sm font-semibold text-teal-700 hover:text-teal-900 underline cursor-pointer"
-                    >
-                      Cambiar código
-                    </button>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      <button
+                        type="button"
+                        onClick={() => openBarcodeModal(editingProduct)}
+                        className="text-sm font-semibold text-teal-700 hover:text-teal-900 underline cursor-pointer"
+                      >
+                        Cambiar código
+                      </button>
+                      {/* Producto creado en la tienda equivocada: pasa entero a la otra. */}
+                      {canMoveProduct && !editStockOnly && (
+                        <button
+                          type="button"
+                          onClick={() => openMoveProduct(editingProduct)}
+                          className="text-sm font-semibold text-indigo-700 hover:text-indigo-900 underline cursor-pointer"
+                        >
+                          Pasar a {otherViewStore?.name}
+                        </button>
+                      )}
+                    </div>
                   ) : (
                     <p className="text-xs text-slate-400">
                       No tienes permiso para cambiar el código de este producto.
@@ -3711,10 +3782,10 @@ const handleExportCSV = async () => {
           fromStoreId={transferTarget?.fromStoreId ?? null}
           toStoreId={transferTarget?.toStoreId ?? null}
           source="inventory"
-          title={transferTarget?.returning ? 'Devolver a su tienda' : 'Transferir a la otra tienda'}
-          allowMove={!transferTarget?.returning}
+          title={`Pasar a ${otherViewStore?.name ?? 'la otra tienda'}`}
+          allowMove
+          moveOnly
           groupInfo={transferTarget?.groupInfo ?? null}
-          allowFlip={!!transferTarget && !transferTarget.returning && (awayByProduct[transferTarget.product.id] ?? 0) > 0}
           showNote
           requireNote
           confirmNegative

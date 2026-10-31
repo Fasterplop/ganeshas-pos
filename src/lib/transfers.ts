@@ -378,6 +378,8 @@ export interface ForeignHereRow {
   owner_store_id: string;
   talla: string | null;
   color: string | null;
+  /** Su modelo, que es de la tienda dueña: el inventario la muestra dentro de él. */
+  parent_group_id: string | null;
   /** Unidades en ESTA tienda (siempre > 0). */
   stock: number;
 }
@@ -398,7 +400,7 @@ export async function fetchForeignHere(
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await supabase
         .from('products')
-        .select('id, sku_barcode, name, category, price, owner_store_id, talla, color, store_stock!inner(stock, store_id)')
+        .select('id, sku_barcode, name, category, price, owner_store_id, talla, color, parent_group_id, store_stock!inner(stock, store_id)')
         .eq('is_active', true)
         .neq('owner_store_id', storeId)
         .eq('store_stock.store_id', storeId)
@@ -419,6 +421,7 @@ export async function fetchForeignHere(
           owner_store_id: r.owner_store_id,
           talla: r.talla ?? null,
           color: r.color ?? null,
+          parent_group_id: r.parent_group_id ?? null,
           stock: Number(r.store_stock?.[0]?.stock) || 0,
         });
       }

@@ -23,6 +23,7 @@ import {
   type TransferProduct,
   type TransferResult,
 } from '@/lib/transfers';
+import { fetchTwinHere } from '@/lib/traslados';
 
 
 // Una variante hermana dentro del mismo producto padre (para el "cambiar"
@@ -607,6 +608,17 @@ export default function POSPage() {
       if (other && isForeign(other.owner_store_id, currentStore.id)) {
         setProductSearch('');
         setSearchResults([]);
+        // La etiqueta de la otra tienda en una pieza que llegó por Traslados:
+        // se sumó a su producto de ACÁ (el gemelo). Si del producto de allá no
+        // hay unidades acá, se vende el gemelo, que es propio.
+        if (((await localStockOf(supabase, other.id, currentStore.id)) ?? 0) <= 0) {
+          const twin = await fetchTwinHere(supabase, other.id, currentStore.id);
+          if (twin) {
+            addToCart({ id: twin.id, name: twin.name, price: priceOf(twin), base_price: twin.price, quantity: 1, talla: twin.talla ?? null, color: twin.color ?? null, parent_group_id: twin.parent_group_id ?? null, owner_store_id: twin.owner_store_id ?? null });
+            const tv = formatVariant(twin.talla, twin.color);
+            return `✓ ${twin.name}${tv ? ` (${tv})` : ''} · $${priceOf(twin).toFixed(2)} (etiqueta de ${storeNameOf(other.owner_store_id)})`;
+          }
+        }
         const variant = formatVariant(other.talla, other.color);
         const label = `${other.name}${variant ? ` (${variant})` : ''}`;
         const from = storeNameOf(other.owner_store_id);
