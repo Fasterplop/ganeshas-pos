@@ -50,6 +50,8 @@ export interface FinCover {
   title: string;
   periodStart?: string;
   periodEnd?: string;
+  /** Lo que cubre el archivo. Por defecto «Todo el negocio». */
+  scope?: string;
   extra?: Array<[string, string]>;
 }
 
@@ -70,8 +72,9 @@ function addCoverSheet(wb: ExcelJS.Workbook, cover: FinCover, sheets: FinSheet[]
       : 'Todo el histórico';
 
   const meta: Array<[string, string]> = [
-    // Las finanzas son del negocio completo, no de una sucursal.
-    ['Alcance', 'Todo el negocio'],
+    // Las finanzas son del negocio completo, no de una sucursal. La pestaña
+    // Cashea es la excepción: se puede mirar una tienda sola.
+    ['Alcance', cover.scope ?? 'Todo el negocio'],
     ['Período', periodo],
     ['Generado', formatDate(caracasToday())],
     ...(cover.extra ?? []),

@@ -5,7 +5,7 @@
 //
 // No hay selector de tienda: las finanzas son del negocio completo.
 //
-// Las nueve secciones van como PESTAÑAS y no como ocho ítems en la barra
+// Las diez secciones van como PESTAÑAS y no como ocho ítems en la barra
 // lateral: el menú del POS tiene seis entradas y meterle ocho más lo volvería
 // inservible, sobre todo en móvil.
 
@@ -17,6 +17,8 @@ import { isMissingTableError } from '@/lib/finanzas/errors';
 
 const TABS = [
   { name: 'Resumen', path: '/finanzas' },
+  // Solo lectura sobre `sales`: lo vendido con Cashea, por período y por día.
+  { name: 'Cashea', path: '/finanzas/cashea' },
   { name: 'Cajas', path: '/finanzas/cajas' },
   { name: 'Proveedores', path: '/finanzas/proveedores' },
   { name: 'Compras', path: '/finanzas/compras' },
@@ -77,7 +79,7 @@ export default function FinShell({ title, subtitle, actions, children }: FinShel
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">{actions}</div>
         </div>
 
-        {/* En teléfono y tablet las nueve pestañas se ven de una vez, en
+        {/* En teléfono y tablet las diez pestañas se ven de una vez, en
             filas: una tira deslizable escondía varias sin que se notara. */}
         <nav className="mt-5 md:-mx-1 md:overflow-x-auto">
           <div className="grid grid-cols-3 min-[400px]:grid-cols-4 gap-1.5 md:flex md:gap-1 md:min-w-max md:border-b md:border-slate-200 md:px-1">

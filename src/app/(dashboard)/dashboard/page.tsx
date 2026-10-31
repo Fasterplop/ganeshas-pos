@@ -11,6 +11,7 @@ import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
+import { casheaInitialOf, casheaLeg } from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
 import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, exchangeDiscountOf, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
 
@@ -79,20 +80,8 @@ const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
   }
 };
 
-// Monto COMPLETO que fue por Cashea en una venta (0 si Cashea no participó).
-// Pago simple: el total. Dividido: el monto del método donde esté Cashea.
-// (Cashea nunca lleva recargo PDV, así que coincide con lo que calculó el POS.)
-const casheaLeg = (sale: SaleRow): number => {
-  if (sale.payment_method_2) {
-    if (sale.payment_method === 'cashea') return Number(sale.payment_amount_1) || 0;
-    if (sale.payment_method_2 === 'cashea') return Number(sale.payment_amount_2) || 0;
-    return 0;
-  }
-  return sale.payment_method === 'cashea' ? (Number(sale.total_amount) || 0) : 0;
-};
-// Inicial de Cashea cobrada en tienda (db/cashea_initial.sql). 0 en ventas
-// viejas o si la columna todavía no existe.
-const casheaInitialOf = (sale: SaleRow): number => Number(sale.cashea_initial_usd) || 0;
+// casheaLeg / casheaInitialOf: en src/lib/cashea.ts, compartidos con la
+// pestaña Cashea de Finanzas para que los dos sumen igual.
 
 // Columnas opcionales de `sales` que dependen de migraciones aplicadas a mano:
 //   cashea   -> sales.cashea_initial_usd (db/cashea_initial.sql)
