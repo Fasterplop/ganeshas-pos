@@ -240,16 +240,17 @@ export default function EnviarTraslado({
 
   const handleCode = useCallback(
     async (raw: string): Promise<string> => {
-      const scanned = raw.trim();
+      // En mayúsculas, como se guardan los códigos (resolveScan prueba también tal cual).
+      const scanned = raw.trim().toUpperCase();
       if (!scanned) return '';
       // Repetida: suma 1 sin ir a la base (salvo códigos con varias tallas, que preguntan).
-      const known = linesRef.current.find((l) => l.product.sku_barcode === scanned && !l.size);
+      const known = linesRef.current.find((l) => l.product.sku_barcode.toUpperCase() === scanned && !l.size);
       if (known) {
         addUnit(known.product, null, known.stock);
         return `✓ ${known.product.name} ×${known.qty + 1}`;
       }
 
-      const r = await resolveScan(supabase, scanned, fromStore.id);
+      const r = await resolveScan(supabase, raw, fromStore.id);
       if (r.kind === 'not_found') {
         addError(`${scanned} · Ese código no existe`);
         return `✗ ${scanned}: no existe`;
@@ -530,7 +531,7 @@ export default function EnviarTraslado({
             }
           }}
           placeholder="Pistolee la siguiente pieza…"
-          className="flex-1 min-w-0 border-2 border-teal-600 rounded-xl px-4 py-3 text-base font-medium focus:outline-none focus:ring-4 focus:ring-teal-500/20"
+          className="flex-1 min-w-0 border-2 border-teal-600 rounded-xl px-4 py-3 text-base font-medium uppercase placeholder:normal-case focus:outline-none focus:ring-4 focus:ring-teal-500/20"
         />
         <ScanButton onClick={() => setCameraOpen(true)} className="lg:hidden py-3" label="Cámara" />
         <span className="hidden sm:inline text-xs text-emerald-600 font-semibold whitespace-nowrap">

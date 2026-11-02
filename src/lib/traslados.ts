@@ -318,12 +318,24 @@ const toScanProduct = (p: Record<string, unknown>): ScanProduct => ({
  *   4. si no, no está en esta tienda.
  */
 export async function resolveScan(supabase: SupabaseClient, code: string, storeId: string): Promise<ScanResult> {
-  const own = await findProductByBarcode(supabase, code, storeId);
-  if (own.product) return { kind: 'ok', product: toScanProduct(own.product), viaTwin: false };
+  // La pistola a veces escribe en minúsculas («rop-607342», p. ej. con Bloq
+  // Mayús activado) y los códigos se guardan en mayúsculas. Se prueba primero
+  // en mayúsculas y después tal cual: hay algún código guardado con minúscula.
+  const tries = [...new Set([code.trim().toUpperCase(), code.trim()])];
+  const find = async (store?: string) => {
+    for (const c of tries) {
+      const r = await findProductByBarcode(supabase, c, store);
+      if (r.product) return r.product;
+    }
+    return null;
+  };
 
-  const any = await findProductByBarcode(supabase, code);
-  if (!any.product) return { kind: 'not_found' };
-  const p = toScanProduct(any.product);
+  const own = await find(storeId);
+  if (own) return { kind: 'ok', product: toScanProduct(own), viaTwin: false };
+
+  const any = await find();
+  if (!any) return { kind: 'not_found' };
+  const p = toScanProduct(any);
 
   const { data: twin } = await supabase
     .from('product_twins')

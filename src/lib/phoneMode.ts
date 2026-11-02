@@ -7,12 +7,8 @@ import { useSyncExternalStore } from 'react';
 // (TopBarMenu).
 const PHONE_QUERY = '(max-width: 767px)';
 
-/**
- * Rutas que ve una cuenta con modo teléfono cuando entra desde el teléfono.
- * Traslados va porque se pistolea con el teléfono escáner; el menú la filtra
- * por rol (no la ven el vendedor ni el rol consulta).
- */
-export const PHONE_SIMPLE_PATHS = ['/consultar-precio', '/pos', '/traslados'];
+/** Rutas que ve una cuenta con modo teléfono cuando entra desde el teléfono. */
+export const PHONE_SIMPLE_PATHS = ['/consultar-precio', '/pos'];
 
 export function isPhoneScreen(): boolean {
   return typeof window !== 'undefined' && window.matchMedia(PHONE_QUERY).matches;
