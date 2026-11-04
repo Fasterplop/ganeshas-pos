@@ -380,7 +380,10 @@ export interface ForeignHereRow {
   color: string | null;
   /** Su modelo, que es de la tienda dueña: el inventario la muestra dentro de él. */
   parent_group_id: string | null;
-  /** Unidades en ESTA tienda (siempre > 0). */
+  /**
+   * Unidades en ESTA tienda: > 0 en `fetchForeignHere`; 0 (o menos) en
+   * `fetchForeignSoldOutHere`, que es la constancia de lo que se vendió aquí.
+   */
   stock: number;
 }
 
@@ -431,6 +434,138 @@ export async function fetchForeignHere(
     // Sin conexión o respuesta rara: el inventario sigue sin estas filas.
   }
   return rows;
+}
+
+const ID_CHUNK = 100; // ids por `.in(...)`, para no hacer URLs larguísimas
+
+/**
+ * Lo de la otra tienda que LLEGÓ a esta (por un traslado no deshecho o por una
+ * transferencia), SE VENDIÓ aquí después de llegar y hoy ya no tiene unidades
+ * aquí. `fetchForeignHere` solo trae lo que tiene stock > 0, así que al vender
+ * la última pieza desaparecía del inventario sin dejar rastro. Gerardo lo pidió
+ * el 2026-11-04 (una media de Juguetes enviada a Ropa y vendida allí): que
+ * quede en 0, como un agotado propio, «para tener constancia».
+ *
+ * Lo que llegó y se devolvió sin venderse NO sale: sería ruido. Deja de salir
+ * cuando vuelven a llegar unidades (lo trae `fetchForeignHere`), cuando el
+ * producto pasa a ser de esta tienda o cuando su tienda lo elimina.
+ * No lanza: si algo falla devuelve vacío y el inventario se ve como antes.
+ */
+export async function fetchForeignSoldOutHere(
+  supabase: SupabaseClient,
+  storeId: string,
+): Promise<ForeignHereRow[]> {
+  try {
+    // 1) Qué llegó aquí y desde cuándo (la primera llegada de cada producto).
+    const firstArrival = new Map<string, number>(); // id -> ms
+    const note = (productId: string | null | undefined, at: string | null | undefined) => {
+      const t = at ? Date.parse(at) : NaN;
+      if (!productId || Number.isNaN(t)) return;
+      const prev = firstArrival.get(productId);
+      if (prev === undefined || t < prev) firstArrival.set(productId, t);
+    };
+
+    // Traslados (db/traslados_01). El stock se mueve al enviar, así que cuenta
+    // también el pendiente; no el deshecho ni la línea que no llegó entera.
+    // Sin esa migración la consulta falla y se sigue solo con transferencias.
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('store_shipment_items')
+        .select('target_product_id, quantity, missing, store_shipments!inner(to_store_id, status, created_at)')
+        .eq('store_shipments.to_store_id', storeId)
+        .neq('store_shipments.status', 'deshecho')
+        .order('id')
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      for (const raw of data ?? []) {
+        const r = raw as unknown as {
+          target_product_id: string | null;
+          quantity: number;
+          missing: number | null;
+          store_shipments: { created_at: string } | { created_at: string }[] | null;
+        };
+        if ((Number(r.quantity) || 0) - (Number(r.missing) || 0) <= 0) continue;
+        const ship = Array.isArray(r.store_shipments) ? r.store_shipments[0] : r.store_shipments;
+        note(r.target_product_id, ship?.created_at);
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
+
+    // Transferencias (la caja al «Traer y agregar» y el ⇄ viejo del inventario).
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('stock_transfers')
+        .select('product_id, created_at')
+        .eq('to_store_id', storeId)
+        .gt('quantity', 0)
+        .order('id')
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      for (const r of (data ?? []) as { product_id: string | null; created_at: string | null }[]) note(r.product_id, r.created_at);
+      if ((data ?? []).length < PAGE) break;
+    }
+    if (firstArrival.size === 0) return [];
+
+    // 2) De eso, lo que sigue activo, es de la otra tienda y aquí está en 0 o menos.
+    const ids = [...firstArrival.keys()];
+    const candidates: ForeignHereRow[] = [];
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, sku_barcode, name, category, price, owner_store_id, talla, color, parent_group_id, store_stock!inner(stock, store_id)')
+        .in('id', ids.slice(i, i + ID_CHUNK))
+        .eq('is_active', true)
+        .neq('owner_store_id', storeId)
+        .eq('store_stock.store_id', storeId)
+        .lte('store_stock.stock', 0);
+      if (error) return [];
+      for (const raw of data ?? []) {
+        const r = raw as unknown as Omit<ForeignHereRow, 'stock'> & { store_stock?: { stock: number }[] };
+        if (!r.owner_store_id) continue;
+        candidates.push({
+          id: r.id,
+          sku_barcode: r.sku_barcode ?? '',
+          name: r.name ?? '',
+          category: r.category ?? '',
+          price: Number(r.price) || 0,
+          owner_store_id: r.owner_store_id,
+          talla: r.talla ?? null,
+          color: r.color ?? null,
+          parent_group_id: r.parent_group_id ?? null,
+          stock: Number(r.store_stock?.[0]?.stock) || 0,
+        });
+      }
+    }
+    if (candidates.length === 0) return [];
+
+    // 3) Y de eso, lo que se vendió AQUÍ después de su primera llegada.
+    const soldHere = new Set<string>();
+    const candIds = candidates.map(c => c.id);
+    for (let i = 0; i < candIds.length; i += ID_CHUNK) {
+      const { data, error } = await supabase
+        .from('sale_items')
+        .select('product_id, sales!inner(store_id, created_at)')
+        .in('product_id', candIds.slice(i, i + ID_CHUNK))
+        .eq('sales.store_id', storeId)
+        .gt('quantity', 0);
+      if (error) return [];
+      for (const raw of data ?? []) {
+        const r = raw as unknown as {
+          product_id: string | null;
+          sales: { created_at: string } | { created_at: string }[] | null;
+        };
+        const sale = Array.isArray(r.sales) ? r.sales[0] : r.sales;
+        const arrived = r.product_id ? firstArrival.get(r.product_id) : undefined;
+        if (r.product_id && arrived !== undefined && sale?.created_at && Date.parse(sale.created_at) >= arrived) soldHere.add(r.product_id);
+      }
+    }
+
+    return candidates
+      .filter(c => soldHere.has(c.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+  } catch {
+    return [];
+  }
 }
 
 /** Últimos movimientos, del más reciente al más antiguo. */

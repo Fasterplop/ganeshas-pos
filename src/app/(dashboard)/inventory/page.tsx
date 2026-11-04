@@ -20,6 +20,7 @@ import {
   checkTransfersAvailable,
   fetchAwayStock,
   fetchForeignHere,
+  fetchForeignSoldOutHere,
   fetchTransferHistory,
   otherStore,
   TRANSFER_SOURCE_LABEL,
@@ -72,7 +73,10 @@ interface Product {
   created_at: string | null;       // alta del producto (null = anterior a la migración)
   label_printed_at: string | null; // primera impresión de etiqueta (null = nunca)
   parent_group_id: string | null;  // NULL = producto sin variantes (igual que hoy)
-  /** Producto de la OTRA tienda con unidades en la que se ve (transferido). */
+  /**
+   * Producto de la OTRA tienda que se ve en esta: con unidades traídas, o en 0
+   * porque llegó y se vendió aquí (la constancia; `fetchForeignSoldOutHere`).
+   */
   foreign?: boolean;
 }
 
@@ -335,8 +339,9 @@ export default function InventoryPage() {
   // transfersOn = el SQL está aplicado; mientras no, la pantalla es la de siempre.
   const [transfersOn, setTransfersOn] = useState(false);
   const [awayByProduct, setAwayByProduct] = useState<Record<string, number>>({});
-  //   foreignProducts -> lo de la otra tienda que tiene unidades en esta: se ve
-  //   en la tabla con su tienda dueña, pero no entra en `products`.
+  //   foreignProducts -> lo de la otra tienda que tiene unidades en esta, o que
+  //   llegó, se vendió aquí y quedó en 0: se ve en la tabla con su tienda
+  //   dueña, pero no entra en `products`.
   const [foreignProducts, setForeignProducts] = useState<Product[]>([]);
   //   foreignGroups -> el modelo (de la otra tienda) de lo ajeno que tiene
   //   modelo: lo enviado «con su padre» se ve dentro de él, no suelto.
@@ -584,9 +589,16 @@ export default function InventoryPage() {
   async function fetchTransfersInfo(storeId: string) {
     const ok = await checkTransfersAvailable(supabase);
     setTransfersOn(ok);
-    const [away, foreign] = ok
-      ? await Promise.all([fetchAwayStock(supabase, storeId), fetchForeignHere(supabase, storeId)])
-      : [{}, []];
+    const [away, withStock, soldOut] = ok
+      ? await Promise.all([
+          fetchAwayStock(supabase, storeId),
+          fetchForeignHere(supabase, storeId),
+          fetchForeignSoldOutHere(supabase, storeId),
+        ])
+      : [{}, [], []];
+    // Las dos listas no se pisan (stock > 0 / stock <= 0); por si acaso, sin repetir.
+    const seen = new Set(withStock.map(f => f.id));
+    const foreign = [...withStock, ...soldOut.filter(f => !seen.has(f.id))];
     setAwayByProduct(away);
     setForeignProducts(foreign.map(f => ({
       ...f,
@@ -1485,13 +1497,16 @@ const handleExportCSV = async () => {
   const priceRise = raisingPrice ? Math.round((typedPrice - basePrice) * 100) / 100 : 0;
 
   // --- Resumen (sobre TODO el inventario de la tienda, ignora búsqueda/filtro) ---
-  // Productos, unidades y valor cuentan también lo traído de la otra tienda
-  // (lo que hay en los estantes); stock bajo y agotados, solo lo propio.
+  // Productos, unidades y valor cuentan también lo de la otra tienda que se ve
+  // en la tabla (lo traído suma lo que hay en los estantes; lo vendido aquí
+  // está en 0 y solo suma como producto). Stock bajo, solo lo propio. Agotados,
+  // lo propio y lo de la otra tienda que llegó, se vendió aquí y quedó en 0
+  // (pedido de Gerardo, 2026-11-04: «como si se vendiera», para tener constancia).
   const totalProducts = products.length + foreignProducts.length;
   const totalUnits = [...products, ...foreignProducts].reduce((sum, p) => sum + (p.stock || 0), 0);
   const totalCost = [...products, ...foreignProducts].reduce((sum, p) => sum + (p.price || 0) * (p.stock || 0), 0);
   const lowCount = products.filter(p => isLow(p.stock, lowStockMax)).length;
-  const outCount = products.filter(p => isOut(p.stock)).length;
+  const outCount = products.filter(p => isOut(p.stock)).length + foreignProducts.filter(p => isOut(p.stock)).length;
 
   // --- Ajuste masivo de precios: vista previa ---
   // Se calcula sobre `products` (el catálogo COMPLETO de la tienda ya paginado,
@@ -1662,10 +1677,11 @@ const handleExportCSV = async () => {
   // visible ("Talla · Color") con colación numérica (8 < 10) y los productos
   // SIN variante ("N/A") van siempre al final, en ambas direcciones.
   // Lo traído de la otra tienda va en la misma tabla (no en una lista aparte:
-  // ese panel se quitó el 2026-10-10 porque estorbaba). Solo con el filtro
-  // "Todos": no cuenta como stock bajo ni agotado de esta tienda. Sin orden
-  // elegido, se intercala por nombre con lo propio.
-  const foreignShown = stockFilter !== 'all' ? [] : foreignProducts.filter(p =>
+  // ese panel se quitó el 2026-10-10 porque estorbaba). Con "Todos", todo; con
+  // "Agotados", solo lo que llegó, se vendió aquí y quedó en 0; con "Stock
+  // bajo", nada. Sin orden elegido, se intercala por nombre con lo propio.
+  const foreignShown = stockFilter === 'low' ? [] : foreignProducts.filter(p =>
+    (stockFilter !== 'out' || isOut(p.stock)) &&
     (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower) ||
      (p.parent_group_id ? (foreignGroups[p.parent_group_id]?.name ?? '').toLowerCase().includes(searchLower) : false)) &&
     (categoryFilter === 'all' || p.category === categoryFilter)
@@ -1895,7 +1911,9 @@ const handleExportCSV = async () => {
     stores.find(st => st.id === product.owner_store_id)?.name ?? 'la otra tienda';
   const foreignChip = (product: Product) => (
     <span
-      title={`Es de ${ownerNameOf(product)}: se cambia desde su tienda`}
+      title={isOut(product.stock)
+        ? `Es de ${ownerNameOf(product)}. Llegó y se vendió aquí; queda en 0 como constancia. Para tener más, se pide a ${ownerNameOf(product)}.`
+        : `Es de ${ownerNameOf(product)}: se cambia desde su tienda`}
       className="shrink-0 text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full whitespace-nowrap"
     >
       De {ownerNameOf(product)}
