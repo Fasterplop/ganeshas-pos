@@ -9,6 +9,7 @@ import LoyaltySettingsCard from '@/components/LoyaltySettingsCard';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
+import { ChevronDown } from 'lucide-react';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
 import { casheaInitialOf, casheaLeg } from '@/lib/cashea';
@@ -180,6 +181,8 @@ export default function DashboardPage() {
   const [todayCasheaInitial, setTodayCasheaInitial] = useState(0);
   // Cambios de producto registrados hoy (no cuentan como transacciones de venta).
   const [todayExchanges, setTodayExchanges] = useState(0);
+  // El desglose por método de pago va cerrado: ocupa mucho y empuja el historial hacia abajo.
+  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const [thisWeekUSD, setThisWeekUSD] = useState(0);
   const [weekGrowth, setWeekGrowth] = useState(0);
@@ -784,9 +787,18 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Desglose por método de pago */}
-      <div className="border-t border-slate-100 mt-4 pt-4">
-        <p className="text-sm font-bold text-slate-800 mb-3">Desglose por método de pago</p>
+      {/* Desglose por método de pago: cerrado hasta que se toca la flecha */}
+      <button
+        type="button"
+        onClick={() => setShowBreakdown(v => !v)}
+        aria-expanded={showBreakdown}
+        className="flex items-center justify-between gap-2 w-full mt-4 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-100 text-sm font-semibold text-teal-800 hover:bg-emerald-100 transition text-left"
+      >
+        <span>{showBreakdown ? 'Desglose por método de pago' : 'Ver desglose por método de pago'}</span>
+        <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${showBreakdown ? 'rotate-180' : ''}`} />
+      </button>
+      {showBreakdown && (
+      <div className="mt-4">
         <div className="space-y-3">
           {todayBreakdown.map((m) => (
             <div key={m.key} className="flex items-center gap-3 min-w-0">
@@ -809,6 +821,7 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+      )}
     </div>
   );
 
