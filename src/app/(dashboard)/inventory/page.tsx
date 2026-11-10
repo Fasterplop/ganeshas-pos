@@ -30,6 +30,7 @@ import {
 } from '@/lib/transfers';
 import { raiseProductPrice } from '@/lib/novedades';
 import { normalizeSearch } from '@/lib/search';
+import { pickFreeSkus } from '@/lib/autoSku';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -103,6 +104,54 @@ interface VariantRowInput {
   // número recién al guardar.
   stock: number | '';
   price: number | '';
+  // Solo en el reintento (ver SavedModel): la talla YA se creó pero no se le
+  // pudo cargar el stock. El siguiente "Guardar" solo carga el stock.
+  productId?: string;
+  savedSku?: string;
+}
+
+// Modelo ya creado cuyo alta con variantes quedó a medias: el formulario se
+// queda abierto con las tallas que faltaron y el siguiente "Guardar" las crea
+// en ESTE modelo, sin crear otro.
+interface SavedModel {
+  groupId: string;
+  name: string;
+  category: ProductFormValues['category'];
+  ownerStoreId: string;
+  storeName: string;
+  savedKeys: string[]; // talla|color que ya existen en el modelo
+  okCount: number;     // tallas guardadas completas (con su stock)
+}
+
+// "TALLA|COLOR" en mayúsculas y sin espacios en los bordes: la llave con la
+// que se comparan variantes (repetidas en el formulario, ya existentes, etc.).
+const norm = (s: string | null | undefined) => (s ?? '').trim().toUpperCase();
+const variantKey = (talla: string | null | undefined, color: string | null | undefined) =>
+  `${norm(talla)}|${norm(color)}`;
+
+// Tope de cada petición del guardado. Sin él, una conexión colgada dejaba
+// "Guardando…" para siempre, y la ventana no se puede cerrar mientras guarda.
+const SAVE_TIMEOUT_MS = 30000;
+const saveSignal = () => AbortSignal.timeout(SAVE_TIMEOUT_MS);
+
+// Mensaje de error de una petición; el corte por tiempo, en palabras.
+function errText(error: { message?: string; name?: string } | null | undefined): string {
+  const msg = error?.message ?? '';
+  if (/abort|timed? ?out/i.test(msg) || error?.name === 'AbortError') {
+    return 'la conexión tardó demasiado y se cortó';
+  }
+  return msg || 'error desconocido';
+}
+
+// El producto que ya tiene un código, para saber si es el mismo que se estaba
+// creando (un intento anterior cuya respuesta no llegó) o uno ajeno.
+interface ExistingSku {
+  id: string;
+  name: string;
+  talla: string | null;
+  color: string | null;
+  owner_store_id: string | null;
+  parent_group_id: string | null;
 }
 
 // Categoría por defecto sugerida según la tienda.
@@ -165,6 +214,11 @@ function isNewProduct(p: Product): boolean {
 type SortKey = 'stock' | 'variant';
 
 const PAGE_SIZE = 50; // paginación: 50 productos por página
+
+// Comparación por nombre al intercalar lo de la otra tienda. Es lo mismo que
+// `a.localeCompare(b, 'es', { sensitivity: 'base' })`, sin crear un comparador
+// nuevo en cada llamada.
+const NAME_COLLATOR = new Intl.Collator('es', { sensitivity: 'base' });
 
 // Tarjeta de resumen (Productos / Unidades / Costo) y filtros clickeables
 // (Stock bajo / Agotados). Cuando trae onClick actúa como botón-filtro.
@@ -377,14 +431,48 @@ export default function InventoryPage() {
   // Ahora cada "ranura" (el producto suelto, o cada fila de variante) recuerda
   // su código mientras el formulario está abierto. Si el guardado se repite
   // —doble clic, reintento por red lenta— vuelve a mandar EL MISMO código y la
-  // base lo rechaza. Se limpia al cerrar el formulario.
+  // base lo rechaza. Se limpia al abrir y al cerrar el formulario.
+  //
+  // Desde 2026-11 el código se elige comprobando que ningún producto lo tenga
+  // (lib/autoSku.ts): sorteado a ciegas, ~0,6% de las veces caía en uno ya
+  // ocupado y esa talla no se guardaba. Las variantes usan la `key` de su fila
+  // como ranura, no su posición, para que quitar una fila no mueva códigos.
   const autoSkuRef = useRef<Record<string, string>>({});
-  const autoSku = (prefix: string, slot: string) => {
-    const k = `${prefix}:${slot}`;
-    if (!autoSkuRef.current[k]) {
-      autoSkuRef.current[k] = `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+  const reserveAutoSkus = async (prefix: string, slots: string[]): Promise<string[]> => {
+    const memo = autoSkuRef.current;
+    const missing = slots.filter(s => !memo[`${prefix}:${s}`]);
+    if (missing.length > 0) {
+      const codes = await pickFreeSkus(supabase, prefix, missing.length); // nunca falla
+      missing.forEach((s, i) => { memo[`${prefix}:${s}`] ??= codes[i]; });
     }
-    return autoSkuRef.current[k];
+    return slots.map(s => memo[`${prefix}:${s}`]);
+  };
+  const reserveAutoSku = async (prefix: string, slot: string) => (await reserveAutoSkus(prefix, [slot]))[0];
+  // Olvida el código de una ranura. SOLO cuando se comprobó que ese código es
+  // de OTRO producto: si no, un reintento podría crear la talla dos veces.
+  const forgetAutoSku = (prefix: string, slot: string) => { delete autoSkuRef.current[`${prefix}:${slot}`]; };
+
+  // Códigos ya mandados a la base desde el formulario abierto (automáticos y
+  // escaneados). Si la base dice "ya existe" de un código que NUNCA mandamos,
+  // ese producto es de otro; si ya lo habíamos mandado, puede ser nuestro
+  // intento anterior cuya respuesta no llegó (ver insertResolvingDup).
+  const sentCodesRef = useRef<Set<string>>(new Set());
+
+  // Una sola grabación a la vez (alta, edición, agregar variante). Se marca
+  // antes del primer await: un segundo clic o Enter que llega antes de que el
+  // botón se vea bloqueado no hace nada. Mientras dura, la ventana no se cierra
+  // (Cancelar y ✕), así la grabación termina siempre en el mismo formulario.
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+
+  // Alta con variantes que quedó a medias (ver SavedModel).
+  const [savedModel, setSavedModel] = useState<SavedModel | null>(null);
+
+  // Todo lo que vale solo mientras un formulario está abierto.
+  const resetFormSession = () => {
+    autoSkuRef.current = {};
+    sentCodesRef.current = new Set();
+    setSavedModel(null);
   };
 
   // La tienda que se está viendo.
@@ -635,6 +723,7 @@ export default function InventoryPage() {
   // Al cambiar la tienda de operación: reseteamos la vista a esa tienda y recargamos catálogos.
   useEffect(() => {
     setIsModalOpen(false);
+    resetFormSession();
     setSelectedProduct(null);
     if (currentStore) {
       loadStores();
@@ -688,6 +777,7 @@ export default function InventoryPage() {
 
   // Manejador dinámico para abrir el formulario asignando los valores por defecto requeridos
   const handleOpenAddModal = () => {
+    resetFormSession();
     setEditingProduct(null);
     setFormError(null);
     setHasVariants(false);
@@ -706,50 +796,164 @@ export default function InventoryPage() {
     setIsModalOpen(true);
   };
 
-  // Crea UNA fila de producto (standalone o variante hija de un grupo) + su
-  // stock inicial en la tienda dueña. La usan tanto el alta simple como el
-  // alta "con variantes" (una llamada por fila de la tabla embebida).
-  async function createProductRow(row: {
+  // Una fila de producto por crear (standalone o variante hija de un grupo).
+  type NewProductRow = {
     sku_barcode: string; name: string; category: string; price: number;
     talla: string; color: string; stock: number; ownerStoreId: string; parentGroupId?: string | null;
-  }): Promise<{ error: string | null }> {
-    const { data: newProduct, error: productError } = await supabase
-      .from('products')
-      .insert([{
-        sku_barcode: row.sku_barcode,
-        name: row.name,
-        category: row.category,
-        price: row.price,
-        is_active: true,
-        owner_store_id: row.ownerStoreId,
-        talla: row.talla.trim() ? row.talla.trim() : null,
-        color: row.color.trim() ? row.color.trim() : null,
-        parent_group_id: row.parentGroupId ?? null,
-      }])
-      .select('id')
-      .single();
+  };
+  type CreateResult = {
+    id?: string;           // el producto (si quedó creado)
+    sku: string;           // el código con el que quedó (o con el que falló)
+    error: string | null;
+    duplicateSku?: boolean; // la base rechazó el código: ya lo tiene otro producto
+    created?: boolean;      // el producto existe (aunque haya fallado su stock)
+  };
 
-    if (productError || !newProduct) {
-      if (productError?.code === '23505') return { error: `⚠️ Ya existe un producto con el código "${row.sku_barcode}".` };
-      return { error: 'Error al crear producto: ' + productError?.message };
-    }
-
-    if (row.stock > 0) {
+  // Stock inicial de un producto recién creado, en su tienda dueña. Es un
+  // valor ABSOLUTO (lo mismo que se hacía siempre al crear).
+  async function setInitialStock(productId: string, row: Pick<NewProductRow, 'sku_barcode' | 'stock' | 'ownerStoreId'>): Promise<string | null> {
+    if (row.stock <= 0) return null;
+    const fail = (error: { message?: string } | null) =>
+      `Producto "${row.sku_barcode}" creado, pero no se pudo cargar el stock inicial: ${errText(error)}`;
+    try {
       if (isRestocker) {
         const { error } = await supabase.rpc('restock_stock', {
-          p_product_id: newProduct.id,
+          p_product_id: productId,
           p_store_id: row.ownerStoreId,
           p_new_stock: row.stock,
-        });
-        if (error) return { error: `Producto "${row.sku_barcode}" creado, pero no se pudo cargar el stock inicial: ${error.message}` };
+        }).abortSignal(saveSignal());
+        if (error) return fail(error);
       } else {
         const { error: stockError } = await supabase
           .from('store_stock')
-          .upsert({ product_id: newProduct.id, store_id: row.ownerStoreId, stock: row.stock }, { onConflict: 'product_id, store_id' });
-        if (stockError) return { error: `Producto "${row.sku_barcode}" creado, pero no se pudo cargar el stock inicial: ${stockError.message}` };
+          .upsert({ product_id: productId, store_id: row.ownerStoreId, stock: row.stock }, { onConflict: 'product_id, store_id' })
+          .abortSignal(saveSignal());
+        if (stockError) return fail(stockError);
       }
+    } catch (e) {
+      return fail(e as Error);
     }
-    return { error: null };
+    return null;
+  }
+
+  // Para un producto que ya existía (lo creó un intento anterior): carga el
+  // stock pedido SOLO si sigue en 0. Si ya tiene, no se pisa (pudo venderse).
+  async function ensureInitialStock(productId: string, row: Pick<NewProductRow, 'sku_barcode' | 'stock' | 'ownerStoreId'>): Promise<string | null> {
+    if (row.stock <= 0) return null;
+    try {
+      const { data, error } = await supabase
+        .from('store_stock')
+        .select('stock')
+        .eq('product_id', productId)
+        .eq('store_id', row.ownerStoreId)
+        .abortSignal(saveSignal())
+        .maybeSingle();
+      if (error) return `Producto "${row.sku_barcode}" creado, pero no se pudo comprobar su stock: ${errText(error)}`;
+      if (Number((data as { stock?: number } | null)?.stock ?? 0) !== 0) return null;
+    } catch (e) {
+      return `Producto "${row.sku_barcode}" creado, pero no se pudo comprobar su stock: ${errText(e as Error)}`;
+    }
+    return setInitialStock(productId, row);
+  }
+
+  // Crea UNA fila de producto + su stock inicial en la tienda dueña. La usan
+  // el alta simple, el alta "con variantes" (una llamada por fila de la tabla
+  // embebida) y "Agregar variante", siempre a través de insertResolvingDup.
+  async function createProductRow(row: NewProductRow): Promise<CreateResult> {
+    let newProduct: { id: string } | null = null;
+    let productError: { code?: string; message?: string } | null = null;
+    try {
+      const res = await supabase
+        .from('products')
+        .insert([{
+          sku_barcode: row.sku_barcode,
+          name: row.name,
+          category: row.category,
+          price: row.price,
+          is_active: true,
+          owner_store_id: row.ownerStoreId,
+          talla: row.talla.trim() ? row.talla.trim() : null,
+          color: row.color.trim() ? row.color.trim() : null,
+          parent_group_id: row.parentGroupId ?? null,
+        }])
+        .select('id')
+        .abortSignal(saveSignal())
+        .single();
+      newProduct = res.data as { id: string } | null;
+      productError = res.error;
+    } catch (e) {
+      productError = { message: (e as Error)?.message };
+    }
+
+    if (productError || !newProduct) {
+      if (productError?.code === '23505') {
+        return { sku: row.sku_barcode, error: `⚠️ Ya existe un producto con el código "${row.sku_barcode}".`, duplicateSku: true };
+      }
+      return { sku: row.sku_barcode, error: 'Error al crear producto: ' + errText(productError) };
+    }
+
+    const stockError = await setInitialStock(newProduct.id, row);
+    return { id: newProduct.id, sku: row.sku_barcode, error: stockError, created: true };
+  }
+
+  // ¿Quién tiene este código? undefined = no se pudo leer.
+  async function lookupSku(code: string): Promise<ExistingSku | null | undefined> {
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, talla, color, owner_store_id, parent_group_id')
+        .eq('sku_barcode', code)
+        .abortSignal(saveSignal())
+        .maybeSingle();
+      if (error) return undefined;
+      return (data as ExistingSku | null) ?? null;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Crea la fila y resuelve el "ya existe un producto con el código" (23505).
+  // Se mira quién tiene el código:
+  //
+  //  - Es lo mismo que intentábamos crear (`isSame`: mismo modelo y talla, o
+  //    el mismo producto suelto): lo creó un intento nuestro cuya respuesta no
+  //    llegó, o que el navegador reenvió por su cuenta tras un corte (Chrome lo
+  //    hace, se vio al probar). Cuenta como creado, y se le carga el stock si
+  //    quedó en 0. Con un código automático basta que coincida: nadie más pudo
+  //    sacar ese número al azar para esa misma talla. Con uno escaneado, además
+  //    tiene que haberlo mandado este formulario.
+  //  - Es otro producto (o no se pudo leer y este formulario nunca lo había
+  //    mandado): fue un choque del número al azar. Si es automático se cambia
+  //    por otro comprobado y se reintenta una vez; si lo escanearon, el error
+  //    de siempre.
+  //  - Nadie lo tiene, o no se pudo leer un código ya mandado: el error de
+  //    siempre.
+  //
+  // Nunca se cambia un código que el usuario escaneó o escribió.
+  async function insertResolvingDup(
+    row: NewProductRow,
+    auto: { prefix: string; slot: string } | null,
+    isSame: (p: ExistingSku) => boolean,
+  ): Promise<CreateResult> {
+    let current = row;
+    let res: CreateResult = { sku: row.sku_barcode, error: null };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sentBefore = sentCodesRef.current.has(current.sku_barcode);
+      sentCodesRef.current.add(current.sku_barcode);
+      res = await createProductRow(current);
+      if (!res.duplicateSku) return res;
+
+      const owner = await lookupSku(current.sku_barcode); // undefined = no se pudo leer
+      if (owner && isSame(owner) && (auto || sentBefore)) {
+        const stockError = await ensureInitialStock(owner.id, current);
+        return { id: owner.id, sku: current.sku_barcode, error: stockError, created: true };
+      }
+      const ajeno = owner ? true : owner === undefined && !sentBefore;
+      if (!ajeno || !auto || attempt > 0) return res;
+      forgetAutoSku(auto.prefix, auto.slot);
+      current = { ...current, sku_barcode: await reserveAutoSku(auto.prefix, auto.slot) };
+    }
+    return res;
   }
 
   // --- Vincular un producto suelto existente a un producto padre ---------
@@ -870,6 +1074,7 @@ export default function InventoryPage() {
 
   // --- Agregar una variante nueva a un producto padre ya existente ---------
   const openAddVariantModal = (group: ProductGroup) => {
+    resetFormSession();
     setAddingVariantGroup(group);
     setAddVariantSku('');
     setAddVariantTalla('');
@@ -879,61 +1084,91 @@ export default function InventoryPage() {
     setAddVariantError(null);
   };
   const closeAddVariantModal = () => {
-    autoSkuRef.current = {};
+    resetFormSession();
     setAddingVariantGroup(null);
     setAddVariantError(null);
     setAddVariantSubmitting(false);
   };
+  // Cancelar / ✕: no mientras guarda (la grabación termina en esta ventana).
+  const requestCloseAddVariantModal = () => {
+    if (savingRef.current) return;
+    closeAddVariantModal();
+  };
   const handleAddVariantSubmit = async () => {
-    if (!addingVariantGroup) return;
+    if (!addingVariantGroup || savingRef.current) return;
+    savingRef.current = true;
     setAddVariantSubmitting(true);
     setAddVariantError(null);
+    try {
+      const group = addingVariantGroup;
 
-    // Esa talla y color ya existen en este modelo. Es la via lenta del
-    // duplicado: no un doble clic, sino volver a agregar dias despues una
-    // variante que ya estaba. Quedaban dos filas identicas con codigos
-    // distintos y el stock repartido entre las dos.
-    const claveNueva = `${addVariantTalla.trim().toUpperCase()}|${addVariantColor.trim().toUpperCase()}`;
-    const repetida = products.find(
-      pr => pr.parent_group_id === addingVariantGroup.id &&
-            `${(pr.talla ?? '').trim().toUpperCase()}|${(pr.color ?? '').trim().toUpperCase()}` === claveNueva,
-    );
-    if (repetida) {
-      const etiqueta = formatVariant(addVariantTalla, addVariantColor) || 'sin talla ni color';
-      setAddVariantSubmitting(false);
-      setAddVariantError(
-        `Este modelo ya tiene esa variante (${etiqueta}), con el código ${repetida.sku_barcode}. ` +
-        'Si quieres sumarle unidades, edítala y repón su stock en vez de agregarla otra vez.'
+      // Esa talla y color ya existen en este modelo. Es la via lenta del
+      // duplicado: no un doble clic, sino volver a agregar dias despues una
+      // variante que ya estaba. Quedaban dos filas identicas con codigos
+      // distintos y el stock repartido entre las dos.
+      const claveNueva = variantKey(addVariantTalla, addVariantColor);
+      const repetida = products.find(
+        pr => pr.parent_group_id === group.id && variantKey(pr.talla, pr.color) === claveNueva,
       );
-      return;
+      if (repetida) {
+        const etiqueta = formatVariant(addVariantTalla, addVariantColor) || 'sin talla ni color';
+        setAddVariantError(
+          `Este modelo ya tiene esa variante (${etiqueta}), con el código ${repetida.sku_barcode}. ` +
+          'Si quieres sumarle unidades, edítala y repón su stock en vez de agregarla otra vez.'
+        );
+        return;
+      }
+
+      const targetStore = stores.find(s => s.id === group.owner_store_id) ?? currentStore;
+      const manual = addVariantSku.trim();
+      const prefix = targetStore ? storePrefix(targetStore.name) : null;
+      let sku = manual;
+      if (!sku && prefix) {
+        sku = await reserveAutoSku(prefix, 'addvariant');
+      }
+
+      // Antes, si el código al azar chocaba con uno existente, volver a darle
+      // a "Agregar variante" mandaba el mismo y fallaba siempre hasta cerrar.
+      const { error } = await insertResolvingDup(
+        {
+          sku_barcode: sku,
+          name: group.name,
+          category: group.category,
+          price: addVariantPrice === '' ? 0 : addVariantPrice,
+          talla: addVariantTalla,
+          color: addVariantColor,
+          stock: addVariantStock === '' ? 0 : addVariantStock,
+          ownerStoreId: group.owner_store_id,
+          parentGroupId: group.id,
+        },
+        !manual && prefix ? { prefix, slot: 'addvariant' } : null,
+        p => p.parent_group_id === group.id && variantKey(p.talla, p.color) === claveNueva,
+      );
+
+      if (error) { setAddVariantError(error); return; }
+      closeAddVariantModal();
+      setExpandedGroups(prev => new Set(prev).add(group.id));
+      refreshInventory(viewStoreId);
+    } finally {
+      savingRef.current = false;
+      setAddVariantSubmitting(false);
     }
-
-    const targetStore = stores.find(s => s.id === addingVariantGroup.owner_store_id) ?? currentStore;
-    let sku = addVariantSku.trim();
-    if (!sku && targetStore) {
-      sku = autoSku(storePrefix(targetStore.name), 'addvariant');
-    }
-
-    const { error } = await createProductRow({
-      sku_barcode: sku,
-      name: addingVariantGroup.name,
-      category: addingVariantGroup.category,
-      price: addVariantPrice === '' ? 0 : addVariantPrice,
-      talla: addVariantTalla,
-      color: addVariantColor,
-      stock: addVariantStock === '' ? 0 : addVariantStock,
-      ownerStoreId: addingVariantGroup.owner_store_id,
-      parentGroupId: addingVariantGroup.id,
-    });
-
-    setAddVariantSubmitting(false);
-    if (error) { setAddVariantError(error); return; }
-    closeAddVariantModal();
-    setExpandedGroups(prev => new Set(prev).add(addingVariantGroup.id));
-    refreshInventory(viewStoreId);
   };
 
+  // Una sola grabación a la vez (ver savingRef).
   const onSubmitProduct = async (data: ProductFormValues) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await saveProduct(data);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  const saveProduct = async (data: ProductFormValues) => {
     if (!currentStore) return;
     setFormError(null);
 
@@ -994,13 +1229,6 @@ export default function InventoryPage() {
       return;
     }
 
-    let finalSku = data.sku_barcode?.trim();
-    if (!finalSku) {
-      // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la
-      // categoría. Estable mientras el formulario siga abierto: ver autoSku.
-      finalSku = autoSku(storePrefix(targetStore.name), 'suelto');
-    }
-
     if (editingProduct) {
       // OJO: `sku_barcode` NO se manda acá. Cambiar el código de un producto que
       // ya está etiquetado en el piso de venta es una operación aparte, con su
@@ -1045,123 +1273,216 @@ export default function InventoryPage() {
     } else if (hasVariants) {
       // MODO CREACIÓN CON VARIANTES: 1) crear el producto padre (grupo),
       // 2) crear una fila de producto por variante, vinculada al grupo.
-      if (variantRows.length < 2) {
-        setFormError('Agrega al menos 2 variantes, o desmarca "¿Este producto tiene variantes?".');
+      //
+      // Si alguna talla falla, el formulario NO se cierra: queda con las que
+      // faltaron y este mismo botón las crea en el MISMO modelo (savedModel),
+      // sin crear otro. Antes salía un alert, el formulario se cerraba y había
+      // que revisar a mano qué talla faltaba.
+      const retry = savedModel;
+      if (variantRows.length < (retry ? 1 : 2)) {
+        setFormError(retry
+          ? 'No queda ninguna talla por guardar: puedes cerrar el formulario.'
+          : 'Agrega al menos 2 variantes, o desmarca "¿Este producto tiene variantes?".');
         return;
       }
 
       // Dos filas con la misma talla y color son dos productos que nadie va a
       // poder distinguir en el inventario. Es la via por la que aparecieron
-      // varias tallas repetidas dentro de un mismo modelo.
+      // varias tallas repetidas dentro de un mismo modelo. En el reintento,
+      // tampoco puede repetir una talla que ya quedó guardada.
       const vistas = new Map<string, number>();
       for (const [i, v] of variantRows.entries()) {
-        const k = `${(v.talla ?? '').trim().toUpperCase()}|${(v.color ?? '').trim().toUpperCase()}`;
+        const k = variantKey(v.talla, v.color);
+        const etiqueta = formatVariant(v.talla, v.color) || 'sin talla ni color';
         if (vistas.has(k)) {
-          const etiqueta = formatVariant(v.talla, v.color) || 'sin talla ni color';
           setFormError(
             `Las filas ${vistas.get(k)! + 1} y ${i + 1} tienen la misma talla y color (${etiqueta}). ` +
             'Deja una sola, o diferencialas.'
           );
           return;
         }
+        if (retry && !v.productId && retry.savedKeys.includes(k)) {
+          setFormError(
+            `La fila ${i + 1} (${etiqueta}) ya quedó guardada en este modelo. ` +
+            'Quítala, o cámbiale la talla o el color.'
+          );
+          return;
+        }
         vistas.set(k, i);
       }
 
-      // Ya existe un modelo con ese nombre en esta tienda. Es exactamente lo
-      // que pasa al guardar dos veces: como product_groups no tiene un UNIQUE,
-      // la base aceptaba el segundo modelo sin chistar.
-      //
-      // Es un aviso, no una garantia: `groups` solo trae los modelos de la
-      // tienda que se esta VIENDO, asi que si se crea para la otra tienda el
-      // chequeo no encuentra nada y deja pasar. La defensa de verdad contra el
-      // doble clic es el boton bloqueado y el codigo estable de arriba; el
-      // UNIQUE en product_groups hay que agregarlo en la base, y no se puede
-      // hasta limpiar los 7 modelos repetidos que ya existen.
-      //
-      // Solo cuentan los modelos que el usuario PUEDE VER. Un modelo cuyas
-      // variantes se desactivaron todas no aparece en el inventario (la lista
-      // se arma con los productos activos, no con los modelos), asi que
-      // bloquear por su culpa seria un "ya existe" imposible de rastrear.
-      const nombreNuevo = data.name.trim().toUpperCase();
-      const yaExiste = groups.find(
-        g => g.owner_store_id === targetStoreId &&
-             g.name.trim().toUpperCase() === nombreNuevo &&
-             products.some(pr => pr.parent_group_id === g.id),
-      );
-      if (yaExiste) {
-        setFormError(
-          `Ya existe un modelo llamado "${yaExiste.name}" en ${targetStore.name}. ` +
-          'Si querías agregarle tallas, ciérralo acá y usa "Agregar variante" sobre ese modelo en el inventario.'
+      let model: SavedModel;
+      if (retry) {
+        model = retry;
+      } else {
+
+        // Ya existe un modelo con ese nombre en esta tienda. Es exactamente lo
+        // que pasa al guardar dos veces: como product_groups no tiene un UNIQUE,
+        // la base aceptaba el segundo modelo sin chistar.
+        //
+        // Es un aviso, no una garantia: `groups` solo trae los modelos de la
+        // tienda que se esta VIENDO, asi que si se crea para la otra tienda el
+        // chequeo no encuentra nada y deja pasar. La defensa de verdad contra el
+        // doble clic es el boton bloqueado y el codigo estable de arriba; el
+        // UNIQUE en product_groups hay que agregarlo en la base, y no se puede
+        // hasta limpiar los 7 modelos repetidos que ya existen.
+        //
+        // Solo cuentan los modelos que el usuario PUEDE VER. Un modelo cuyas
+        // variantes se desactivaron todas no aparece en el inventario (la lista
+        // se arma con los productos activos, no con los modelos), asi que
+        // bloquear por su culpa seria un "ya existe" imposible de rastrear.
+        const nombreNuevo = data.name.trim().toUpperCase();
+        const yaExiste = groups.find(
+          g => g.owner_store_id === targetStoreId &&
+               g.name.trim().toUpperCase() === nombreNuevo &&
+               products.some(pr => pr.parent_group_id === g.id),
         );
-        return;
-      }
-      const { data: newGroup, error: groupError } = await supabase
-        .from('product_groups')
-        .insert([{
-          name: data.name,
-          category: data.category,
-          default_price: data.price,
-          owner_store_id: targetStoreId,
-          is_active: true,
-        }])
-        .select('id')
-        .single();
-
-      if (groupError || !newGroup) {
-        setFormError('Error al crear el producto padre: ' + groupError?.message);
-        return;
-      }
-
-      const rowErrors: string[] = [];
-      let creadas = 0;
-      for (const [idx, v] of variantRows.entries()) {
-        let sku = v.sku_barcode.trim();
-        if (!sku) {
-          // Cada fila recuerda su código: un reintento manda los mismos.
-          sku = autoSku(storePrefix(targetStore.name), `v${idx}`);
+        if (yaExiste) {
+          setFormError(
+            `Ya existe un modelo llamado "${yaExiste.name}" en ${targetStore.name}. ` +
+            'Si querías agregarle tallas, ciérralo acá y usa "Agregar variante" sobre ese modelo en el inventario.'
+          );
+          return;
         }
-        const { error } = await createProductRow({
-          sku_barcode: sku,
+        let newGroup: { id: string } | null = null;
+        let groupError: { message?: string } | null = null;
+        try {
+          const res = await supabase
+            .from('product_groups')
+            .insert([{
+              name: data.name,
+              category: data.category,
+              default_price: data.price,
+              owner_store_id: targetStoreId,
+              is_active: true,
+            }])
+            .select('id')
+            .abortSignal(saveSignal())
+            .single();
+          newGroup = res.data as { id: string } | null;
+          groupError = res.error;
+        } catch (e) {
+          groupError = { message: (e as Error)?.message };
+        }
+
+        if (groupError || !newGroup) {
+          setFormError('Error al crear el producto padre: ' + errText(groupError));
+          return;
+        }
+        model = {
+          groupId: newGroup.id,
           name: data.name,
           category: data.category,
+          ownerStoreId: targetStoreId,
+          storeName: targetStore.name,
+          savedKeys: [],
+          okCount: 0,
+        };
+      }
+
+      // Todos los códigos automáticos que faltan, de una vez y comprobados.
+      // Cada fila recuerda el suyo (por su `key`): un reintento manda los mismos.
+      const groupId = model.groupId;
+      const prefix = storePrefix(model.storeName);
+      await reserveAutoSkus(
+        prefix,
+        variantRows.filter(v => !v.productId && !v.sku_barcode.trim()).map(v => v.key),
+      );
+
+      const failed: VariantRowInput[] = [];
+      const problems: string[] = [];
+      const newKeys: string[] = [];
+      let okNow = 0;
+      for (const v of variantRows) {
+        const k = variantKey(v.talla, v.color);
+        const etiqueta = formatVariant(v.talla, v.color) || 'sin talla ni color';
+        const row: NewProductRow = {
+          sku_barcode: v.sku_barcode.trim(),
+          name: model.name,
+          category: model.category,
           price: v.price === '' ? 0 : v.price,
           talla: v.talla,
           color: v.color,
           stock: v.stock === '' ? 0 : v.stock,
-          ownerStoreId: targetStoreId,
-          parentGroupId: newGroup.id,
-        });
-        if (error) rowErrors.push(error);
-        else creadas++;
+          ownerStoreId: model.ownerStoreId,
+          parentGroupId: groupId,
+        };
+
+        if (v.productId) {
+          // Se creó en un intento anterior pero sin stock: solo falta eso.
+          const stockError = await ensureInitialStock(v.productId, { ...row, sku_barcode: v.savedSku ?? '' });
+          if (stockError) { failed.push(v); problems.push(`${etiqueta}: ${stockError}`); }
+          else okNow++;
+          continue;
+        }
+
+        const manual = row.sku_barcode;
+        if (!manual) row.sku_barcode = await reserveAutoSku(prefix, v.key);
+        const res = await insertResolvingDup(
+          row,
+          manual ? null : { prefix, slot: v.key },
+          p => p.parent_group_id === groupId && variantKey(p.talla, p.color) === k,
+        );
+        if (!res.error) {
+          newKeys.push(k);
+          okNow++;
+        } else if (res.created && res.id) {
+          // Creada, pero sin su stock: queda para el reintento, solo el stock.
+          newKeys.push(k);
+          failed.push({ ...v, productId: res.id, savedSku: res.sku });
+          problems.push(`${etiqueta}: ${res.error}`);
+        } else {
+          failed.push(v);
+          problems.push(`${etiqueta}: ${res.error}`);
+        }
       }
-      if (creadas === 0) {
-        // El modelo quedo creado pero sin una sola talla. Pasa cuando se corta
-        // la conexion a mitad del guardado: son inserciones sueltas, no una
-        // transaccion. Decirlo claro evita el modelo fantasma que nadie sabe
-        // de donde salio, y evita que se vuelva a guardar creando otro modelo.
-        setFormError(
-          `Se creo el modelo "${data.name}" pero NO se pudo guardar ninguna talla. ` +
-          'Buscalo en el inventario y agregale las tallas con "Agregar variante", ' +
-          'o eliminalo y vuelve a empezar. No lo guardes otra vez desde aca: crearia un modelo repetido.'
+
+      if (failed.length > 0) {
+        const next: SavedModel = {
+          ...model,
+          savedKeys: [...model.savedKeys, ...newKeys],
+          okCount: model.okCount + okNow,
+        };
+        setSavedModel(next);
+        setVariantRows(failed);
+        const otraTienda = next.ownerStoreId !== viewStoreId
+          ? ` Es de ${next.storeName}: no aparece en la lista que estás viendo.`
+          : '';
+        const lista = '\n• ' + problems.join('\n• ');
+        setFormError(next.okCount === 0 && next.savedKeys.length === 0
+          ? `Se creó el modelo "${next.name}", pero no se pudo guardar ninguna de sus tallas:${lista}\n\n` +
+            'Dale a "Guardar las tallas que faltan" para reintentar: se guardan en este mismo modelo. ' +
+            `Si cierras sin guardarlas, el modelo queda vacío y no aparece en el inventario.${otraTienda}`
+          : `Del modelo "${next.name}" ya quedaron guardadas ${next.okCount} de ${next.okCount + failed.length} tallas. ` +
+            `${failed.length === 1 ? 'Falta esta' : `Faltan estas ${failed.length}`}:${lista}\n\n` +
+            'Revísalas y dale a "Guardar las tallas que faltan": se guardan en este mismo modelo, sin crear otro.' +
+            otraTienda
         );
         refreshInventory(viewStoreId);
         return;
       }
-      if (rowErrors.length > 0) {
-        alert('Producto padre creado. Algunas variantes tuvieron problemas:\n' + rowErrors.join('\n'));
-      }
     } else {
       // MODO CREACIÓN: Insertar Producto Globalmente, atado a su tienda dueña.
-      const { error } = await createProductRow({
-        sku_barcode: finalSku,
-        name: data.name,
-        category: data.category,
-        price: data.price,
-        talla: data.talla ?? '',
-        color: data.color ?? '',
-        stock: data.stock,
-        ownerStoreId: targetStoreId,
-      });
+      // SKU autogenerado con prefijo de la TIENDA dueña (JUG/ROP), no de la
+      // categoría, comprobado y estable mientras el formulario siga abierto.
+      const manual = data.sku_barcode?.trim() ?? '';
+      const prefix = storePrefix(targetStore.name);
+      const sku = manual || await reserveAutoSku(prefix, 'suelto');
+      const { error } = await insertResolvingDup(
+        {
+          sku_barcode: sku,
+          name: data.name,
+          category: data.category,
+          price: data.price,
+          talla: data.talla ?? '',
+          color: data.color ?? '',
+          stock: data.stock,
+          ownerStoreId: targetStoreId,
+        },
+        manual ? null : { prefix, slot: 'suelto' },
+        p => !p.parent_group_id && p.owner_store_id === targetStoreId &&
+             norm(p.name) === norm(data.name) && variantKey(p.talla, p.color) === variantKey(data.talla, data.color),
+      );
       if (error) { setFormError(error); return; }
     }
 
@@ -1345,6 +1666,7 @@ export default function InventoryPage() {
 
   const handleEdit = (e: React.MouseEvent, product: Product) => {
     e.stopPropagation();
+    resetFormSession();
     setEditingProduct(product);
     setFormError(null);
     reset({
@@ -1363,13 +1685,23 @@ export default function InventoryPage() {
   const closeModal = () => {
     // Los códigos autogenerados solo valen mientras el formulario está
     // abierto: al cerrarlo, la próxima alta arranca con códigos nuevos.
-    autoSkuRef.current = {};
+    resetFormSession();
     setIsModalOpen(false);
     setEditingProduct(null);
     setFormError(null);
     setHasVariants(false);
     setVariantRows([]);
     reset({ sku_barcode: '', name: '', category: defaultCategoryForStore(currentStore?.name ?? ''), price: 0, stock: 0, owner_store_id: currentStore?.id ?? '', talla: '', color: '' });
+  };
+
+  // Cancelar / ✕: no mientras guarda (la grabación termina en esta ventana).
+  // Si el alta con variantes quedó a medias, se refresca para que se vea lo
+  // que sí se guardó.
+  const requestCloseModal = () => {
+    if (savingRef.current) return;
+    const quedoAMedias = !!savedModel;
+    closeModal();
+    if (quedoAMedias) refreshInventory(viewStoreId);
   };
 
   const LOW_STOCK_THRESHOLD = 5; // ajústalo a tu realidad
@@ -1694,7 +2026,7 @@ const handleExportCSV = async () => {
     if (foreignShown.length === 0) return statusFiltered;
     const out = [...statusFiltered];
     for (const f of foreignShown) {
-      const at = out.findIndex(p => !p.foreign && p.name.localeCompare(f.name, 'es', { sensitivity: 'base' }) > 0);
+      const at = out.findIndex(p => !p.foreign && NAME_COLLATOR.compare(p.name, f.name) > 0);
       out.splice(at === -1 ? out.length : at, 0, f);
     }
     return out;
@@ -1724,13 +2056,32 @@ const handleExportCSV = async () => {
     | { type: 'group'; groupId: string; group: ProductGroup | null; children: Product[] };
   const displayRows: DisplayRow[] = [];
   {
+    // Las hermanas de cada modelo, en el orden de sortedProducts, armadas en
+    // UNA pasada. Antes se filtraba la lista entera una vez por cada modelo
+    // (5.500 productos × 900 modelos en Ropa): ~60 ms en cada render, también
+    // en cada tecla del formulario, y la pantalla se ponía lenta.
+    //   childrenOf      → todos los que tienen ese modelo (lo ajeno incluido,
+    //                     igual que el filtro de antes para 'group');
+    //   foreignChildrenOf → solo lo ajeno de ese modelo (para 'foreignGroup').
+    const childrenOf = new Map<string, Product[]>();
+    const foreignChildrenOf = new Map<string, Product[]>();
+    for (const x of sortedProducts) {
+      if (!x.parent_group_id) continue;
+      const all = childrenOf.get(x.parent_group_id);
+      if (all) all.push(x); else childrenOf.set(x.parent_group_id, [x]);
+      if (x.foreign) {
+        const fo = foreignChildrenOf.get(x.parent_group_id);
+        if (fo) fo.push(x); else foreignChildrenOf.set(x.parent_group_id, [x]);
+      }
+    }
+
     const seenGroupIds = new Set<string>();
     for (const p of sortedProducts) {
       if (p.foreign && p.parent_group_id) {
         // Lo traído de la otra tienda que tiene modelo: dentro de su modelo.
         if (seenGroupIds.has(p.parent_group_id)) continue;
         seenGroupIds.add(p.parent_group_id);
-        const children = sortedProducts.filter(x => x.foreign && x.parent_group_id === p.parent_group_id);
+        const children = foreignChildrenOf.get(p.parent_group_id) ?? [];
         const g = foreignGroups[p.parent_group_id];
         displayRows.push({ type: 'foreignGroup', groupId: p.parent_group_id, name: g?.name ?? p.name, category: g?.category ?? p.category, children });
       } else if (p.foreign) {
@@ -1738,7 +2089,7 @@ const handleExportCSV = async () => {
       } else if (p.parent_group_id) {
         if (seenGroupIds.has(p.parent_group_id)) continue;
         seenGroupIds.add(p.parent_group_id);
-        const children = sortedProducts.filter(x => x.parent_group_id === p.parent_group_id);
+        const children = childrenOf.get(p.parent_group_id) ?? [];
         displayRows.push({ type: 'group', groupId: p.parent_group_id, group: groupsById.get(p.parent_group_id) ?? null, children });
       } else {
         displayRows.push({ type: 'standalone', product: p });
@@ -2858,7 +3209,7 @@ const handleExportCSV = async () => {
       <div className="print:hidden">
         <Modal
           isOpen={isModalOpen}
-          onClose={closeModal}
+          onClose={requestCloseModal}
           title={editStockOnly ? "Reponer Stock" : (editingProduct ? "Editar Producto" : "Registrar Nuevo Producto")}
         >
           <form onSubmit={handleSubmit(onSubmitProduct)} className="space-y-4">
@@ -2873,7 +3224,7 @@ const handleExportCSV = async () => {
             </div>
 
             {formError && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium animate-in fade-in">
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium whitespace-pre-line animate-in fade-in">
                 {formError}
               </div>
             )}
@@ -2926,7 +3277,11 @@ const handleExportCSV = async () => {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Producto (Global)</label>
-              <input type="text" readOnly={editStockOnly} {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
+              {/* En el reintento de un modelo a medias (savedModel) el modelo ya
+                  existe: nombre, tienda, categoría y precio global quedan fijos.
+                  readOnly / pointer-events-none, NUNCA disabled: react-hook-form
+                  descarta los campos disabled y la validación fallaría. */}
+              <input type="text" readOnly={editStockOnly || !!savedModel} {...register('name')} placeholder="Ej: Muñeca Articulada Básica" className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed" />
               {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>}
             </div>
 
@@ -2947,7 +3302,8 @@ const handleExportCSV = async () => {
                       }
                     },
                   })}
-                  className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${isLocalRestocker ? 'bg-slate-100 text-slate-500 pointer-events-none' : 'bg-white'}`}
+                  tabIndex={savedModel ? -1 : undefined}
+                  className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${isLocalRestocker || savedModel ? 'bg-slate-100 text-slate-500 pointer-events-none' : 'bg-white'}`}
                 >
                   {(isLocalRestocker ? stores.filter(s => s.id === currentStore.id) : stores).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -2958,7 +3314,7 @@ const handleExportCSV = async () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Categoría</label>
-                <select tabIndex={editStockOnly ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${editStockOnly ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
+                <select tabIndex={editStockOnly || savedModel ? -1 : undefined} {...register('category')} className={`w-full p-2.5 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-teal-600 outline-none ${editStockOnly || savedModel ? 'bg-slate-100 text-slate-400 pointer-events-none' : 'bg-white'}`}>
                   {selectableCategories.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                 </select>
                 {errors.category && <p className="text-red-500 text-xs mt-1">{errors.category.message}</p>}
@@ -2966,7 +3322,7 @@ const handleExportCSV = async () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Precio Global ($)</label>
-                <input type="number" step="0.01" min={raisingPrice ? editingProduct?.price : undefined} readOnly={editStockOnly && !raisingPrice} {...register('price', { valueAsNumber: true })} onFocus={(e) => e.target.select()} placeholder="0.00" className={`w-full p-2.5 border rounded-lg bg-white text-slate-800 focus:ring-2 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed ${priceTooLow ? 'border-red-400 focus:ring-red-500' : 'border-slate-300 focus:ring-teal-600'}`} />
+                <input type="number" step="0.01" min={raisingPrice ? editingProduct?.price : undefined} readOnly={(editStockOnly && !raisingPrice) || !!savedModel} {...register('price', { valueAsNumber: true })} onFocus={(e) => e.target.select()} placeholder="0.00" className={`w-full p-2.5 border rounded-lg bg-white text-slate-800 focus:ring-2 outline-none read-only:bg-slate-100 read-only:text-slate-400 read-only:cursor-not-allowed ${priceTooLow ? 'border-red-400 focus:ring-red-500' : 'border-slate-300 focus:ring-teal-600'}`} />
                 {errors.price && <p className="text-red-500 text-xs mt-1">{errors.price.message}</p>}
                 {raisingPrice && editingProduct && !errors.price && (
                   priceTooLow ? (
@@ -2987,13 +3343,15 @@ const handleExportCSV = async () => {
                 <div className="flex gap-3">
                   <button
                     type="button"
+                    disabled={!!savedModel}
                     onClick={() => setHasVariants(false)}
-                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer ${!hasVariants ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${!hasVariants ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
                   >
                     No
                   </button>
                   <button
                     type="button"
+                    disabled={!!savedModel}
                     onClick={() => {
                       setHasVariants(true);
                       if (variantRows.length === 0) setVariantRows([newVariantRow(watch('price') || 0)]);
@@ -3025,32 +3383,39 @@ const handleExportCSV = async () => {
                         <tr key={v.key} className="border-t border-slate-100">
                           <td className="p-2">
                             <div className="flex gap-1">
+                              {/* v.productId: la talla ya se creó en el intento
+                                  anterior y solo le falta el stock. Código,
+                                  talla y color quedan fijos. */}
                               <input
                                 type="text"
-                                value={v.sku_barcode}
+                                value={v.productId ? (v.savedSku ?? '') : v.sku_barcode}
+                                readOnly={!!v.productId}
                                 onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, sku_barcode: e.target.value } : r))}
                                 placeholder="Escanea o deja vacío"
-                                className="w-full min-w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                                className="w-full min-w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500"
                               />
-                              <ScanButton onClick={() => setCameraTarget({ kind: 'variant', key: v.key })} className="lg:hidden px-2 py-1" />
+                              {!v.productId && <ScanButton onClick={() => setCameraTarget({ kind: 'variant', key: v.key })} className="lg:hidden px-2 py-1" />}
                             </div>
+                            {v.productId && <p className="text-[11px] text-amber-700 mt-0.5">Ya creada: falta cargar el stock</p>}
                           </td>
                           <td className="p-2">
                             <input
                               type="text"
                               value={v.talla}
+                              readOnly={!!v.productId}
                               onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, talla: e.target.value } : r))}
                               placeholder="S, M, 10..."
-                              className="w-20 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                              className="w-20 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500"
                             />
                           </td>
                           <td className="p-2">
                             <input
                               type="text"
                               value={v.color}
+                              readOnly={!!v.productId}
                               onChange={(e) => setVariantRows(rows => rows.map((r, i) => i === idx ? { ...r, color: e.target.value } : r))}
                               placeholder="Negro..."
-                              className="w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none"
+                              className="w-24 p-1.5 border border-slate-300 rounded bg-white text-slate-800 text-sm focus:ring-2 focus:ring-teal-600 outline-none read-only:bg-slate-100 read-only:text-slate-500"
                             />
                           </td>
                           <td className="p-2">
@@ -3128,18 +3493,22 @@ const handleExportCSV = async () => {
             )}
 
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-4">
-              <button type="button" onClick={closeModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+              {/* Mientras guarda no se puede cerrar: la grabación termina en
+                  este formulario (ver savingRef). */}
+              <button type="button" onClick={requestCloseModal} disabled={isSubmitting || saving} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">Cancelar</button>
               {/* Bloqueado mientras guarda. Sin esto, con internet lento el
                   primer clic salia, la pantalla no cambiaba, y el segundo clic
                   creaba un producto (o un modelo entero) repetido. */}
               <button
                 type="submit"
-                disabled={isSubmitting || priceTooLow}
+                disabled={isSubmitting || saving || priceTooLow}
                 className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {isSubmitting
+                {isSubmitting || saving
                   ? 'Guardando…'
-                  : editingProduct ? 'Guardar Cambios' : hasVariants ? 'Guardar producto con variantes' : 'Guardar Producto'}
+                  : editingProduct ? 'Guardar Cambios'
+                  : savedModel ? 'Guardar las tallas que faltan'
+                  : hasVariants ? 'Guardar producto con variantes' : 'Guardar Producto'}
               </button>
             </div>
           </form>
@@ -3708,7 +4077,7 @@ const handleExportCSV = async () => {
         </Modal>
 
         {/* MODAL: AGREGAR VARIANTE A UN PRODUCTO PADRE EXISTENTE */}
-        <Modal isOpen={!!addingVariantGroup} onClose={closeAddVariantModal} title="Agregar variante">
+        <Modal isOpen={!!addingVariantGroup} onClose={requestCloseAddVariantModal} title="Agregar variante">
           {addingVariantGroup && (
             <div className="space-y-4">
               <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200">
@@ -3777,7 +4146,7 @@ const handleExportCSV = async () => {
                 </div>
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-                <button type="button" onClick={closeAddVariantModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+                <button type="button" onClick={requestCloseAddVariantModal} disabled={addVariantSubmitting} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">Cancelar</button>
                 <button
                   type="button"
                   disabled={addVariantSubmitting}
