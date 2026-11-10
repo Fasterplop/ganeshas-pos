@@ -21,6 +21,7 @@ import { fmtUSD } from '@/lib/finanzas/money';
 import { caracasToday, formatDate } from '@/lib/finanzas/dates';
 import { CATEGORY_LABELS, PRODUCT_CATEGORIES, categoryLabel } from '@/lib/categories';
 import { isMissingTableError } from '@/lib/supabaseErrors';
+import { ilikeWords } from '@/lib/search';
 import {
   OFFER_SCOPE_LABEL,
   OFFER_STATE_LABEL,
@@ -174,7 +175,7 @@ export default function OfertasPage() {
           .from('products')
           .select('id, name, sku_barcode, price, talla, color, category, owner_store_id')
           .eq('is_active', true)
-          .or(`name.ilike.%${term}%,sku_barcode.ilike.%${term}%`)
+          .or(`name.ilike.${ilikeWords(term)},sku_barcode.ilike.${ilikeWords(term)}`) // espacios dobles: lib/search.ts
           .limit(20);
         if (!cancelled) setProductHits((data ?? []) as unknown as ProductLite[]);
       } else if (scope === 'group') {
@@ -182,7 +183,7 @@ export default function OfertasPage() {
           .from('product_groups')
           .select('id, name, owner_store_id')
           .eq('is_active', true)
-          .ilike('name', `%${term}%`)
+          .ilike('name', ilikeWords(term))
           .limit(20);
         if (!cancelled) setGroupHits((data ?? []) as unknown as GroupLite[]);
       }

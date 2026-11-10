@@ -24,6 +24,7 @@ import {
   type TransferResult,
 } from '@/lib/transfers';
 import { fetchTwinHere } from '@/lib/traslados';
+import { ilikeWords } from '@/lib/search';
 
 
 // Una variante hermana dentro del mismo producto padre (para el "cambiar"
@@ -536,8 +537,12 @@ export default function POSPage() {
     setProductSearch(val);
     const seq = ++searchSeq.current;
 
-    if (val.trim().length > 1 && currentStore) {
-      const filter = `sku_barcode.ilike.%${val}%,name.ilike.%${val}%`;
+    // Sin los caracteres que rompen el filtro .or(), y con los espacios como
+    // comodín: hay nombres guardados con dos espacios (ver lib/search.ts).
+    const term = val.replace(/[%*_,()\\]/g, ' ').trim();
+    if (val.trim().length > 1 && term && currentStore) {
+      const pattern = ilikeWords(term);
+      const filter = `sku_barcode.ilike.${pattern},name.ilike.${pattern}`;
       // Se lee de la vista con ofertas: el precio que ve el cajero tiene que
       // ser el que se va a cobrar. Si el SQL de ofertas no está aplicado,
       // pricedFallback degrada a `products` y todo sigue como antes.
@@ -565,14 +570,13 @@ export default function POSPage() {
       if (!transfersOn) return;
       const stock = await foreignSellable(currentStore.id, val.trim().length <= 2);
       const ids = Object.keys(stock);
-      const term = val.replace(/[%*_,()\\]/g, ' ').trim();
-      if (ids.length === 0 || !term) return;
+      if (ids.length === 0) return;
       const extra = await supabase
         .from(pricedTable())
         .select('*')
         .eq('is_active', true)
         .in('id', ids)
-        .or(`sku_barcode.ilike.%${term}%,name.ilike.%${term}%`)
+        .or(filter)
         .limit(50);
       if (seq !== searchSeq.current || extra.error || !extra.data?.length) return;
       setSearchResults([...own, ...extra.data.map(p => ({ ...p, _localStock: stock[p.id] ?? 0 }))]);

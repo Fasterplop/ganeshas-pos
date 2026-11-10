@@ -10,6 +10,7 @@ import { isClothingStore } from '@/lib/stores';
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { pricedFallback, pricedTable } from '@/lib/pricedProducts';
 import { findProductByBarcode } from '@/lib/barcodeLookup';
+import { ilikeWords } from '@/lib/search';
 import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 
 interface LabelProduct {
@@ -147,7 +148,8 @@ const [thankYouCount, setThankYouCount] = useState<number>(1);
     if (val.trim().length > 1) {
       const term = val.replace(/[%*_,()\\]/g, ' ').trim();
       if (!term) { setSearchResults([]); return; }
-      const filter = `sku_barcode.ilike.%${term}%,name.ilike.%${term}%`;
+      const pattern = ilikeWords(term); // espacios dobles en la base: ver lib/search.ts
+      const filter = `sku_barcode.ilike.${pattern},name.ilike.${pattern}`;
       const run = (table: string) =>
         supabase.from(table).select('*').eq('is_active', true).or(filter).limit(50);
 

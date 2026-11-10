@@ -22,6 +22,7 @@ import {
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { offersAvailable, pricedFallback } from '@/lib/pricedProducts';
 import { checkTransfersAvailable, fetchForeignSellable, isForeign } from '@/lib/transfers';
+import { ilikeWords } from '@/lib/search';
 
 // ============================================================================
 // Modal de CAMBIO DE PRODUCTO.
@@ -341,19 +342,23 @@ function ExchangeModalBody({ onClose, initialSaleId, onDone }: Omit<Props, 'isOp
     const val = e.target.value;
     setProductSearch(val);
     const seq = ++hitSeq.current;
-    if (val.trim().length > 1 && currentStore) {
+    // Sin los caracteres que rompen el filtro .or(), y con los espacios como
+    // comodín: hay nombres guardados con dos espacios (ver lib/search.ts).
+    const term = val.replace(/[%*_,()\\]/g, ' ').trim();
+    if (val.trim().length > 1 && term && currentStore) {
+      const pattern = ilikeWords(term);
+      const filter = `sku_barcode.ilike.${pattern},name.ilike.${pattern}`;
       const hits = await findProducts((q: any) =>
-        q.eq('is_active', true).eq('owner_store_id', currentStore.id).or(`sku_barcode.ilike.%${val}%,name.ilike.%${val}%`).limit(50),
+        q.eq('is_active', true).eq('owner_store_id', currentStore.id).or(filter).limit(50),
       );
       if (seq !== hitSeq.current) return;
       const own = hits ?? [];
       setProductHits(own);
 
       const ids = Object.keys(await foreignHereStock(currentStore.id, val.trim().length <= 2));
-      const term = val.replace(/[%*_,()\\]/g, ' ').trim();
-      if (ids.length === 0 || !term) return;
+      if (ids.length === 0) return;
       const extra = await findProducts(q =>
-        q.eq('is_active', true).in('id', ids).or(`sku_barcode.ilike.%${term}%,name.ilike.%${term}%`).limit(50),
+        q.eq('is_active', true).in('id', ids).or(filter).limit(50),
       );
       if (seq !== hitSeq.current || !extra?.length) return;
       setProductHits([...own, ...extra]);

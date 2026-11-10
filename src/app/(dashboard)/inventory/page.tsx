@@ -29,6 +29,7 @@ import {
   type TransferProduct,
 } from '@/lib/transfers';
 import { raiseProductPrice } from '@/lib/novedades';
+import { normalizeSearch } from '@/lib/search';
 
 const productSchema = z.object({
   sku_barcode: z.string().optional(),
@@ -656,10 +657,10 @@ export default function InventoryPage() {
   // Si la búsqueda encuentra una variante, expandimos su grupo automáticamente
   // para que las hermanas (y el padre) se vean sin un clic extra.
   useEffect(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = normalizeSearch(searchTerm);
     if (term.length < 2) return;
     const matched = products.filter(p =>
-      p.parent_group_id && (p.name.toLowerCase().includes(term) || p.sku_barcode.toLowerCase().includes(term))
+      p.parent_group_id && (normalizeSearch(p.name).includes(term) || normalizeSearch(p.sku_barcode).includes(term))
     );
     if (matched.length === 0) return;
     setExpandedGroups(prev => {
@@ -765,7 +766,7 @@ export default function InventoryPage() {
     setLinkSubmitting(false);
   };
   const matchingGroups = linkGroupSearch.trim()
-    ? groups.filter(g => g.name.toLowerCase().includes(linkGroupSearch.trim().toLowerCase()))
+    ? groups.filter(g => normalizeSearch(g.name).includes(normalizeSearch(linkGroupSearch)))
     : groups;
 
   const handleLinkExisting = async (groupId: string, groupName: string) => {
@@ -1642,7 +1643,10 @@ const handleExportCSV = async () => {
   // Si la búsqueda encuentra una variante (por su propio SKU o nombre), se
   // suman también TODAS sus hermanas (aunque su SKU/nombre no coincida) para
   // que se vea el grupo completo con su padre, no solo la fila encontrada.
-  const searchLower = searchTerm.toLowerCase();
+  // Espacios repetidos cuentan como uno, en lo escrito y en los nombres: hay
+  // nombres guardados con dos espacios que en pantalla se ven con uno (ver
+  // lib/search.ts).
+  const searchLower = normalizeSearch(searchTerm);
 
   // La búsqueda mira también el nombre del MODELO, no solo el de cada
   // producto. Los dos pueden no coincidir por dos vías legítimas: al vincular
@@ -1650,13 +1654,13 @@ const handleExportCSV = async () => {
   // arreglo de arriba— al renombrar un modelo. Sin esto, el inventario mostraba
   // un nombre que no se podía buscar.
   const gruposQueCoinciden = new Set(
-    groups.filter(g => g.name.toLowerCase().includes(searchLower)).map(g => g.id)
+    groups.filter(g => normalizeSearch(g.name).includes(searchLower)).map(g => g.id)
   );
   const directMatchIds = new Set(
     products
       .filter(p =>
-        (p.name.toLowerCase().includes(searchLower) ||
-         p.sku_barcode.toLowerCase().includes(searchLower) ||
+        (normalizeSearch(p.name).includes(searchLower) ||
+         normalizeSearch(p.sku_barcode).includes(searchLower) ||
          (p.parent_group_id ? gruposQueCoinciden.has(p.parent_group_id) : false)) &&
         (categoryFilter === 'all' || p.category === categoryFilter)
       )
@@ -1682,8 +1686,8 @@ const handleExportCSV = async () => {
   // bajo", nada. Sin orden elegido, se intercala por nombre con lo propio.
   const foreignShown = stockFilter === 'low' ? [] : foreignProducts.filter(p =>
     (stockFilter !== 'out' || isOut(p.stock)) &&
-    (p.name.toLowerCase().includes(searchLower) || p.sku_barcode.toLowerCase().includes(searchLower) ||
-     (p.parent_group_id ? (foreignGroups[p.parent_group_id]?.name ?? '').toLowerCase().includes(searchLower) : false)) &&
+    (normalizeSearch(p.name).includes(searchLower) || normalizeSearch(p.sku_barcode).includes(searchLower) ||
+     (p.parent_group_id ? normalizeSearch(foreignGroups[p.parent_group_id]?.name).includes(searchLower) : false)) &&
     (categoryFilter === 'all' || p.category === categoryFilter)
   );
   const withForeign: Product[] = sortKey ? [...statusFiltered, ...foreignShown] : (() => {

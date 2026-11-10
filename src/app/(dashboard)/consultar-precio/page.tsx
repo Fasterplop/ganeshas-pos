@@ -32,6 +32,7 @@ import { formatVariant } from '@/lib/productVariant';
 import { fmtUSD, fmtVES } from '@/lib/finanzas/money';
 import { hasOffer, offerBadge, offerEndsLabel, priceOf } from '@/lib/offers';
 import { pricedCols, pricedFallback, pricedTable } from '@/lib/pricedProducts';
+import { ilikeWords } from '@/lib/search';
 
 // --- Datos -----------------------------------------------------------------
 
@@ -308,7 +309,7 @@ export default function ConsultarPrecioPage() {
           .from(t)
           .select(c)
           .eq('is_active', true)
-          .or(`name.ilike.%${term}%,sku_barcode.ilike.%${term}%`)
+          .or(`name.ilike.${ilikeWords(term)},sku_barcode.ilike.${ilikeWords(term)}`) // espacios dobles: lib/search.ts
           .limit(25),
       );
       if (error) {
