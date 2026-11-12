@@ -7,10 +7,11 @@
 // anotar a mano, ni pagos de Cashea, ni clientes.
 //
 //   Vendido con Cashea = lo que fue por Cashea (en un pago dividido, solo esa parte)
-//   Inicial, en caja   = sales.cashea_initial_usd, la cobró la tienda
+//   Inicial, en caja   = sales.cashea_initial_usd, la cobró la tienda; con el
+//                        método con que se pagó (db/cashea_initial_method.sql)
 //   Cashea financió    = lo vendido menos la inicial: lo que Cashea tiene que pagar
 //
-// Las tres cuentas viven en src/lib/cashea.ts, las mismas que usa Reportes.
+// Las cuentas viven en src/lib/cashea.ts, las mismas que usa Reportes.
 //
 // A diferencia del resto de Finanzas, aquí SÍ hay filtro de tienda: Cashea se
 // cobra en cada caja. El filtro es local a esta pantalla; no se toca la tienda
@@ -34,7 +35,18 @@ import {
 } from '@/lib/finanzas/dates';
 import { fmtUSD, round2 } from '@/lib/finanzas/money';
 import { downloadFinWorkbook, finFilename, FMT_INT, FMT_USD } from '@/lib/finanzas/excel';
-import { CASHEA_INITIAL_SINCE, casheaFinancedOf, casheaInitialOf, casheaLeg } from '@/lib/cashea';
+import {
+  CASHEA_INITIAL_NO_METHOD,
+  CASHEA_INITIAL_SINCE,
+  INITIAL_METHOD_COLS,
+  addCasheaInitialByMethod,
+  casheaFinancedOf,
+  casheaInitialByMethodList,
+  casheaInitialMethodText,
+  casheaInitialOf,
+  casheaLeg,
+  isMissingInitialMethodColumn,
+} from '@/lib/cashea';
 import { fetchStores } from '@/lib/transfers';
 
 type Period = 'hoy' | 'semana' | 'mes' | 'mes_pasado' | 'fechas';
@@ -65,6 +77,11 @@ interface CasheaSaleRow {
   payment_amount_1: number | null;
   payment_amount_2: number | null;
   cashea_initial_usd: number;
+  // Cómo se pagó la inicial (db/cashea_initial_method.sql). No vienen si la
+  // migración todavía no se aplicó.
+  cashea_initial_method?: string | null;
+  cashea_initial_method_2?: string | null;
+  cashea_initial_amount_2?: number | null;
   sale_items: SaleItemRow[] | null;
 }
 
@@ -181,17 +198,34 @@ export default function CasheaPage() {
 
     // Solo lectura y paginado: PostgREST corta en 1000 filas sin avisar.
     // El .or() toma también los pagos divididos donde Cashea es la segunda parte.
-    fetchAllPages<CasheaSaleRow>((from, to) => {
-      let q = supabase
-        .from('sales')
-        .select(
-          'id, created_at, store_id, total_amount, payment_method, payment_method_2, payment_amount_1, payment_amount_2, cashea_initial_usd, sale_items (quantity, custom_name, products (name))',
-        )
-        .or('payment_method.eq.cashea,payment_method_2.eq.cashea')
-        .gte('created_at', fromISO)
-        .lte('created_at', toISO);
-      if (storeId) q = q.eq('store_id', storeId);
-      return q.order('created_at', { ascending: false }).range(from, to);
+    // Si las columnas del método de la inicial todavía no existen, se vuelve a
+    // pedir sin ellas (las iniciales salen «sin indicar»).
+    // El select es dinámico (string): supabase-js no puede inferir la fila, así
+    // que la página se tipa a mano.
+    type SalesPage = PromiseLike<{ data: CasheaSaleRow[] | null; error: { code?: string; message?: string } | null }>;
+    const fetchSales = (withMethod: boolean) => {
+      const cols: string =
+        'id, created_at, store_id, total_amount, payment_method, payment_method_2, payment_amount_1, payment_amount_2, cashea_initial_usd, ' +
+        (withMethod ? `${INITIAL_METHOD_COLS}, ` : '') +
+        'sale_items (quantity, custom_name, products (name))';
+      return fetchAllPages<CasheaSaleRow>((from, to) => {
+        let q = supabase
+          .from('sales')
+          .select(cols)
+          .or('payment_method.eq.cashea,payment_method_2.eq.cashea')
+          .gte('created_at', fromISO)
+          .lte('created_at', toISO);
+        if (storeId) q = q.eq('store_id', storeId);
+        return q.order('created_at', { ascending: false }).range(from, to) as unknown as SalesPage;
+      });
+    };
+
+    fetchSales(true).then(async (res) => {
+      if (res.error && isMissingInitialMethodColumn(res.error)) {
+        console.warn('[cashea] columnas del método de la inicial no existen aún (aplicar db/cashea_initial_method.sql).');
+        return fetchSales(false);
+      }
+      return res;
     }).then(({ rows, error }) => {
       if (cancelled) return;
       if (error) setNotice({ type: 'error', text: `Ventas: ${finErrorMessage(error)}` });
@@ -209,16 +243,26 @@ export default function CasheaPage() {
     let vendido = 0;
     let inicial = 0;
     let financio = 0;
+    // La inicial repartida por el método con que se pagó (las de antes de que
+    // la caja lo preguntara van a «Sin indicar»).
+    const inicialPorMetodo: Record<string, number> = {};
     for (const s of sales) {
       vendido += casheaLeg(s);
       inicial += casheaInitialOf(s);
       financio += casheaFinancedOf(s);
+      addCasheaInitialByMethod(inicialPorMetodo, s);
     }
     const count = sales.length;
+    const inicialSinMetodo = sales.filter(
+      (s) => casheaInitialOf(s) > 0 && casheaInitialMethodText(s) === 'sin indicar',
+    ).length;
     return {
       vendido: round2(vendido),
       inicial: round2(inicial),
       financio: round2(financio),
+      inicialPorMetodo: casheaInitialByMethodList(inicialPorMetodo).map((it) => ({ ...it, amount: round2(it.amount) })),
+      inicialSinMetodo,
+      inicialSinMetodoUSD: round2(inicialPorMetodo[CASHEA_INITIAL_NO_METHOD] || 0),
       count,
       promedio: count > 0 ? round2(vendido / count) : 0,
     };
@@ -273,6 +317,7 @@ export default function CasheaPage() {
           extra: [
             ['Vendido con Cashea', fmtUSD(kpi.vendido)],
             ['Inicial, en caja', fmtUSD(kpi.inicial)],
+            ['Inicial por método', kpi.inicialPorMetodo.map((it) => `${it.text} ${fmtUSD(it.amount)}`).join(' · ') || '—'],
             ['Cashea financió', fmtUSD(kpi.financio)],
             ['Ventas con Cashea', `${kpi.count} · promedio ${fmtUSD(kpi.promedio)}`],
           ],
@@ -308,6 +353,7 @@ export default function CasheaPage() {
               { header: 'Artículos', key: 'articulos', width: 40, wrap: true },
               { header: 'Vendido con Cashea', key: 'vendido', width: 18, numFmt: FMT_USD },
               { header: 'Inicial (en caja)', key: 'inicial', width: 18, numFmt: FMT_USD },
+              { header: 'Inicial pagada con', key: 'inicialMetodo', width: 24, wrap: true },
               { header: 'Cashea financió', key: 'financio', width: 18, numFmt: FMT_USD },
               { header: 'Total de la venta', key: 'total', width: 16, numFmt: FMT_USD },
             ],
@@ -323,6 +369,7 @@ export default function CasheaPage() {
                   .join(', '),
                 vendido: casheaLeg(s),
                 inicial: casheaInitialOf(s),
+                inicialMetodo: casheaInitialMethodText(s),
                 financio: casheaFinancedOf(s),
                 total: Number(s.total_amount) || 0,
               })),
@@ -420,7 +467,25 @@ export default function CasheaPage() {
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <FinStatCard label="Vendido con Cashea" value={fmtUSD(kpi.vendido)} tone="amber" sub="Lo que se llevaron" />
-              <FinStatCard label="🏪 Inicial, en caja" value={fmtUSD(kpi.inicial)} tone="emerald" sub="La cobró la tienda" />
+              <FinStatCard
+                label="🏪 Inicial, en caja"
+                value={fmtUSD(kpi.inicial)}
+                tone="emerald"
+                sub={
+                  kpi.inicialPorMetodo.length === 0 ? (
+                    'La cobró la tienda'
+                  ) : (
+                    // Por método: «💳 Punto $2,050.00 · 📱 Pago móvil $1,410.00»
+                    <span className="flex flex-wrap gap-x-2.5 gap-y-0.5 leading-snug">
+                      {kpi.inicialPorMetodo.map((it) => (
+                        <span key={it.key} className="whitespace-nowrap">
+                          {it.icon} {it.short} <b className="text-slate-700">{fmtUSD(it.amount)}</b>
+                        </span>
+                      ))}
+                    </span>
+                  )
+                }
+              />
               <FinStatCard label="Cashea financió" value={fmtUSD(kpi.financio)} tone="teal" sub="Lo que tiene que pagarnos" />
               <FinStatCard
                 label="🧾 Ventas con Cashea"
@@ -434,6 +499,15 @@ export default function CasheaPage() {
                 notice={{
                   type: 'info',
                   text: `Antes del ${formatDate(CASHEA_INITIAL_SINCE)} la caja no guardaba la inicial: en esas ventas todo aparece como financiado por Cashea.`,
+                }}
+              />
+            )}
+
+            {kpi.inicialSinMetodo > 0 && (
+              <FinNotice
+                notice={{
+                  type: 'info',
+                  text: `${kpi.inicialSinMetodo} ${kpi.inicialSinMetodo === 1 ? 'inicial' : 'iniciales'} (${fmtUSD(kpi.inicialSinMetodoUSD)}) no ${kpi.inicialSinMetodo === 1 ? 'dice' : 'dicen'} cómo se ${kpi.inicialSinMetodo === 1 ? 'pagó' : 'pagaron'}: son de antes de que la caja lo preguntara y salen «Sin indicar». Si alguien lo anotó, está en la Referencia de esa venta en Reportes.`,
                 }}
               />
             )}
@@ -504,6 +578,9 @@ export default function CasheaPage() {
                                     <span className="text-slate-800">{saleTime(s.created_at)}</span>
                                     {showStoreColumn && <> · {shortStore(storeName(s.store_id))}</>}
                                     <span className="block text-slate-500">{itemsSummary(s)}</span>
+                                    {casheaInitialOf(s) > 0 && casheaInitialMethodText(s) !== 'sin indicar' && (
+                                      <span className="block text-emerald-700">Inicial: {casheaInitialMethodText(s)}</span>
+                                    )}
                                   </td>
                                   <td className="hidden sm:table-cell" />
                                   <td className="px-1.5 sm:px-3 py-2 text-right text-slate-700">{fmtUSD(casheaLeg(s))}</td>

@@ -9,6 +9,13 @@ import { isMissingColumnError } from '@/lib/supabaseErrors';
 import { hasOffer, offerBadge, priceOf } from '@/lib/offers';
 import { offersAvailable, pricedFallback, pricedTable } from '@/lib/pricedProducts';
 import CasheaLogo from '@/components/CasheaLogo';
+import {
+  CASHEA_INITIAL_METHODS,
+  CASHEA_INITIAL_METHOD_KEYS,
+  casheaInitialMethodLabel,
+  isMissingInitialMethodColumn,
+  type CasheaInitialMethod,
+} from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
 import CameraScanner, { ScanButton } from '@/components/CameraScanner';
 import { findProductByBarcode } from '@/lib/barcodeLookup';
@@ -113,6 +120,13 @@ export default function POSPage() {
   // CASHEA: inicial que el cliente paga EN TIENDA ('' = 0). El monto del
   // método Cashea sigue siendo el completo; esto solo dice cuánto entró en caja.
   const [casheaInitial, setCasheaInitial] = useState<string>('');
+  // ...y CÓMO la pagó (db/cashea_initial_method.sql): obligatorio si la
+  // inicial es > 0. Se puede dividir en dos métodos, como el pago dividido:
+  // el 1º lleva el monto que escribe el cajero y el 2º el resto.
+  const [casheaInitialMethod, setCasheaInitialMethod] = useState<CasheaInitialMethod | null>(null);
+  const [casheaInitialSplit, setCasheaInitialSplit] = useState(false);
+  const [casheaInitialMethod2, setCasheaInitialMethod2] = useState<CasheaInitialMethod | null>(null);
+  const [casheaInitialAmount1, setCasheaInitialAmount1] = useState<string>('');
 
   const [discountType, setDiscountType] = useState<DiscountType>('none');
   const [discountValue, setDiscountValue] = useState<string>('');
@@ -166,6 +180,10 @@ export default function POSPage() {
     setPaymentMethod2(null);
     setSplitAmount1('');
     setCasheaInitial('');
+    setCasheaInitialMethod(null);
+    setCasheaInitialSplit(false);
+    setCasheaInitialMethod2(null);
+    setCasheaInitialAmount1('');
     setDiscountType('none');
     setDiscountValue('');
     setProductSearch('');
@@ -312,10 +330,42 @@ export default function POSPage() {
     && (casheaInitialNum < 0 || (casheaInitialNum > 0 && casheaInitialNum >= casheaLegAmount));
   const casheaRemaining = Math.max(0, Number((casheaLegAmount - casheaInitialNum).toFixed(2)));
 
+  // Cómo se pagó la inicial. Se pregunta solo si hay una inicial válida > 0.
+  // Montos redondeados a centavos, igual que lo que se guarda.
+  const casheaInitialRounded = Number(casheaInitialNum.toFixed(2));
+  const casheaInitialNeedsMethod = casheaInvolved && casheaInitialRounded > 0 && !casheaInitialInvalid;
+  const casheaInitialAmount1Num = casheaInitialAmount1 !== '' && !isNaN(Number(casheaInitialAmount1))
+    ? Number(casheaInitialAmount1)
+    : 0;
+  const casheaInitialAmount2Num = Math.max(0, Number((casheaInitialRounded - casheaInitialAmount1Num).toFixed(2)));
+  const casheaInitialSplitInvalid = casheaInitialSplit && casheaInitialAmount1 !== ''
+    && (casheaInitialAmount1Num <= 0 || casheaInitialAmount2Num <= 0);
+  // Texto corto del método para el panel del total: «Pago Móvil» o «Pago Móvil + Efectivo».
+  const casheaInitialMethodShort = casheaInitialSplit
+    ? [casheaInitialMethod, casheaInitialMethod2].filter(Boolean).map((m) => casheaInitialMethodLabel(m)).join(' + ')
+    : casheaInitialMethodLabel(casheaInitialMethod);
+
+  // La inicial y cómo se pagó, de vuelta a vacío.
+  const resetCasheaInitial = () => {
+    setCasheaInitial('');
+    setCasheaInitialMethod(null);
+    setCasheaInitialSplit(false);
+    setCasheaInitialMethod2(null);
+    setCasheaInitialAmount1('');
+  };
+
   // Si tras un cambio de método Cashea deja de participar, la inicial no aplica
   // y se limpia (se decide con los valores NUEVOS, no con el estado anterior).
   const clearCasheaInitialIfNotInvolved = (m1: PaymentMethod | null, m2: PaymentMethod | null, split: boolean) => {
-    if (m1 !== 'cashea' && !(split && m2 === 'cashea')) setCasheaInitial('');
+    if (m1 !== 'cashea' && !(split && m2 === 'cashea')) resetCasheaInitial();
+  };
+
+  // «➗ Dividir inicial»: al entrar se conserva el 1º método; al salir se
+  // descarta el 2º y el monto.
+  const toggleCasheaInitialSplit = () => {
+    setCasheaInitialSplit((prev) => !prev);
+    setCasheaInitialMethod2(null);
+    setCasheaInitialAmount1('');
   };
   // Botones del modo simple (un solo método).
   const selectSimpleMethod = (m: PaymentMethod) => {
@@ -358,6 +408,105 @@ export default function POSPage() {
     </div>
   );
 
+  // «¿Cómo pagó la inicial?»: los mismos métodos de la caja (sin Cashea). La
+  // inicial suma en ese método del desglose de Reportes. Va debajo de la fila
+  // de la inicial, en el modo simple y en el dividido.
+  const methodSelectClass = 'flex-1 min-w-0 p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 focus:ring-teal-600 transition';
+  const renderCasheaInitialMethod = () => (
+    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2 animate-fade-in-down">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-slate-700">
+          ¿Cómo pagó la inicial? <span className="text-red-500">*</span>
+        </span>
+        <button
+          type="button"
+          onClick={toggleCasheaInitialSplit}
+          className={`text-xs font-bold px-2.5 py-1 rounded-lg border transition whitespace-nowrap ${
+            casheaInitialSplit
+              ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
+              : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-50'
+          }`}
+        >
+          {casheaInitialSplit ? '✕ Un solo método' : '➗ Dividir inicial'}
+        </button>
+      </div>
+
+      {!casheaInitialSplit ? (
+        <div className="grid grid-cols-2 gap-2">
+          {CASHEA_INITIAL_METHODS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => setCasheaInitialMethod(o.value)}
+              className={`py-2 rounded-lg border flex items-center justify-center gap-2 transition ${casheaInitialMethod === o.value ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+            >
+              <span className="text-lg">{o.icon}</span>
+              <span className="text-sm font-medium text-center">{o.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <select
+              value={casheaInitialMethod ?? ''}
+              onChange={(e) => {
+                const val = e.target.value as CasheaInitialMethod;
+                setCasheaInitialMethod(val);
+                if (casheaInitialMethod2 === val) setCasheaInitialMethod2(null);
+              }}
+              className={methodSelectClass}
+            >
+              <option value="" disabled>Método 1...</option>
+              {CASHEA_INITIAL_METHODS.map((o) => (
+                <option key={o.value} value={o.value}>{o.icon} {o.label}</option>
+              ))}
+            </select>
+            <div className="relative w-28 shrink-0">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={casheaInitialAmount1}
+                onChange={(e) => setCasheaInitialAmount1(e.target.value)}
+                onFocus={(e) => e.target.select()}
+                placeholder="0.00"
+                className={`w-full pl-7 pr-2 py-2.5 border rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 transition ${casheaInitialSplitInvalid ? 'border-red-400 focus:ring-red-400' : 'border-slate-300 focus:ring-teal-600'}`}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <select
+              value={casheaInitialMethod2 ?? ''}
+              onChange={(e) => setCasheaInitialMethod2(e.target.value as CasheaInitialMethod)}
+              className={methodSelectClass}
+            >
+              <option value="" disabled>Método 2...</option>
+              {CASHEA_INITIAL_METHODS.filter((o) => o.value !== casheaInitialMethod).map((o) => (
+                <option key={o.value} value={o.value}>{o.icon} {o.label}</option>
+              ))}
+            </select>
+            <div className="relative w-28 shrink-0">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+              <input
+                type="text"
+                value={casheaInitialAmount2Num.toFixed(2)}
+                readOnly
+                className="w-full pl-7 pr-2 py-2.5 border border-slate-200 rounded-lg bg-slate-100 text-slate-600 text-base font-semibold outline-none"
+              />
+            </div>
+          </div>
+          <p className={`text-xs font-medium ${casheaInitialSplitInvalid ? 'text-red-500' : 'text-slate-500'}`}>
+            {casheaInitialSplitInvalid
+              ? `El monto del método 1 debe ser mayor a $0 y menor a $${casheaInitialRounded.toFixed(2)}.`
+              : `El método 2 cubre el resto de la inicial ($${casheaInitialAmount2Num.toFixed(2)}).`}
+          </p>
+        </>
+      )}
+    </div>
+  );
+
   const renderCasheaRemaining = () => (
     <div className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 border ${casheaInitialInvalid ? 'bg-red-50 border-red-200 text-red-600' : 'bg-teal-50 border-teal-200 text-teal-800'}`}>
       {casheaInitialInvalid ? (
@@ -375,8 +524,8 @@ export default function POSPage() {
     setSplitPayment((prev) => {
       const next = !prev;
       // El monto que va por Cashea cambia de significado al cambiar de modo:
-      // la inicial se vuelve a pedir.
-      setCasheaInitial('');
+      // la inicial (y cómo se pagó) se vuelve a pedir.
+      resetCasheaInitial();
       if (!next) {
         setPaymentMethod2(null);
         setSplitAmount1('');
@@ -818,6 +967,23 @@ export default function POSPage() {
       if (casheaInitialNum > 0 && casheaInitialNum >= casheaLegAmount) {
         return showNotification(`La inicial de Cashea debe ser menor al monto que va por Cashea ($${casheaLegAmount.toFixed(2)})`, 'error');
       }
+      // Cómo se pagó la inicial: obligatorio si hay inicial (pedido de Gerardo).
+      if (casheaInitialRounded > 0) {
+        if (!casheaInitialMethod) {
+          return showNotification('Elige cómo pagó la inicial de Cashea', 'error');
+        }
+        if (casheaInitialSplit) {
+          if (!casheaInitialMethod2) {
+            return showNotification('Elige el segundo método de la inicial de Cashea', 'error');
+          }
+          if (casheaInitialMethod2 === casheaInitialMethod) {
+            return showNotification('Los dos métodos de la inicial deben ser distintos', 'error');
+          }
+          if (casheaInitialAmount1Num <= 0 || casheaInitialAmount2Num <= 0) {
+            return showNotification(`El monto del método 1 de la inicial debe ser mayor a $0 y menor a $${casheaInitialRounded.toFixed(2)}`, 'error');
+          }
+        }
+      }
     }
 
     setIsLoading(true);
@@ -915,7 +1081,9 @@ export default function POSPage() {
       // ==========================================
       // REGISTRO DE VENTA
       // ==========================================
-      const saleRow = {
+      const initialSaved = casheaInvolved ? casheaInitialRounded : 0;
+      const initialSplitSaved = initialSaved > 0 && casheaInitialSplit;
+      const saleRow: Record<string, unknown> = {
         store_id: currentStore.id,
         cashier_id: user.id,
         customer_id: finalCustomerId,
@@ -930,20 +1098,37 @@ export default function POSPage() {
         redemption_points: pointsToConsume,
         punto_de_venta_surcharge_usd: pdvSurchargeAmount,
         // Inicial pagada en tienda para Cashea (db/cashea_initial.sql). 0 si no aplica.
-        cashea_initial_usd: casheaInvolved ? Number(casheaInitialNum.toFixed(2)) : 0,
+        cashea_initial_usd: initialSaved,
+        // Cómo se pagó la inicial (db/cashea_initial_method.sql). NULL si no hubo inicial.
+        cashea_initial_method: initialSaved > 0 ? casheaInitialMethod : null,
+        cashea_initial_method_2: initialSplitSaved ? casheaInitialMethod2 : null,
+        cashea_initial_amount_2: initialSplitSaved ? casheaInitialAmount2Num : null,
       };
 
-      let saleInsert = await supabase.from('sales').insert(saleRow).select().single();
+      // Si falta alguna migración, PostgREST rechaza ANTES de escribir (no hay
+      // doble insert): se reintenta sin esas columnas y la venta se registra
+      // igual. Una venta NUNCA se bloquea por esto; solo se pierde ese dato.
+      const without = (row: Record<string, unknown>, keys: readonly string[]) =>
+        Object.fromEntries(Object.entries(row).filter(([k]) => !keys.includes(k)));
+      let row = saleRow;
+      let saleInsert = await supabase.from('sales').insert(row).select().single();
+      if (saleInsert.error && isMissingInitialMethodColumn(saleInsert.error)) {
+        console.warn(
+          '[POS] faltan las columnas del método de la inicial (aplicar db/cashea_initial_method.sql). Venta registrada sin el método:',
+          row.cashea_initial_method, row.cashea_initial_method_2, row.cashea_initial_amount_2,
+        );
+        row = without(row, CASHEA_INITIAL_METHOD_KEYS);
+        saleInsert = await supabase.from('sales').insert(row).select().single();
+      }
       if (saleInsert.error && isMissingColumnError(saleInsert.error, 'cashea_initial_usd')) {
-        // Migración db/cashea_initial.sql todavía no aplicada: la venta se
-        // registra igual (PostgREST rechaza ANTES de escribir, no hay doble
-        // insert), pero la inicial de Cashea de ESTA venta se pierde.
+        // Migración db/cashea_initial.sql todavía no aplicada: la inicial de
+        // Cashea de ESTA venta se pierde.
         console.warn(
           '[POS] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql). Venta registrada sin inicial de Cashea:',
-          saleRow.cashea_initial_usd,
+          row.cashea_initial_usd,
         );
-        const legacyRow = Object.fromEntries(Object.entries(saleRow).filter(([k]) => k !== 'cashea_initial_usd'));
-        saleInsert = await supabase.from('sales').insert(legacyRow).select().single();
+        row = without(row, ['cashea_initial_usd', ...CASHEA_INITIAL_METHOD_KEYS]);
+        saleInsert = await supabase.from('sales').insert(row).select().single();
       }
       const { data: saleData, error: saleError } = saleInsert;
 
@@ -1049,7 +1234,7 @@ export default function POSPage() {
       setSplitPayment(false);
       setPaymentMethod2(null);
       setSplitAmount1('');
-      setCasheaInitial('');
+      resetCasheaInitial();
       setDiscountType('none');
       setDiscountValue('');
       setRedeemBlocks(0);
@@ -1565,7 +1750,7 @@ export default function POSPage() {
             )}
             {casheaInvolved && casheaInitialNum > 0 && !casheaInitialInvalid && (
               <p className="text-amber-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
-                Inicial en tienda: ${casheaInitialNum.toFixed(2)} · Cashea: ${casheaRemaining.toFixed(2)}
+                Inicial en tienda: ${casheaInitialNum.toFixed(2)}{casheaInitialMethodShort && ` (${casheaInitialMethodShort})`} · Cashea: ${casheaRemaining.toFixed(2)}
               </p>
             )}
             <p className="text-teal-200 text-base">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
@@ -1722,6 +1907,7 @@ export default function POSPage() {
                 {casheaInvolved && (
                   <div className="mb-4 space-y-3 animate-fade-in-down">
                     {renderCasheaInitialRow()}
+                    {casheaInitialNeedsMethod && renderCasheaInitialMethod()}
                     {renderCasheaRemaining()}
                   </div>
                 )}
@@ -1795,6 +1981,7 @@ export default function POSPage() {
 
                 {/* Inicial de Cashea (si Cashea es el método 1 o el 2) */}
                 {casheaInvolved && renderCasheaInitialRow()}
+                {casheaInitialNeedsMethod && renderCasheaInitialMethod()}
 
                 <p className={`text-sm font-medium ${splitAmount1Num > baseTotalUSD ? 'text-red-500' : 'text-slate-500'}`}>
                   {splitAmount1Num > baseTotalUSD

@@ -12,7 +12,18 @@ import ExcelJS from 'exceljs';
 import { ChevronDown } from 'lucide-react';
 import { formatVariant } from '@/lib/productVariant';
 import { isMissingColumnError } from '@/lib/supabaseErrors';
-import { casheaInitialOf, casheaLeg } from '@/lib/cashea';
+import {
+  CASHEA_INITIAL_NO_METHOD,
+  INITIAL_METHOD_COLS,
+  addCasheaInitialByMethod,
+  casheaInitialByMethodList,
+  casheaInitialMethodLabel,
+  casheaInitialMethodText,
+  casheaInitialOf,
+  casheaInitialParts,
+  casheaLeg,
+  isMissingInitialMethodColumn,
+} from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
 import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, exchangeDiscountOf, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
 
@@ -59,10 +70,13 @@ const PAYMENT_METHODS: { key: string; label: string; icon: ReactNode; iconBg: st
   { key: 'pago_movil',     label: 'Pago Móvil',     icon: '📱', iconBg: 'bg-indigo-100',  bar: 'bg-indigo-500',  text: 'text-indigo-600' },
   { key: 'cashea',         label: 'Cashea (Procesado)', icon: <CasheaLogo className="w-9 h-9 rounded-lg" />, iconBg: '', bar: 'bg-amber-400', text: 'text-amber-600' },
 ];
-// Fila extra del desglose: la inicial de Cashea que el cliente pagó en tienda.
-// Va justo debajo de "Cashea (Procesado)" para que el desglose siga sumando el total del día.
+// La inicial de Cashea suma en el método con que se pagó (Pago Móvil, Punto…,
+// db/cashea_initial_method.sql). Esta fila solo junta la inicial SIN método:
+// ventas de antes de que la caja lo preguntara (o si falta la migración). Va
+// justo debajo de "Cashea (Procesado)" y solo aparece si es mayor que 0, para
+// que el desglose siga sumando el total del día.
 const CASHEA_INITIAL_ROW: (typeof PAYMENT_METHODS)[number] = {
-  key: 'cashea_inicial', label: 'Inicial Cashea (en tienda)', icon: <CasheaInicialIcon />, iconBg: '', bar: 'bg-amber-600', text: 'text-amber-700',
+  key: 'cashea_inicial', label: 'Inicial Cashea (sin método)', icon: <CasheaInicialIcon />, iconBg: '', bar: 'bg-amber-600', text: 'text-amber-700',
 };
 
 // Suma el monto de una venta al acumulado por método de pago.
@@ -85,11 +99,12 @@ const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
 // pestaña Cashea de Finanzas para que los dos sumen igual.
 
 // Columnas opcionales de `sales` que dependen de migraciones aplicadas a mano:
-//   cashea   -> sales.cashea_initial_usd (db/cashea_initial.sql)
-//   exchange -> sales.kind / exchange_of_sale_id, sale_items.source_sale_item_id
-//               (db/exchange_02_schema_and_rpc.sql)
-type ColFlags = { cashea: boolean; exchange: boolean };
-const DEFAULT_FLAGS: ColFlags = { cashea: true, exchange: true };
+//   cashea       -> sales.cashea_initial_usd (db/cashea_initial.sql)
+//   casheaMethod -> cómo se pagó la inicial (db/cashea_initial_method.sql)
+//   exchange     -> sales.kind / exchange_of_sale_id, sale_items.source_sale_item_id
+//                   (db/exchange_02_schema_and_rpc.sql)
+type ColFlags = { cashea: boolean; casheaMethod: boolean; exchange: boolean };
+const DEFAULT_FLAGS: ColFlags = { cashea: true, casheaMethod: true, exchange: true };
 
 // Ejecuta un select y, si la BD todavía no tiene alguna de esas columnas,
 // reintenta sin ella (cada reintento apaga un flag, así que termina siempre).
@@ -104,6 +119,11 @@ async function selectWithFallback(
     if (res.error && flags.exchange && isMissingExchangeColumn(res.error)) {
       console.warn('[dashboard] columnas de cambios de producto no existen aún (aplicar db/exchange_02_schema_and_rpc.sql); historial sin cambios.');
       flags = { ...flags, exchange: false };
+      continue;
+    }
+    if (res.error && flags.casheaMethod && isMissingInitialMethodColumn(res.error)) {
+      console.warn('[dashboard] columnas del método de la inicial de Cashea no existen aún (aplicar db/cashea_initial_method.sql); iniciales sin método.');
+      flags = { ...flags, casheaMethod: false };
       continue;
     }
     if (res.error && flags.cashea && isMissingColumnError(res.error, 'cashea_initial_usd')) {
@@ -123,6 +143,7 @@ const historySelect = (flags: ColFlags) => `
   redemption_discount_usd,
   punto_de_venta_surcharge_usd,
   ${flags.cashea ? 'cashea_initial_usd,' : ''}
+  ${flags.cashea && flags.casheaMethod ? `${INITIAL_METHOD_COLS},` : ''}
   ${flags.exchange ? 'kind, exchange_of_sale_id,' : ''}
   bcv_rate,
   payment_method,
@@ -179,6 +200,9 @@ export default function DashboardPage() {
   const [todayByMethod, setTodayByMethod] = useState<Record<string, number>>({});
   // Iniciales de Cashea cobradas hoy en tienda (suma de sales.cashea_initial_usd).
   const [todayCasheaInitial, setTodayCasheaInitial] = useState(0);
+  // Esas iniciales repartidas por el método con que se pagaron
+  // (CASHEA_INITIAL_NO_METHOD = ventas sin método, de antes de la migración).
+  const [todayInitialByMethod, setTodayInitialByMethod] = useState<Record<string, number>>({});
   // Cambios de producto registrados hoy (no cuentan como transacciones de venta).
   const [todayExchanges, setTodayExchanges] = useState(0);
   // El desglose por método de pago va cerrado: ocupa mucho y empuja el historial hacia abajo.
@@ -297,6 +321,9 @@ export default function DashboardPage() {
       // si tampoco existe, los cambios se cuentan como transacciones.
       let recentSales: SaleRow[] | null = null;
       for (const cols of [
+        // Primero con cómo se pagó la inicial (db/cashea_initial_method.sql);
+        // si esas columnas faltan, las combinaciones de abajo como antes.
+        `${METRIC_COLS}, cashea_initial_usd, ${INITIAL_METHOD_COLS}, kind`,
         `${METRIC_COLS}, cashea_initial_usd, kind`,
         `${METRIC_COLS}, cashea_initial_usd`,
         `${METRIC_COLS}, kind`,
@@ -314,7 +341,9 @@ export default function DashboardPage() {
             .order('id', { ascending: true })
             .range(from, from + SALES_PAGE - 1);
           if (error) {
-            if (isMissingColumnError(error, 'cashea_initial_usd')) {
+            if (isMissingInitialMethodColumn(error)) {
+              console.warn('[dashboard] columnas del método de la inicial de Cashea no existen aún (aplicar db/cashea_initial_method.sql); iniciales sin método.');
+            } else if (isMissingColumnError(error, 'cashea_initial_usd')) {
               console.warn('[dashboard] sales.cashea_initial_usd no existe aún (aplicar db/cashea_initial.sql); iniciales de Cashea en 0.');
             } else if (isMissingExchangeColumn(error)) {
               console.warn('[dashboard] sales.kind no existe aún (aplicar db/exchange_02_schema_and_rpc.sql); los cambios cuentan como transacciones.');
@@ -333,6 +362,7 @@ export default function DashboardPage() {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
         let tTx = 0, tCasheaInitial = 0, tExchanges = 0;
         const byMethod: Record<string, number> = {};
+        const initialByMethod: Record<string, number> = {};
 
         recentSales.forEach(sale => {
           const saleDate = parseSupabaseDate(sale.created_at as string);
@@ -345,6 +375,7 @@ export default function DashboardPage() {
             tVES += amount * Number(sale.bcv_rate);
             if (isExchange(sale)) tExchanges += 1; else tTx += 1;
             tCasheaInitial += casheaInitialOf(sale);
+            addCasheaInitialByMethod(initialByMethod, sale);
             addSaleToBreakdown(byMethod, sale);
           }
           if (saleDate >= startOfThisWeek) tWeek += amount;
@@ -359,13 +390,14 @@ export default function DashboardPage() {
         setTodayExchanges(tExchanges);
         setTodayByMethod(byMethod);
         setTodayCasheaInitial(tCasheaInitial);
+        setTodayInitialByMethod(initialByMethod);
         setThisWeekUSD(tWeek);
         setThisMonthUSD(tMonth);
         setWeekGrowth(lWeek ? ((tWeek - lWeek) / lWeek) * 100 : 0);
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
       } else {
         // Reset a cero si no hay ventas en la nueva tienda
-        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayExchanges(0); setTodayByMethod({}); setTodayCasheaInitial(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayExchanges(0); setTodayByMethod({}); setTodayCasheaInitial(0); setTodayInitialByMethod({}); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
       }
 
       // B. Mejores Clientes AISLADOS POR TIENDA
@@ -581,6 +613,7 @@ export default function DashboardPage() {
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Recargo PDV USD',       key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Inicial Cashea USD',    key: 'inicial',    width: 17, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Inicial pagada con',    key: 'inicialMetodo', width: 24 },
         { header: 'Total USD',             key: 'usd',        width: 14, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Total Bs',              key: 'bs',         width: 16, style: { numFmt: '#,##0.00 "Bs"' } },
       ];
@@ -588,6 +621,7 @@ export default function DashboardPage() {
       // Las columnas de texto largo se ajustan (wrap) y se alinean arriba.
       ws.getColumn('productos').alignment = { wrapText: true, vertical: 'top' };
       ws.getColumn('metodo').alignment = { wrapText: true, vertical: 'top' };
+      ws.getColumn('inicialMetodo').alignment = { wrapText: true, vertical: 'top' };
       ws.getColumn('cantidad').alignment = { horizontal: 'center', vertical: 'top' };
 
       const headerRow = ws.getRow(1);
@@ -650,6 +684,8 @@ export default function DashboardPage() {
           descuento: descuentoUSD,
           recargo: recargoUSD,
           inicial: inicialUSD,
+          // «Pago móvil», «Pago móvil ($20.00), efectivo ($8.00)», «sin indicar» (venta vieja) o vacío.
+          inicialMetodo: casheaInitialMethodText(sale),
           usd: amountUSD,
           bs: amountVES,
         });
@@ -670,11 +706,11 @@ export default function DashboardPage() {
       totalRow.font = { bold: true, color: { argb: 'FF274E13' } };
       totalRow.height = 20;
       totalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
-      for (let c = 1; c <= 12; c++) {
+      for (let c = 1; c <= ws.columnCount; c++) {
         totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
       }
 
-      ws.autoFilter = { from: 'A1', to: 'L1' };
+      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columnCount } };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -709,26 +745,32 @@ export default function DashboardPage() {
   //   Ventas con Cashea  = todo lo vendido a través de Cashea (inicial incluida)
   //   Cashea (Procesado) = lo que Cashea le paga al comercio = con Cashea − iniciales
   //   Recibido en tienda = lo que entró en caja hoy = total − Cashea (Procesado)
+  // Cada inicial suma en el método con que se pagó (pedido de Gerardo): así
+  // Pago Móvil, Punto, etc. dicen todo lo que entró por ahí, inicial incluida.
   const todayCashea = todayByMethod['cashea'] || 0;
   const todaySinCashea = Math.max(0, todayUSD - todayCashea);
   const todayCasheaProcesado = Math.max(0, todayCashea - todayCasheaInitial);
   const todayRecibidoTienda = Math.max(0, todayUSD - todayCasheaProcesado);
+  const todayInitialNoMethod = todayInitialByMethod[CASHEA_INITIAL_NO_METHOD] || 0;
+  const todayInitialList = casheaInitialByMethodList(todayInitialByMethod);
   const pctOfToday = (v: number) => (todayUSD > 0 ? Math.min(100, (v / todayUSD) * 100) : 0);
   const todayBreakdown = [
-    // La fila Cashea muestra lo procesado por Cashea; la inicial va en su propia
-    // fila justo debajo, así el desglose sigue sumando el total del día.
-    ...PAYMENT_METHODS.flatMap(m => (m.key === 'cashea' ? [m, CASHEA_INITIAL_ROW] : [m])),
+    // La fila Cashea muestra lo procesado por Cashea. La inicial sin método
+    // (ventas viejas) va en su propia fila justo debajo, solo si hay; así el
+    // desglose sigue sumando el total del día.
+    ...PAYMENT_METHODS.flatMap(m => (m.key === 'cashea' && todayInitialNoMethod > 0 ? [m, CASHEA_INITIAL_ROW] : [m])),
     // Cualquier método que no esté en la lista (p. ej. valores viejos del enum) se muestra igual.
     ...Object.keys(todayByMethod)
       .filter(k => !PAYMENT_METHODS.some(m => m.key === k))
       .map(k => ({ key: k, label: prettyMethod(k), icon: '💠', iconBg: 'bg-slate-100', bar: 'bg-slate-400', text: 'text-slate-600' })),
   ].map(m => {
+    const initialIncluded = m.key === 'cashea' || m.key === 'cashea_inicial' ? 0 : (todayInitialByMethod[m.key] || 0);
     const amount = m.key === 'cashea'
       ? todayCasheaProcesado
       : m.key === 'cashea_inicial'
-        ? todayCasheaInitial
-        : (todayByMethod[m.key] || 0);
-    return { ...m, amount, pct: pctOfToday(amount) };
+        ? todayInitialNoMethod
+        : (todayByMethod[m.key] || 0) + initialIncluded;
+    return { ...m, amount, initialIncluded, pct: pctOfToday(amount) };
   });
 
   // Cards compartidas por la vista del dueño y la del cajero.
@@ -783,6 +825,16 @@ export default function DashboardPage() {
             <p className="text-xs text-slate-500 leading-tight">Iniciales Cashea Cobradas</p>
             <p className="text-xl font-bold text-amber-700 truncate">${todayCasheaInitial.toFixed(2)}</p>
             <p className="text-xs text-slate-500">{Math.round(pctOfToday(todayCasheaInitial))}% del total</p>
+            {/* Por método, uno por línea (la tarjeta es angosta): «💳 Punto $94.00» */}
+            {todayInitialList.length > 0 && (
+              <ul className="text-xs text-slate-700 mt-1 leading-snug">
+                {todayInitialList.map((it) => (
+                  <li key={it.key} className="truncate">
+                    {it.icon} {it.short} <b>${it.amount.toFixed(2)}</b>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </div>
@@ -816,6 +868,12 @@ export default function DashboardPage() {
                 <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
                   <div className={`h-full rounded-full ${m.bar} transition-all`} style={{ width: `${m.pct}%` }} />
                 </div>
+                {m.initialIncluded > 0 && (
+                  <p className="flex items-center gap-1 text-[11px] text-amber-700 mt-1">
+                    <CasheaLogo className="w-3.5 h-3.5 rounded-sm shrink-0" />
+                    incluye ${m.initialIncluded.toFixed(2)} de iniciales Cashea
+                  </p>
+                )}
               </div>
             </div>
           ))}
@@ -1168,6 +1226,20 @@ export default function DashboardPage() {
                             {prettyMethod(sale.payment_method)}
                           </div>
                         )}
+                        {/* Inicial de Cashea y cómo se pagó: «Inicial $34.00 · Punto de Venta». Las
+                            ventas de antes de que la caja lo preguntara muestran solo el monto. */}
+                        {(() => {
+                          const parts = casheaInitialParts(sale);
+                          if (parts.length === 0) return null;
+                          const how = parts.length === 2
+                            ? parts.map(p => `${casheaInitialMethodLabel(p.method)} $${p.amount.toFixed(2)}`).join(' + ')
+                            : casheaInitialMethodLabel(parts[0].method);
+                          return (
+                            <div className="mt-1 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 inline-block px-2 py-0.5 rounded">
+                              Inicial ${casheaInitialOf(sale).toFixed(2)}{how && ` · ${how}`}
+                            </div>
+                          );
+                        })()}
                         {sale.payment_ref && (
                           <div className="flex items-center gap-1 mt-1 max-w-[150px]">
                             <span className="text-[11px] text-slate-400 truncate">Ref: {sale.payment_ref}</span>
