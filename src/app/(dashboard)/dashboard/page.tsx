@@ -160,9 +160,62 @@ const historySelect = (flags: ColFlags) => `
     unit_price,
     custom_name,
     ${flags.exchange ? 'source_sale_item_id,' : ''}
-    products (name, talla, color)
+    products (name, sku_barcode, talla, color)
   )
 `;
+
+// Línea de venta tal como la trae historySelect.
+type HistoryItem = {
+  id?: string;
+  product_id?: string | null;
+  quantity?: unknown;
+  unit_price?: unknown;
+  custom_name?: string | null;
+  products?: { name?: string | null; sku_barcode?: string | null; talla?: string | null; color?: string | null } | null;
+};
+
+const itemName = (item: HistoryItem) => item.custom_name || item.products?.name || 'Desconocido';
+
+// Código de la línea. Los productos rápidos (⚡, sin product_id) se escriben a
+// mano en la caja y no tienen código ni talla guardados: se dice para que no
+// parezca que falta un dato.
+const itemCode = (item: HistoryItem) =>
+  item.products?.sku_barcode?.trim() || (item.product_id ? '' : 'sin código');
+
+// Texto de una línea en la celda "Productos comprados" del Excel:
+// «1x TRAJE DE BAÑO CARTER (9MESES · LIMON) · Cód. ROP-881422».
+const itemExcelText = (item: HistoryItem) => {
+  const qty = Number(item.quantity) || 0;
+  const variant = formatVariant(item.products?.talla, item.products?.color);
+  const code = item.products?.sku_barcode?.trim();
+  const base = `${qty < 0 ? `↩ ${-qty}x` : `${qty}x`} ${itemName(item)}`
+    + (variant ? ` (${variant})` : '')
+    + (code ? ` · Cód. ${code}` : item.product_id ? '' : ' · sin código');
+  return qty < 0 ? `${base} (devuelto)` : base;
+};
+
+// Ancho de la columna "Productos comprados" del Excel (cada línea ahora lleva
+// también la talla y el código).
+const PRODUCTS_COL_WIDTH = 58;
+
+// Renglones que ocupa un texto en una celda con ajuste de texto de `width`
+// (ancho de columna de Excel). Las mayúsculas son más anchas que el "0" con
+// el que Excel mide el ancho, de ahí el 0.85: mejor una fila holgada que una
+// que esconda la última línea.
+const wrappedLines = (text: string, width: number) =>
+  text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / (width * 0.85))), 0);
+
+// Encabezado de una hoja del Excel: azul oscuro, letra blanca y en negrita.
+const styleHeaderRow = (ws: ExcelJS.Worksheet) => {
+  const headerRow = ws.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+  headerRow.height = 30;
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
+  });
+};
 
 // Consulta `.in()` por lotes: 100 ventas × varias líneas superan el largo de URL cómodo.
 const IN_CHUNK = 100;
@@ -606,7 +659,7 @@ export default function DashboardPage() {
         { header: 'Fecha',                 key: 'fecha',      width: 20 },
         { header: 'Cliente',               key: 'cliente',    width: 22 },
         { header: 'Cajero',                key: 'cajero',     width: 20 },
-        { header: 'Productos comprados',   key: 'productos',  width: 42 },
+        { header: 'Productos comprados',   key: 'productos',  width: PRODUCTS_COL_WIDTH },
         { header: 'Método de Pago',        key: 'metodo',     width: 26 },
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
         { header: 'Referencia',            key: 'referencia', width: 16 },
@@ -623,15 +676,29 @@ export default function DashboardPage() {
       ws.getColumn('metodo').alignment = { wrapText: true, vertical: 'top' };
       ws.getColumn('inicialMetodo').alignment = { wrapText: true, vertical: 'top' };
       ws.getColumn('cantidad').alignment = { horizontal: 'center', vertical: 'top' };
+      styleHeaderRow(ws);
 
-      const headerRow = ws.getRow(1);
-      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-      headerRow.height = 30;
-      headerRow.eachCell(cell => {
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
-        cell.border = { bottom: { style: 'thin', color: { argb: 'FF334155' } } };
+      // Segunda hoja: UNA FILA POR PRODUCTO, con código, talla y color en
+      // columnas propias para poder filtrarlos y ordenarlos.
+      const wsItems = workbook.addWorksheet('Productos vendidos', {
+        views: [{ state: 'frozen', ySplit: 1 }],
       });
+      wsItems.columns = [
+        { header: 'Fecha',           key: 'fecha',    width: 20 },
+        { header: 'Cliente',         key: 'cliente',  width: 22 },
+        { header: 'Cajero',          key: 'cajero',   width: 20 },
+        { header: 'Código',          key: 'codigo',   width: 15 },
+        { header: 'Producto',        key: 'producto', width: 42 },
+        { header: 'Talla',           key: 'talla',    width: 12 },
+        { header: 'Color',           key: 'color',    width: 16 },
+        { header: 'Cantidad',        key: 'cantidad', width: 10, style: { numFmt: '#,##0' } },
+        { header: 'Precio unit. USD', key: 'precio',  width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Tipo',            key: 'tipo',     width: 20 },
+      ];
+      wsItems.getColumn('producto').alignment = { wrapText: true, vertical: 'top' };
+      wsItems.getColumn('cantidad').alignment = { horizontal: 'center', vertical: 'top' };
+      styleHeaderRow(wsItems);
+      let totalItemsCantidad = 0;
 
       let totalSumaUSD = 0;
       let totalSumaVES = 0;
@@ -647,19 +714,17 @@ export default function DashboardPage() {
           hour: '2-digit', minute: '2-digit', hour12: true,
         }).replace(/,/g, '');
 
-        // Celda "Productos comprados": una línea por artículo con formato "Nx nombre".
+        // Celda "Productos comprados": una línea por artículo con formato
+        // "Nx nombre (talla · color) · Cód. XXX".
         const itemCount = saleItemCount(sale);
         // Un cambio de producto lista lo devuelto (↩, cantidad negativa en la BD)
         // y lo entregado; la fila se marca como CAMBIO para distinguirla de una venta.
-        const productoLines = sale.sale_items?.map((item: any) => {
-          const nm = item.custom_name || item.products?.name || 'Desconocido';
-          const variant = formatVariant(item.products?.talla, item.products?.color);
-          const qty = Number(item.quantity) || 0;
-          return qty < 0
-            ? `↩ ${-qty}x ${nm}${variant ? ` (${variant})` : ''} (devuelto)`
-            : `${qty}x ${nm}${variant ? ` (${variant})` : ''}`;
-        }).join('\n') || '';
-        const productos = isExchange(sale) ? `CAMBIO DE PRODUCTO\n${productoLines}` : productoLines;
+        const items: HistoryItem[] = sale.sale_items ?? [];
+        const productoLines = items.map(itemExcelText).join('\n');
+        const exchange = isExchange(sale);
+        const productos = exchange ? `CAMBIO DE PRODUCTO\n${productoLines}` : productoLines;
+        const cliente = sale.customers?.full_name || 'Anónimo';
+        const cajero = sale.profiles?.full_name || 'Desconocido';
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
@@ -673,23 +738,62 @@ export default function DashboardPage() {
         totalInicial += inicialUSD;
         totalCantidad += itemCount;
 
-        ws.addRow({
+        const metodo = paymentToText(sale);
+        // «Pago móvil», «Pago móvil ($20.00), efectivo ($8.00)», «sin indicar» (venta vieja) o vacío.
+        const inicialMetodo = casheaInitialMethodText(sale);
+        const row = ws.addRow({
           fecha,
-          cliente: sale.customers?.full_name || 'Anónimo',
-          cajero: sale.profiles?.full_name || 'Desconocido',
+          cliente,
+          cajero,
           productos,
-          metodo: paymentToText(sale),
+          metodo,
           referencia: sale.payment_ref || 'N/A',
           cantidad: itemCount,
           descuento: descuentoUSD,
           recargo: recargoUSD,
           inicial: inicialUSD,
-          // «Pago móvil», «Pago móvil ($20.00), efectivo ($8.00)», «sin indicar» (venta vieja) o vacío.
-          inicialMetodo: casheaInitialMethodText(sale),
+          inicialMetodo,
           usd: amountUSD,
           bs: amountVES,
         });
+        // Alto de la fila según su celda más larga: sin esto Excel (y sobre
+        // todo los visores del teléfono) muestran un solo renglón y esconden
+        // el resto de los productos, con su talla y su código.
+        const lines = Math.max(
+          wrappedLines(productos, PRODUCTS_COL_WIDTH),
+          wrappedLines(metodo, 26),
+          wrappedLines(inicialMetodo, 24),
+        );
+        if (lines > 1) row.height = lines * 15;
+
+        for (const item of items) {
+          const qty = Number(item.quantity) || 0;
+          totalItemsCantidad += qty;
+          wsItems.addRow({
+            fecha,
+            cliente,
+            cajero,
+            codigo: itemCode(item),
+            producto: itemName(item),
+            talla: item.products?.talla?.trim() || '',
+            color: item.products?.color?.trim() || '',
+            cantidad: qty,
+            precio: Number(item.unit_price) || 0,
+            tipo: exchange ? (qty < 0 ? 'Cambio · devuelto' : 'Cambio · entregado') : 'Venta',
+          });
+        }
       });
+
+      // Total de unidades de la hoja por producto (las devueltas restan, igual
+      // que la columna "Cantidad de artículos" de la primera hoja).
+      const itemsTotalRow = wsItems.addRow({ fecha: 'TOTAL DE UNIDADES', cantidad: totalItemsCantidad });
+      wsItems.mergeCells(`A${itemsTotalRow.number}:G${itemsTotalRow.number}`);
+      itemsTotalRow.font = { bold: true, color: { argb: 'FF274E13' } };
+      itemsTotalRow.getCell('fecha').alignment = { horizontal: 'center', vertical: 'middle' };
+      for (let c = 1; c <= wsItems.columnCount; c++) {
+        itemsTotalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAD3' } };
+      }
+      wsItems.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: wsItems.columnCount } };
 
       // Fila de totales generales (etiqueta combinada A:E, verde claro).
       // Cantidad de artículos (F) lleva su total; Referencia (G) queda vacía.
@@ -1182,26 +1286,36 @@ export default function DashboardPage() {
                       <td className="p-3 text-slate-600 max-w-[150px] truncate">
                         {sale.profiles?.full_name || 'Desconocido'}
                       </td>
-                      <td className="p-3 align-top">
-                        <ul className="list-disc list-inside text-slate-600 text-xs space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                          {sale.sale_items?.map((item: any, idx: number) => {
+                      <td className="p-3 align-top min-w-[230px]">
+                        {/* Cada producto en dos renglones: el nombre COMPLETO (antes se
+                            cortaba con «…» y la talla, que iba detrás, no se llegaba a ver)
+                            y debajo código · talla/color · precio. */}
+                        <ul className="list-disc pl-4 text-slate-600 text-xs space-y-1.5 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                          {sale.sale_items?.map((item: HistoryItem, idx: number) => {
                             const qty = Number(item.quantity) || 0;
-                            const returnedHere = exchange ? 0 : (returnedByLine[item.id] || 0);
+                            const returnedHere = exchange ? 0 : (returnedByLine[item.id ?? ''] || 0);
                             const variant = formatVariant(item.products?.talla, item.products?.color);
+                            const code = itemCode(item);
+                            const muted = qty < 0 ? 'text-amber-600/80' : 'text-slate-400';
                             return (
-                              <li key={idx} className={`truncate max-w-[200px] ${qty < 0 ? 'text-amber-700' : ''}`}>
-                                <span className={`font-medium ${qty < 0 ? '' : 'text-slate-700'}`}>{qty < 0 ? `↩ ${-qty}x` : `${qty}x`}</span> {item.custom_name || item.products?.name || 'Desconocido'}
-                                {variant && (
-                                  <span className={`ml-1 ${qty < 0 ? 'text-amber-600/80' : 'text-slate-400'}`}>· {variant}</span>
-                                )}
-                                {qty < 0 ? (
-                                  <span className="text-amber-600/80 ml-1">(devuelto · crédito ${Number(item.unit_price).toFixed(2)})</span>
-                                ) : (
-                                  <span className="text-slate-400 ml-1">(${Number(item.unit_price).toFixed(2)})</span>
-                                )}
-                                {returnedHere > 0 && (
-                                  <span className="text-amber-700 font-semibold ml-1">({returnedHere} devuelto)</span>
-                                )}
+                              <li key={idx} className={`max-w-[280px] ${qty < 0 ? 'text-amber-700' : ''}`}>
+                                <div className="break-words">
+                                  <span className={`font-medium ${qty < 0 ? '' : 'text-slate-700'}`}>{qty < 0 ? `↩ ${-qty}x` : `${qty}x`}</span> {itemName(item)}
+                                </div>
+                                <div className={`text-[11px] leading-snug ${muted}`}>
+                                  {code && <span className={item.products?.sku_barcode ? 'font-mono' : 'italic'}>{code}</span>}
+                                  {code && variant && ' · '}
+                                  {variant && (
+                                    <span className={`font-semibold ${qty < 0 ? 'text-amber-700' : 'text-slate-600'}`}>{variant}</span>
+                                  )}
+                                  {(code || variant) && ' · '}
+                                  {qty < 0
+                                    ? `devuelto · crédito $${Number(item.unit_price).toFixed(2)}`
+                                    : `$${Number(item.unit_price).toFixed(2)}`}
+                                  {returnedHere > 0 && (
+                                    <span className="text-amber-700 font-semibold ml-1">({returnedHere} devuelto)</span>
+                                  )}
+                                </div>
                               </li>
                             );
                           })}
