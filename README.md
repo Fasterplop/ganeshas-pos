@@ -262,6 +262,16 @@ Propuesta «Cashea + Traslados» v2 (`docs/propuesta-cashea-y-traslados.pdf`), a
 * **Degradación.** Sin el SQL, `/traslados` dice qué archivo falta, el número del menú queda en 0, Novedades sigue como antes y la caja no busca gemelos.
 * **Para instalar:** respaldo, `db/traslados_01.sql` entero con las tiendas cerradas (pega la verificación: 4 tablas con RLS y 1 política, 4 RPC definer y ejecutables, ayudantes cerrados, suma de stock igual que antes), y después desplegar el front. Probado en PGlite sobre el respaldo del 19-oct (82 comprobaciones) y en el navegador contra producción en solo lectura, con los RPC respondidos en local.
 
+### 15. Precio por modelo 💲
+Cambiar de una vez el precio de **todas las variantes** de un producto padre (propuesta del 17-nov-2026, aprobada por Gerardo). SQL: `db/precio_modelo_01.sql`; front: `src/lib/modelPrice.ts`, inventario, Usuarios y Novedades.
+* **Dónde.** Ícono 💲 en la fila del modelo del inventario (computadora y teléfono), del tamaño de ✏️ y 🗑️. Lo ve el dueño en su tienda y el cajero con «Subir precios» que puede reponer en la tienda que ve. Abre «Precio del modelo»: precio nuevo, antes → después de cada variante (ordenadas por talla) y «Guardar las N».
+* **Precios distintos.** Si las variantes no valen lo mismo, la ventana avisa «Las variantes no tienen el mismo precio.» y pregunta cómo: **Todas al mismo precio** o **Sumar lo mismo a cada una** (mantiene la diferencia entre tallas; el dueño puede restar con un número negativo). El campo empieza vacío para que un Enter sin querer no iguale nada.
+* **Reglas** (las cumple el RPC `set_model_price`, `SECURITY DEFINER`): todo o nada; el dueño sube o baja, el cajero solo sube (si una sola variante bajaría, no cambia ninguna); solo las variantes activas de la tienda del modelo; si la pantalla vio otra cantidad de variantes, `MODEL_CHANGED` y se recarga; actualiza también `product_groups.default_price`. Pasa por el guard `products_price_guard` con la misma bandera que `raise_product_price`.
+* **Por tienda.** Tarjeta «💲 Precio por modelo» en Usuarios (solo el dueño): un Sí/No por tienda en `store_settings.model_price_enabled`. La tabla solo se lee por la API; se escribe con el service role desde la server action, después de comprobar que es el dueño. Nace **apagada en todas** (Gerardo no la quiere en Juguetes); el RPC también se niega con la tienda apagada (`FEATURE_DISABLED`).
+* **Novedades.** Lo que sube un cajero queda en `price_changes` con un `batch_id` compartido y el `group_id`: Novedades lo muestra como **una línea** por modelo («8 variantes», rango antes → después) y el contador lo cuenta una vez. `group_id` va sin llave foránea a propósito (con ella PostgREST vería `price_changes` como tabla puente entre products y product_groups).
+* **Degradación.** Sin el SQL el interruptor se lee apagado: no hay 💲, Usuarios no muestra la tarjeta y Novedades usa la consulta de siempre.
+* **Para instalar:** respaldo, `db/precio_modelo_01.sql` entero (verificación: `rls_activa` true, `politicas` 1, una fila por tienda, `encendidas` 0, `columnas_nuevas` 2, `rpc` true), desplegar el front y encender la tienda en Usuarios. Probado en PGlite sobre el respaldo del 12-nov (55 comprobaciones) y en el navegador contra producción en solo lectura, con lo nuevo respondido en local.
+
 
 ---
 

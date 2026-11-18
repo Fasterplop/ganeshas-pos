@@ -7,7 +7,7 @@ import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
 import { usePOSStore, Store } from '@/store/usePOSStore';
-import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp } from 'lucide-react';
+import { SlidersHorizontal, ChevronRight, ChevronDown, ChevronsDown, ChevronsUp, CircleX } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { variantLabel, formatVariant } from '@/lib/productVariant';
 import BarcodeLabel from '@/components/labels/BarcodeLabel';
@@ -29,6 +29,7 @@ import {
   type TransferProduct,
 } from '@/lib/transfers';
 import { raiseProductPrice } from '@/lib/novedades';
+import { fetchModelPriceEnabled, newPriceFor, setModelPrice, sortVariants, type ModelPriceMode } from '@/lib/modelPrice';
 import { normalizeSearch } from '@/lib/search';
 import { pickFreeSkus } from '@/lib/autoSku';
 
@@ -342,6 +343,16 @@ export default function InventoryPage() {
   const [editGroupError, setEditGroupError] = useState<string | null>(null);
   const [editGroupSubmitting, setEditGroupSubmitting] = useState(false);
 
+  // Precio por modelo (💲, src/lib/modelPrice.ts): si está encendido en la
+  // tienda que se ve (lo decide el dueño en Usuarios) y la ventana.
+  const [modelPriceOn, setModelPriceOn] = useState(false);
+  const [modelPriceGroup, setModelPriceGroup] = useState<ProductGroup | null>(null);
+  const [modelPriceMode, setModelPriceMode] = useState<ModelPriceMode>('same');
+  // '' mientras el campo está vacío (como en la tabla de variantes del alta).
+  const [modelPriceValue, setModelPriceValue] = useState<number | ''>('');
+  const [modelPriceError, setModelPriceError] = useState<string | null>(null);
+  const [modelPriceSaving, setModelPriceSaving] = useState(false);
+
   // Modal "Agregar variante" a un producto padre YA existente.
   const [addingVariantGroup, setAddingVariantGroup] = useState<ProductGroup | null>(null);
   const [addVariantSku, setAddVariantSku] = useState('');
@@ -509,6 +520,12 @@ export default function InventoryPage() {
   // raise_product_price; un trigger rechaza cualquier otro cambio de precio.
   const canRaisePrice = isCashier && canRaisePrices;
   const raisingPrice = editStockOnly && canRaisePrice;
+  // Precio por modelo (💲): encendido en la tienda que se ve, y el dueño en su
+  // tienda o un cajero con «Subir precios» que puede reponer aquí (el mismo
+  // que puede subir un precio en la ventana de reponer). El cajero solo sube:
+  // lo hace cumplir el RPC set_model_price.
+  const canModelPrice = modelPriceOn && ((isOwner && isOwnStore) || (canRaisePrice && canRestockHere));
+  const modelPriceRaiseOnly = !isOwner;
 
   // Pasar un producto entero a la otra tienda (cuando se creó en la tienda
   // equivocada): solo el dueño, desde el ✏️ de su tienda (propuesta v2:
@@ -736,6 +753,15 @@ export default function InventoryPage() {
   // Cargar el inventario de la tienda que se está viendo.
   useEffect(() => {
     if (viewStoreId) refreshInventory(viewStoreId);
+  }, [viewStoreId]);
+
+  // ¿Tiene esta tienda el precio por modelo encendido? Mientras se lee, no.
+  useEffect(() => {
+    setModelPriceOn(false);
+    if (!viewStoreId) return;
+    let cancelled = false;
+    fetchModelPriceEnabled(supabase, viewStoreId).then(on => { if (!cancelled) setModelPriceOn(on); });
+    return () => { cancelled = true; };
   }, [viewStoreId]);
 
   // Cualquier cambio de búsqueda/filtro/orden/tienda vuelve a la primera página.
@@ -1069,6 +1095,85 @@ export default function InventoryPage() {
       return;
     }
     closeEditGroupModal();
+    refreshInventory(viewStoreId);
+  };
+
+  // --- Precio por modelo (💲) ------------------------------------------------
+  // Las variantes que cambia el RPC: las activas de esta tienda con ese modelo.
+  // `products` es el catálogo COMPLETO de la tienda (no la página visible ni
+  // lo filtrado), así que la lista y el conteo son los mismos que toca el RPC.
+  const modelPriceVariants = modelPriceGroup
+    ? sortVariants(products.filter(p => p.parent_group_id === modelPriceGroup.id))
+    : [];
+  const round2 = (n: number) => Math.round((n || 0) * 100) / 100;
+  const modelPriceList = [...new Set(modelPriceVariants.map(v => round2(v.price)))];
+  // Las variantes no tienen el mismo precio: alerta y se elige cómo cambiar.
+  const modelPriceMixed = modelPriceList.length > 1;
+  const modelPriceHighest = modelPriceList.length ? Math.max(...modelPriceList) : 0;
+  const modelPriceEffMode: ModelPriceMode = modelPriceMixed ? modelPriceMode : 'same';
+  const modelPriceNum = modelPriceValue === '' ? NaN : Number(modelPriceValue);
+  const modelPriceValid = Number.isFinite(modelPriceNum)
+    && (modelPriceEffMode === 'same' ? modelPriceNum > 0 : round2(modelPriceNum) !== 0);
+  const modelPricePreview = modelPriceVariants.map(v => {
+    const before = round2(v.price);
+    const after = modelPriceValid ? newPriceFor(v.price, modelPriceEffMode, modelPriceNum) : before;
+    return { v, before, after };
+  });
+  const modelPriceChanged = modelPricePreview.filter(r => r.after !== r.before);
+  const modelPriceDown = modelPriceChanged.filter(r => r.after < r.before).length;
+  const modelPriceBad = modelPricePreview.some(r => r.after <= 0);
+  const modelPriceBlocked = modelPriceRaiseOnly && modelPriceDown > 0;
+  const modelPriceCanSave = modelPriceValid && !modelPriceBad && !modelPriceBlocked
+    && modelPriceChanged.length > 0 && !modelPriceSaving;
+  // "Sube $5.00 en las 6": solo si todas las que cambian cambian lo mismo.
+  const modelPriceDiffs = [...new Set(modelPriceChanged.map(r => round2(r.after - r.before)))];
+  const modelPriceProblem = !modelPriceValid
+    ? (modelPriceValue === '' ? null
+      : modelPriceEffMode === 'same' ? 'El precio tiene que ser mayor que $0.' : 'Escribe cuánto sumar.')
+    : modelPriceBad ? 'Algún precio quedaría en $0 o menos.'
+    : modelPriceBlocked
+      ? (modelPriceEffMode === 'same'
+        ? `Solo se puede subir: el mínimo es $${modelPriceHighest.toFixed(2)}.`
+        : 'Solo se puede subir: escribe un número mayor que 0.')
+    : null;
+
+  const openModelPriceModal = (group: ProductGroup) => {
+    // Con un solo precio, el campo trae el de hoy (se escribe encima). Con
+    // precios distintos, vacío: si trajera el más alto, un Enter sin querer
+    // ya igualaría las más baratas.
+    const distinct = new Set(products.filter(p => p.parent_group_id === group.id).map(v => round2(v.price)));
+    setModelPriceGroup(group);
+    setModelPriceMode('same');
+    setModelPriceValue(distinct.size === 1 ? [...distinct][0] : '');
+    setModelPriceError(null);
+    setModelPriceSaving(false);
+  };
+  const closeModelPriceModal = () => {
+    setModelPriceGroup(null);
+    setModelPriceError(null);
+    setModelPriceSaving(false);
+  };
+  const chooseModelPriceMode = (mode: ModelPriceMode) => {
+    if (mode === modelPriceMode) return;
+    setModelPriceMode(mode);
+    setModelPriceValue('');
+    setModelPriceError(null);
+  };
+  const handleSaveModelPrice = async () => {
+    if (!modelPriceGroup || !modelPriceCanSave) return;
+    setModelPriceSaving(true);
+    setModelPriceError(null);
+    const res = await setModelPrice(
+      supabase, modelPriceGroup.id, modelPriceEffMode, round2(modelPriceNum), modelPriceVariants.length,
+    );
+    setModelPriceSaving(false);
+    if ('error' in res) {
+      setModelPriceError(res.error);
+      // Alguien agregó o quitó una variante: se recarga para que la lista sea la real.
+      if (res.modelChanged) refreshInventory(viewStoreId);
+      return;
+    }
+    closeModelPriceModal();
     refreshInventory(viewStoreId);
   };
 
@@ -2469,9 +2574,18 @@ const handleExportCSV = async () => {
           </div>
         </td>
         <td className="p-3 text-center">
-          {canDelete && !isRestocker ? (
-            <>
-              {group && (
+          {(canDelete && !isRestocker) || (group && canModelPrice) ? (
+            <div className="inline-flex items-center gap-2">
+              {group && canModelPrice && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openModelPriceModal(group); }}
+                  className="text-slate-400 hover:bg-emerald-50 rounded transition p-1.5 cursor-pointer"
+                  title="Precio del modelo (todas las variantes)"
+                >
+                  💲
+                </button>
+              )}
+              {canDelete && !isRestocker && group && (
                 <button
                   onClick={(e) => { e.stopPropagation(); openEditGroupModal(group); }}
                   className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-1.5 cursor-pointer"
@@ -2480,14 +2594,16 @@ const handleExportCSV = async () => {
                   ✏️
                 </button>
               )}
-              <button
-                onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
-                className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 ml-2 cursor-pointer"
-                title="Eliminar producto padre (las variantes no se borran)"
-              >
-                🗑️
-              </button>
-            </>
+              {canDelete && !isRestocker && (
+                <button
+                  onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-1.5 cursor-pointer"
+                  title="Eliminar producto padre (las variantes no se borran)"
+                >
+                  🗑️
+                </button>
+              )}
+            </div>
           ) : (
             <span className="text-slate-300">—</span>
           )}
@@ -2662,9 +2778,18 @@ const handleExportCSV = async () => {
               <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-semibold">{children.length} {children.length === 1 ? 'variante' : 'variantes'}</span>
               <span className="text-sm font-bold text-slate-700">{priceLabel}</span>
             </div>
-            {canDelete && !isRestocker && (
+            {((canDelete && !isRestocker) || (group && canModelPrice)) && (
               <div className="flex items-center">
-                {group && (
+                {group && canModelPrice && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openModelPriceModal(group); }}
+                    className="text-slate-400 hover:bg-emerald-50 rounded transition p-2 cursor-pointer"
+                    title="Precio del modelo (todas las variantes)"
+                  >
+                    💲
+                  </button>
+                )}
+                {canDelete && !isRestocker && group && (
                   <button
                     onClick={(e) => { e.stopPropagation(); openEditGroupModal(group); }}
                     className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition p-2 cursor-pointer"
@@ -2673,13 +2798,15 @@ const handleExportCSV = async () => {
                     ✏️
                   </button>
                 )}
-                <button
-                  onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
-                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 cursor-pointer"
-                  title="Eliminar producto padre"
-                >
-                  🗑️
-                </button>
+                {canDelete && !isRestocker && (
+                  <button
+                    onClick={(e) => handleDeleteGroup(e, groupId, children.map(c => c.id))}
+                    className="text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition p-2 cursor-pointer"
+                    title="Eliminar producto padre"
+                  >
+                    🗑️
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -4070,6 +4197,135 @@ const handleExportCSV = async () => {
                   className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50"
                 >
                   Guardar
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+
+        {/* MODAL: PRECIO DEL MODELO (💲) — todas las variantes de una vez */}
+        <Modal isOpen={!!modelPriceGroup} onClose={closeModelPriceModal} title="Precio del modelo">
+          {modelPriceGroup && (
+            <div className="space-y-4">
+              <div className="bg-teal-50 text-teal-800 text-xs font-semibold px-3 py-2 rounded-lg border border-teal-200">
+                {modelPriceGroup.name} &middot; {categoryLabel(modelPriceGroup.category)} &middot; {modelPriceVariants.length} {modelPriceVariants.length === 1 ? 'variante' : 'variantes'}
+              </div>
+
+              {modelPriceMixed && (
+                <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-800 px-3 py-2.5 rounded-lg text-sm">
+                  <CircleX className="w-5 h-5 shrink-0 text-red-600" />
+                  Las variantes no tienen el mismo precio.
+                </div>
+              )}
+
+              {modelPriceError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">{modelPriceError}</div>
+              )}
+
+              {/* Con precios distintos se elige cómo cambiar; con uno solo, es «todas a este precio». */}
+              {modelPriceMixed && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {([
+                    ['same', 'Todas al mismo precio', 'Quedan todas iguales'],
+                    ['add', 'Sumar lo mismo a cada una', 'Se mantiene la diferencia entre tallas'],
+                  ] as const).map(([mode, label, help]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => chooseModelPriceMode(mode)}
+                      className={`text-left px-3 py-2.5 rounded-lg border transition cursor-pointer ${modelPriceMode === mode ? 'border-teal-600 bg-teal-50 ring-1 ring-teal-600' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                        <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${modelPriceMode === mode ? 'border-teal-600' : 'border-slate-300'}`}>
+                          {modelPriceMode === mode && <span className="w-2 h-2 rounded-full bg-teal-600" />}
+                        </span>
+                        {label}
+                      </span>
+                      <span className="block text-xs text-slate-500 mt-0.5 pl-6">{help}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  {modelPriceEffMode === 'same' ? 'Precio nuevo ($)' : 'Sumar a cada una ($)'}
+                </label>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <input
+                    type="number"
+                    step="0.01"
+                    autoFocus
+                    value={modelPriceValue}
+                    onChange={(e) => { setModelPriceValue(e.target.value === '' ? '' : Number(e.target.value)); setModelPriceError(null); }}
+                    onFocus={(e) => e.target.select()}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSaveModelPrice(); }}
+                    placeholder={modelPriceEffMode === 'same' ? '0.00' : 'Ej: 5'}
+                    className={`w-36 p-2.5 border rounded-lg bg-white text-slate-800 font-semibold focus:ring-2 outline-none ${modelPriceProblem ? 'border-red-400 focus:ring-red-500' : 'border-slate-300 focus:ring-teal-600'}`}
+                  />
+                  {!modelPriceProblem && modelPriceChanged.length > 0 && (
+                    <span className={`text-sm font-semibold ${modelPriceDown > 0 && modelPriceDown === modelPriceChanged.length ? 'text-red-600' : 'text-emerald-700'}`}>
+                      {modelPriceDiffs.length === 1
+                        ? `${modelPriceDiffs[0] > 0 ? '▲ Sube' : '▼ Baja'} $${Math.abs(modelPriceDiffs[0]).toFixed(2)} en ${modelPriceChanged.length === modelPriceVariants.length ? `las ${modelPriceVariants.length}` : `${modelPriceChanged.length} de ${modelPriceVariants.length}`}`
+                        : `Cambian ${modelPriceChanged.length} de ${modelPriceVariants.length}`}
+                    </span>
+                  )}
+                </div>
+                {modelPriceProblem && <p className="text-xs text-red-600 font-medium mt-1">{modelPriceProblem}</p>}
+                {/* Al abrir, el campo trae el precio de hoy: todavía no hay nada que guardar. */}
+                {!modelPriceProblem && modelPriceValid && modelPriceChanged.length === 0 && (
+                  <p className="text-xs text-slate-500 mt-1">
+                    {modelPriceEffMode === 'same' ? 'Escribe el precio nuevo.' : 'Escribe cuánto sumar.'}
+                  </p>
+                )}
+                {!modelPriceProblem && modelPriceEffMode === 'add' && !modelPriceRaiseOnly && (
+                  <p className="text-xs text-slate-400 mt-1">Para bajar, escribe un número negativo (ej: -5).</p>
+                )}
+                {!modelPriceProblem && modelPriceRaiseOnly && (
+                  <p className="text-xs text-slate-400 mt-1">Solo se puede subir. El dueño lo verá en Novedades.</p>
+                )}
+              </div>
+
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="max-h-72 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 sticky top-0">
+                      <tr className="text-[11px] uppercase tracking-wide text-slate-500">
+                        <th className="text-left font-semibold px-3 py-2">Variante</th>
+                        <th className="text-right font-semibold px-3 py-2">Antes</th>
+                        <th className="text-right font-semibold px-3 py-2">Después</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {modelPricePreview.map(({ v, before, after }) => (
+                        <tr key={v.id} className="border-t border-slate-100">
+                          <td className="px-3 py-1.5 text-slate-700">{variantLabel(v.talla, v.color)}</td>
+                          <td className={`px-3 py-1.5 text-right ${after !== before ? 'text-slate-400 line-through' : 'text-slate-600'}`}>${before.toFixed(2)}</td>
+                          <td className={`px-3 py-1.5 text-right font-bold ${after > before ? 'text-emerald-700' : after < before ? 'text-red-600' : 'text-slate-400 font-normal'}`}>
+                            {after !== before ? `$${after.toFixed(2)}` : 'sin cambio'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button type="button" onClick={closeModelPriceModal} className="px-4 py-2 border border-slate-300 rounded-lg font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer">Cancelar</button>
+                <button
+                  type="button"
+                  disabled={!modelPriceCanSave}
+                  onClick={handleSaveModelPrice}
+                  className="px-4 py-2 bg-[#0f5c5c] text-white rounded-lg font-medium hover:bg-[#0a4545] transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {modelPriceSaving
+                    ? 'Guardando…'
+                    : modelPriceVariants.length === 1
+                      ? 'Guardar'
+                    : modelPriceChanged.length > 0 && modelPriceChanged.length < modelPriceVariants.length
+                      ? `Guardar ${modelPriceChanged.length} de ${modelPriceVariants.length}`
+                      : `Guardar las ${modelPriceVariants.length}`}
                 </button>
               </div>
             </div>

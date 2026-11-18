@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
-import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction, setCanRaisePricesAction, setPhoneSimpleModeAction } from './actions';
+import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction, setCanRaisePricesAction, setPhoneSimpleModeAction, getStoreSettingsAction, setModelPriceEnabledAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
 import { ASSIGNABLE_ROLES, ROLE_BADGE, ROLE_BADGE_CLASS, ROLE_HELP, ROLE_LABEL, type AppRole } from '@/lib/roles';
 
@@ -107,12 +107,24 @@ export default function UsersPage() {
   const [rolElegido, setRolElegido] = useState<AppRole>('cashier');
   // Columnas de db/novedades_01…sql: sin ellas no se muestran los dos controles.
   const [permsInstalled, setPermsInstalled] = useState(false);
+  // Precio por modelo (db/precio_modelo_01.sql): tienda → encendido. Sin el
+  // SQL (modelPriceInstalled = false) la tarjeta no se muestra.
+  const [modelPriceInstalled, setModelPriceInstalled] = useState(false);
+  const [modelPriceByStore, setModelPriceByStore] = useState<Record<string, boolean>>({});
 
   const fetchUsers = async () => {
     const result = await getUsersAction();
     if (result.success && result.users) {
       setUsers(result.users);
       setPermsInstalled(!!result.permsInstalled);
+    }
+  };
+
+  const fetchStoreSettings = async () => {
+    const result = await getStoreSettingsAction();
+    if (result.success) {
+      setModelPriceInstalled(result.installed);
+      setModelPriceByStore(result.modelPrice);
     }
   };
 
@@ -130,7 +142,7 @@ export default function UsersPage() {
       const { data: storesData } = await supabase.from('stores').select('id, name').eq('is_active', true);
       if (storesData) setStores(storesData);
 
-      await fetchUsers();
+      await Promise.all([fetchUsers(), fetchStoreSettings()]);
       setIsPageLoading(false);
     };
     checkRoleAndLoadData();
@@ -206,6 +218,18 @@ export default function UsersPage() {
       const result = await setPhoneSimpleModeAction(userId, next);
       if (result.success) await fetchUsers();
       else alert('Error al cambiar el permiso: ' + result.error);
+    }
+  };
+
+  const handleSetModelPrice = async (storeId: string, storeName: string, current: boolean, next: boolean) => {
+    if (next === current) return;
+    const msg = next
+      ? `En ${storeName} aparecerá el 💲 en cada modelo del inventario, para cambiar el precio de todas sus variantes de una vez. ¿Continuar?`
+      : `En ${storeName} ya no aparecerá el 💲: los precios se cambiarán variante por variante. ¿Continuar?`;
+    if (window.confirm(msg)) {
+      const result = await setModelPriceEnabledAction(storeId, next);
+      if (result.success) await fetchStoreSettings();
+      else alert('Error al cambiar el ajuste: ' + result.error);
     }
   };
 
@@ -302,6 +326,34 @@ export default function UsersPage() {
             </button>
           </form>
         </div>
+
+        {/* Precio por modelo: en qué tiendas aparece el 💲 del inventario. */}
+        {modelPriceInstalled && stores.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-shrink-0">
+            <h2 className="font-semibold text-slate-700 pb-2 border-b border-slate-100">💲 Precio por modelo</h2>
+            <p className="text-[11px] text-slate-500 mt-2 mb-3 leading-snug">
+              Cambiar el precio de todas las variantes de un modelo de una vez. Tú subes o bajas; los cajeros con «Subir precios» solo suben.
+            </p>
+            <div className="space-y-2">
+              {stores.map((store) => {
+                const on = !!modelPriceByStore[store.id];
+                return (
+                  <div key={store.id} className="flex justify-between items-center gap-2">
+                    <span className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                      <StoreIcon className="w-3.5 h-3.5 text-slate-400" />
+                      {store.name}
+                    </span>
+                    <TwoWayControl
+                      value={on}
+                      labels={['No', 'Sí']}
+                      onChange={(next) => handleSetModelPrice(store.id, store.name, on, next)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* === COLUMNA DERECHA: LISTA DE USUARIOS === */}

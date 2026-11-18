@@ -191,6 +191,32 @@ export async function setPhoneSimpleModeAction(userId: string, value: boolean) {
   }
 }
 
+// Precio por modelo (db/precio_modelo_01.sql): en qué tiendas se usa el 💲.
+// store_settings no tiene políticas de escritura: solo se cambia desde aquí,
+// con el admin client y después de comprobar que pide el dueño.
+export async function getStoreSettingsAction() {
+  if (!(await isOwner())) return { success: false as const, error: 'Acceso denegado' };
+  const { data, error } = await supabaseAdmin.from('store_settings').select('store_id, model_price_enabled');
+  // Sin la tabla (SQL sin aplicar) la tarjeta no se muestra.
+  if (error) return { success: true as const, installed: false, modelPrice: {} as Record<string, boolean> };
+  const modelPrice: Record<string, boolean> = {};
+  for (const row of data ?? []) modelPrice[row.store_id as string] = !!row.model_price_enabled;
+  return { success: true as const, installed: true, modelPrice };
+}
+
+export async function setModelPriceEnabledAction(storeId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+  try {
+    const { error } = await supabaseAdmin
+      .from('store_settings')
+      .upsert({ store_id: storeId, model_price_enabled: value, updated_at: new Date().toISOString() }, { onConflict: 'store_id' });
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function toggleUserActiveAction(userId: string, currentStatus: boolean) {
   if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
 

@@ -19,6 +19,8 @@ const FILTER_LABEL: Record<Filter, string> = { all: 'Todo', price: 'Precios', tr
 const TRASLADO_LABEL = { enviado: 'Traslado', incompleto: 'Falta algo', deshecho: 'Traslado deshecho' } as const;
 
 const fmtUSD = (n: number) => `$${n.toFixed(2)}`;
+// "$20.00 a $25.00", o un solo precio si todas las variantes tenían el mismo.
+const fmtRange = (min: number, max: number) => (min === max ? fmtUSD(min) : `${fmtUSD(min)} a ${fmtUSD(max)}`);
 
 const fmtWhen = (iso: string) =>
   new Date(iso).toLocaleString('es-VE', {
@@ -170,11 +172,25 @@ export default function NovedadesPage() {
                             {r.kind === 'price' ? 'Subida de precio' : r.changesOwner ? 'Pasó a la otra tienda' : 'Transferencia'}
                           </span>
                           <span className="font-bold text-slate-800">{r.productName}</span>
-                          <span className="text-xs text-slate-500">
-                            {variant && `${variant} · `}<span className="font-mono">{r.sku}</span>
-                          </span>
+                          {r.variants ? (
+                            <span className="text-xs text-slate-500">{r.variants} {r.variants === 1 ? 'variante' : 'variantes'}</span>
+                          ) : (
+                            <span className="text-xs text-slate-500">
+                              {variant && `${variant} · `}<span className="font-mono">{r.sku}</span>
+                            </span>
+                          )}
                         </div>
-                        {r.kind === 'price' ? (
+                        {r.kind === 'price' && r.variants ? (
+                          // Todo un modelo con el 💲: rango de antes → rango de después.
+                          <p className="mt-1 text-sm text-slate-700">
+                            <span className="text-slate-400 line-through">{fmtRange(r.oldPrice ?? 0, r.oldPriceMax ?? 0)}</span>
+                            {' → '}
+                            <span className="font-bold text-emerald-700">{fmtRange(r.newPrice ?? 0, r.newPriceMax ?? 0)}</span>
+                            {r.oldPrice === r.oldPriceMax && r.newPrice === r.newPriceMax && (
+                              <span className="text-slate-500 text-xs"> (+{fmtUSD(diff)} · +{pct} %)</span>
+                            )}
+                          </p>
+                        ) : r.kind === 'price' ? (
                           <p className="mt-1 text-sm text-slate-700">
                             <span className="text-slate-400 line-through">{fmtUSD(r.oldPrice ?? 0)}</span>
                             {' → '}

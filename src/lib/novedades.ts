@@ -71,9 +71,14 @@ export interface Novedad {
   sku: string;
   talla: string | null;
   color: string | null;
-  // Subida de precio
+  // Subida de precio. Si vino del 💲 de un modelo (db/precio_modelo_01.sql), es
+  // UNA línea para todas sus variantes: `variants` > 0, productName es el
+  // nombre del modelo y oldPrice/newPrice son el más bajo (…Max, el más alto).
   oldPrice?: number;
   newPrice?: number;
+  variants?: number;
+  oldPriceMax?: number;
+  newPriceMax?: number;
   // Transferencia
   quantity?: number;
   fromStoreId?: string;
@@ -90,6 +95,27 @@ export interface Novedad {
 type ProductEmbed = { name: string; sku_barcode: string; talla: string | null; color: string | null } | null;
 
 const LIMIT = 200;
+// Las subidas de un modelo son una fila por variante (un modelo puede tener
+// 92): se leen más filas para que esas líneas no se coman el resto.
+const PRICE_LIMIT = 1000;
+
+const PRICE_COLS = 'id, created_at, old_price, new_price, products (name, sku_barcode, talla, color), profiles (full_name)';
+
+// Con db/precio_modelo_01.sql cada fila trae su lote y su modelo; sin él, la
+// consulta de siempre.
+async function fetchPriceRows(supabase: SupabaseClient) {
+  const withBatch = await supabase
+    .from('price_changes')
+    .select(`${PRICE_COLS}, batch_id, group_id`)
+    .order('created_at', { ascending: false })
+    .limit(PRICE_LIMIT);
+  if (!withBatch.error || !isMissingColumnError(withBatch.error, 'batch_id')) return withBatch;
+  return supabase
+    .from('price_changes')
+    .select(PRICE_COLS)
+    .order('created_at', { ascending: false })
+    .limit(PRICE_LIMIT);
+}
 
 /**
  * Lo último de las tres fuentes, mezclado del más reciente al más antiguo. Lo
@@ -100,11 +126,7 @@ export async function fetchNovedades(
   ownerId: string,
 ): Promise<{ rows: Novedad[]; error: string | null }> {
   const [prices, transfers, shipments] = await Promise.all([
-    supabase
-      .from('price_changes')
-      .select('id, created_at, old_price, new_price, products (name, sku_barcode, talla, color), profiles (full_name)')
-      .order('created_at', { ascending: false })
-      .limit(LIMIT),
+    fetchPriceRows(supabase),
     supabase
       .from('stock_transfers')
       .select('id, created_at, quantity, source, note, from_store_id, to_store_id, changes_owner, products (name, sku_barcode, talla, color), profiles (full_name)')
@@ -130,11 +152,48 @@ export async function fetchNovedades(
   if (transfers.error) return { rows: [], error: transfers.error.message || 'No se pudieron cargar las transferencias.' };
 
   const rows: Novedad[] = [];
+  // Subidas del 💲 de un modelo: una línea por lote, con el nombre del modelo.
+  const batches = new Map<string, Novedad>();
+  const batchGroup = new Map<string, string>();
   for (const raw of prices.data ?? []) {
     const p = raw as unknown as {
       id: string; created_at: string; old_price: number; new_price: number;
       products: ProductEmbed; profiles: { full_name: string } | null;
+      batch_id?: string | null; group_id?: string | null;
     };
+    if (p.batch_id) {
+      const oldP = Number(p.old_price) || 0;
+      const newP = Number(p.new_price) || 0;
+      const b = batches.get(p.batch_id);
+      if (b) {
+        b.variants = (b.variants ?? 0) + 1;
+        b.oldPrice = Math.min(b.oldPrice ?? oldP, oldP);
+        b.oldPriceMax = Math.max(b.oldPriceMax ?? oldP, oldP);
+        b.newPrice = Math.min(b.newPrice ?? newP, newP);
+        b.newPriceMax = Math.max(b.newPriceMax ?? newP, newP);
+        if (p.created_at > b.created_at) b.created_at = p.created_at;
+      } else {
+        const row: Novedad = {
+          id: `pb-${p.batch_id}`,
+          kind: 'price',
+          created_at: p.created_at,
+          who: p.profiles?.full_name ?? 'Desconocido',
+          productName: p.products?.name ?? 'Producto eliminado',
+          sku: '',
+          talla: null,
+          color: null,
+          oldPrice: oldP,
+          oldPriceMax: oldP,
+          newPrice: newP,
+          newPriceMax: newP,
+          variants: 1,
+        };
+        batches.set(p.batch_id, row);
+        if (p.group_id) batchGroup.set(p.batch_id, p.group_id);
+        rows.push(row);
+      }
+      continue;
+    }
     rows.push({
       id: `p-${p.id}`,
       kind: 'price',
@@ -147,6 +206,18 @@ export async function fetchNovedades(
       oldPrice: Number(p.old_price) || 0,
       newPrice: Number(p.new_price) || 0,
     });
+  }
+  // El nombre del modelo (las variantes pueden llamarse distinto si se
+  // vincularon productos que ya existían). Si falla, queda el de la variante.
+  const groupIds = [...new Set(batchGroup.values())];
+  for (let i = 0; i < groupIds.length; i += 100) {
+    const { data } = await supabase.from('product_groups').select('id, name').in('id', groupIds.slice(i, i + 100));
+    const names = new Map(((data ?? []) as { id: string; name: string }[]).map(g => [g.id, g.name]));
+    for (const [batch, gid] of batchGroup) {
+      const name = names.get(gid);
+      const row = batches.get(batch);
+      if (name && row) row.productName = name;
+    }
   }
   for (const raw of transfers.data ?? []) {
     const t = raw as unknown as {
@@ -214,6 +285,29 @@ export async function fetchNovedadesSeenAt(
   return { seenAt: (data?.novedades_seen_at as string | null) ?? null, installed: true };
 }
 
+/**
+ * Subidas de precio sin ver, contadas como las muestra la lista: una por cada
+ * subida suelta y UNA por cada modelo cambiado con el 💲 (sus filas comparten
+ * batch_id). Sin esa columna (SQL sin aplicar), el conteo de siempre.
+ */
+async function countPriceNovedades(supabase: SupabaseClient, seenAt: string | null): Promise<number> {
+  let rows = supabase.from('price_changes').select('id, batch_id').limit(PRICE_LIMIT);
+  if (seenAt) rows = rows.gt('created_at', seenAt);
+  const { data, error } = await rows;
+  if (!error) {
+    const batches = new Set<string>();
+    let loose = 0;
+    for (const r of (data ?? []) as { batch_id: string | null }[]) {
+      if (r.batch_id) batches.add(r.batch_id); else loose++;
+    }
+    return loose + batches.size;
+  }
+  let head = supabase.from('price_changes').select('id', { count: 'exact', head: true });
+  if (seenAt) head = head.gt('created_at', seenAt);
+  const r = await head;
+  return r.error ? 0 : r.count ?? 0;
+}
+
 /** Cuántas novedades no ha visto el dueño. 0 si algo falla. */
 export async function fetchNovedadesCount(
   supabase: SupabaseClient,
@@ -223,22 +317,22 @@ export async function fetchNovedadesCount(
     const { seenAt, installed } = await fetchNovedadesSeenAt(supabase, ownerId);
     if (!installed) return 0;
     const head = { count: 'exact' as const, head: true };
-    let prices = supabase.from('price_changes').select('id', head);
     let transfers = supabase.from('stock_transfers').select('id', head).neq('created_by', ownerId);
     // Traslados: los mismos tres hechos que fetchNovedades.
     let sent = supabase.from('store_shipments').select('id', head).neq('created_by', ownerId);
     let incomplete = supabase.from('store_shipments').select('id', head).eq('status', 'incompleto');
     let undone = supabase.from('store_shipments').select('id', head).eq('status', 'deshecho').neq('undone_by', ownerId);
     if (seenAt) {
-      prices = prices.gt('created_at', seenAt);
       transfers = transfers.gt('created_at', seenAt);
       sent = sent.gt('created_at', seenAt);
       incomplete = incomplete.gt('received_at', seenAt);
       undone = undone.gt('undone_at', seenAt);
     }
-    const results = await Promise.all([prices, transfers, sent, incomplete, undone]);
+    const [prices, ...results] = await Promise.all([
+      countPriceNovedades(supabase, seenAt), transfers, sent, incomplete, undone,
+    ]);
     // Una fuente que falla (p. ej. traslados sin instalar) cuenta 0.
-    return results.reduce((a, r) => a + (r.error ? 0 : r.count ?? 0), 0);
+    return prices + results.reduce((a, r) => a + (r.error ? 0 : r.count ?? 0), 0);
   } catch {
     return 0;
   }
