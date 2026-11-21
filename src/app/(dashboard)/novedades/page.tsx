@@ -30,6 +30,9 @@ const fmtWhen = (iso: string) =>
 
 const shortStore = (name?: string | null) => (name ?? '').replace(/^tienda de /i, '') || 'la otra tienda';
 
+// Piezas de un traslado que se ven antes de «Ver N más».
+const ITEMS_PREVIEW = 5;
+
 export default function NovedadesPage() {
   const supabase = createClient();
   const [rows, setRows] = useState<Novedad[]>([]);
@@ -39,6 +42,7 @@ export default function NovedadesPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [marking, setMarking] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -164,6 +168,38 @@ export default function NovedadesPage() {
                           <span className="text-slate-500">Motivo: </span>
                           <span className="font-semibold text-slate-800">{r.note}</span>
                         </p>
+                        {r.items && r.items.length > 0 && (() => {
+                          const all = expanded.has(r.id) || r.items.length <= ITEMS_PREVIEW;
+                          const list = all ? r.items : r.items.slice(0, ITEMS_PREVIEW);
+                          return (
+                            <ul className="mt-2 pl-3 border-l-2 border-indigo-100 space-y-1.5">
+                              {list.map((it, i) => {
+                                const v = formatVariant(it.talla, it.color);
+                                return (
+                                  <li key={i} className="leading-tight">
+                                    <p className="text-sm font-semibold text-slate-800">
+                                      {it.name}
+                                      {it.quantity > 1 && <span className="font-normal text-slate-500"> ×{it.quantity}</span>}
+                                    </p>
+                                    <p className="text-xs text-slate-500">
+                                      {v && `${v} · `}<span className="font-mono">{it.sku || 'sin código'}</span>
+                                    </p>
+                                  </li>
+                                );
+                              })}
+                              {!all && (
+                                <li>
+                                  <button
+                                    onClick={() => setExpanded(prev => new Set(prev).add(r.id))}
+                                    className="text-xs font-semibold text-indigo-700 hover:underline cursor-pointer"
+                                  >
+                                    Ver {r.items.length - ITEMS_PREVIEW} más
+                                  </button>
+                                </li>
+                              )}
+                            </ul>
+                          );
+                        })()}
                       </>
                     ) : (
                       <>

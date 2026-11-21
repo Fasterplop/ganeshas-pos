@@ -62,6 +62,15 @@ export type NovedadKind = 'price' | 'transfer' | 'traslado';
 /** Qué pasó con un traslado. */
 export type TrasladoEvent = 'enviado' | 'incompleto' | 'deshecho';
 
+/** Una pieza de un traslado, con el código que tiene en la tienda que envió. */
+export interface TrasladoItem {
+  name: string;
+  sku: string;
+  talla: string | null;
+  color: string | null;
+  quantity: number;
+}
+
 export interface Novedad {
   id: string;
   kind: NovedadKind;
@@ -90,6 +99,8 @@ export interface Novedad {
   event?: TrasladoEvent;
   pieces?: number;
   missing?: number;
+  /** Las piezas del envío; en «Falta algo», solo las que faltaron. */
+  items?: TrasladoItem[];
 }
 
 type ProductEmbed = { name: string; sku_barcode: string; talla: string | null; color: string | null } | null;
@@ -139,7 +150,8 @@ export async function fetchNovedades(
       .select(
         'id, created_at, created_by, received_at, undone_at, undone_by, status, pieces, note, from_store_id, to_store_id, ' +
           'author:profiles!store_shipments_author_fkey (full_name), receiver:profiles!store_shipments_receiver_fkey (full_name), ' +
-          'undoer:profiles!store_shipments_undoer_fkey (full_name), store_shipment_items (missing)',
+          'undoer:profiles!store_shipments_undoer_fkey (full_name), ' +
+          'store_shipment_items (sort, quantity, missing, size, product:products!store_shipment_items_product_fkey (name, sku_barcode, talla, color))',
       )
       .order('created_at', { ascending: false })
       .limit(LIMIT),
@@ -245,25 +257,42 @@ export async function fetchNovedades(
   if (!shipments.error) {
     type Who = { full_name: string } | { full_name: string }[] | null;
     const nameOf = (w: Who) => (Array.isArray(w) ? w[0]?.full_name : w?.full_name) ?? 'Desconocido';
+    type RawItem = { sort: number; quantity: number; missing: number; size: string | null; product: ProductEmbed | ProductEmbed[] };
     for (const raw of shipments.data ?? []) {
       const s = raw as unknown as {
         id: string; created_at: string; created_by: string; received_at: string | null; undone_at: string | null;
         undone_by: string | null; status: string; pieces: number; note: string; from_store_id: string; to_store_id: string;
-        author: Who; receiver: Who; undoer: Who; store_shipment_items: { missing: number }[] | null;
+        author: Who; receiver: Who; undoer: Who; store_shipment_items: RawItem[] | null;
       };
+      const raws = [...(s.store_shipment_items ?? [])].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0));
+      // La talla anotada al enviar (un código con varias tallas) gana a la del producto.
+      const toItem = (it: RawItem, quantity: number): TrasladoItem => {
+        const p = Array.isArray(it.product) ? (it.product[0] ?? null) : it.product;
+        return {
+          name: p?.name ?? 'Producto eliminado',
+          sku: p?.sku_barcode ?? '',
+          talla: it.size ?? p?.talla ?? null,
+          color: p?.color ?? null,
+          quantity,
+        };
+      };
+      const allItems = raws.map(it => toItem(it, Number(it.quantity) || 0));
       const base = {
         kind: 'traslado' as const, productName: '', sku: '', talla: null, color: null,
         pieces: Number(s.pieces) || 0, fromStoreId: s.from_store_id, toStoreId: s.to_store_id, note: s.note,
       };
       if (s.created_by !== ownerId) {
-        rows.push({ ...base, id: `s-${s.id}`, event: 'enviado', created_at: s.created_at, who: nameOf(s.author) });
+        rows.push({ ...base, id: `s-${s.id}`, event: 'enviado', created_at: s.created_at, who: nameOf(s.author), items: allItems });
       }
       if (s.status === 'incompleto' && s.received_at) {
-        const missing = (s.store_shipment_items ?? []).reduce((a, it) => a + (Number(it.missing) || 0), 0);
-        rows.push({ ...base, id: `si-${s.id}`, event: 'incompleto', created_at: s.received_at, who: nameOf(s.receiver), missing });
+        const missingItems = raws.filter(it => Number(it.missing) > 0).map(it => toItem(it, Number(it.missing)));
+        const missing = missingItems.reduce((a, it) => a + it.quantity, 0);
+        rows.push({
+          ...base, id: `si-${s.id}`, event: 'incompleto', created_at: s.received_at, who: nameOf(s.receiver), missing, items: missingItems,
+        });
       }
       if (s.status === 'deshecho' && s.undone_at && s.undone_by !== ownerId) {
-        rows.push({ ...base, id: `sd-${s.id}`, event: 'deshecho', created_at: s.undone_at, who: nameOf(s.undoer) });
+        rows.push({ ...base, id: `sd-${s.id}`, event: 'deshecho', created_at: s.undone_at, who: nameOf(s.undoer), items: allItems });
       }
     }
   }
