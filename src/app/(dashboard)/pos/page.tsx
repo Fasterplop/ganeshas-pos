@@ -84,6 +84,10 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string }[] = [
 // total de la venta.
 const PDV_SURCHARGE_RATE = 0.05;
 
+// Métodos con los que se puede poner descuento manual (todos menos Cashea).
+// Con Punto de Venta el 5% de recargo se calcula sobre el total ya rebajado.
+const DISCOUNT_METHODS: PaymentMethod[] = ['efectivo', 'zelle', 'pago_movil', 'punto_de_venta'];
+
 export default function POSPage() {
   const supabase = createClient();
   // 1. Extraemos currentStore del estado global
@@ -267,7 +271,8 @@ export default function POSPage() {
 
   let discountAmount = 0;
   // El descuento manual NO aplica en modo de pago dividido.
-  if (!splitPayment && (paymentMethod === 'efectivo' || paymentMethod === 'zelle') && discountValue !== '' && !isNaN(Number(discountValue))) {
+  const discountAllowed = !splitPayment && paymentMethod !== null && DISCOUNT_METHODS.includes(paymentMethod);
+  if (discountAllowed && discountValue !== '' && !isNaN(Number(discountValue))) {
     const val = Number(discountValue);
     if (discountType === 'percent') {
       discountAmount = subtotalUSD * (val / 100);
@@ -1872,7 +1877,7 @@ export default function POSPage() {
                   </button>
                 </div>
 
-                {(paymentMethod === 'efectivo' || paymentMethod === 'zelle') && (
+                {discountAllowed && (
                   <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in-down">
                     <h4 className="text-lg font-semibold text-slate-700 mb-2">Aplicar Descuento</h4>
                     <div className="flex gap-2">
