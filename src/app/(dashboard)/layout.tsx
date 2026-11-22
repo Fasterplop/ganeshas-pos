@@ -44,6 +44,17 @@ export default async function DashboardLayout({
   // Modo teléfono: solo para cajeros (en Usuarios no se ofrece a otros roles).
   const phoneSimple = profile.role === 'cashier' && !!profile.phone_simple_mode;
 
+  // Fiado (db/fiado_02_schema.sql): «Cuentas por cobrar» en el menú para el
+  // dueño y para quien tenga el permiso. Consulta aparte: sin la columna (SQL
+  // sin aplicar) no lo ve nadie, ni el dueño, y el resto del menú no cambia.
+  const { data: fiadoProfile, error: fiadoError } = await supabase
+    .from('profiles')
+    .select('role, is_active, can_fiar')
+    .eq('id', user.id)
+    .maybeSingle();
+  const canFiar = !fiadoError && !!fiadoProfile && fiadoProfile.is_active !== false
+    && (fiadoProfile.role === 'owner' || !!fiadoProfile.can_fiar);
+
   // 2. Obtenemos todas las tiendas disponibles
   const { data: stores } = await supabase
     .from('stores')
@@ -65,15 +76,17 @@ export default async function DashboardLayout({
         userName={profile.full_name} 
         stores={stores}
         phoneSimple={phoneSimple}
+        canFiar={canFiar}
       />
 
       <PhoneModeGuard enabled={phoneSimple} />
 
       {/* Se mostrará SOLO en escritorio. Le pasamos stores */}
-      <Sidebar 
-        userRole={profile.role} 
-        userName={profile.full_name} 
+      <Sidebar
+        userRole={profile.role}
+        userName={profile.full_name}
         stores={stores}
+        canFiar={canFiar}
       />
 
       <BcvModal />

@@ -200,27 +200,8 @@ CREATE TRIGGER products_price_guard
 -- ----------------------------------------------------------------------------
 -- 5. Nadie se da a sí mismo los permisos nuevos.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.profiles_perm_guard()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  IF NEW.can_raise_prices IS NOT DISTINCT FROM OLD.can_raise_prices
-     AND NEW.phone_simple_mode IS NOT DISTINCT FROM OLD.phone_simple_mode THEN
-    RETURN NEW;
-  END IF;
-  -- Usuarios (service role) y SQL Editor.
-  IF auth.uid() IS NULL THEN
-    RETURN NEW;
-  END IF;
-  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role::text = 'owner') THEN
-    RETURN NEW;
-  END IF;
-  RAISE EXCEPTION 'PERMISSION_CHANGE_NOT_ALLOWED';
-END;
-$$;
+-- La función profiles_perm_guard() vive ahora en db/fiado_02_schema.sql
+-- (versión vigente, que también protege can_fiar).
 
 DROP TRIGGER IF EXISTS profiles_perm_guard ON public.profiles;
 CREATE TRIGGER profiles_perm_guard

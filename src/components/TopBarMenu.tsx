@@ -19,9 +19,11 @@ interface TopBarMenuProps {
   stores: Store[]; // <-- Nueva prop para recibir las tiendas
   /** Modo teléfono de la cuenta: este menú (que es el del teléfono) muestra solo precio y caja. */
   phoneSimple?: boolean;
+  /** Dueño, o con el permiso de fiar (Usuarios): ve «Cuentas por cobrar». */
+  canFiar?: boolean;
 }
 
-export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: TopBarMenuProps) {
+export default function TopBarMenu({ userRole, userName, stores, phoneSimple, canFiar }: TopBarMenuProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
@@ -40,6 +42,8 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: 
     { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
     { name: 'Novedades', path: '/novedades', roles: ['owner'] },
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
+    // Solo con el permiso de fiar (ver canFiar), el mismo que enciende «Fiado» en la caja.
+    { name: 'Cuentas por cobrar', path: '/cuentas-por-cobrar', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Traslados', path: '/traslados', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
@@ -56,7 +60,8 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple }: 
         .map(path => menuItems.find(item => item.path === path))
         .filter((item): item is (typeof menuItems)[number] => !!item && item.roles.includes(userRole))
         .map(item => (item.path === '/pos' ? { ...item, name: 'Vender' } : item))
-    : menuItems.filter(item => item.roles.includes(userRole));
+    : menuItems.filter(item =>
+        item.roles.includes(userRole) && (item.path !== '/cuentas-por-cobrar' || !!canFiar));
 
   return (
     <header className="md:hidden w-full bg-[#0f5c5c] text-white print:hidden flex flex-col shadow-md shrink-0">

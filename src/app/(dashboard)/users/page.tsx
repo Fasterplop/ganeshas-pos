@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { createClient } from '@/lib/supabase/client';
-import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction, setCanRaisePricesAction, setPhoneSimpleModeAction, getStoreSettingsAction, setModelPriceEnabledAction } from './actions';
+import { createCashierAction, getUsersAction, toggleUserActiveAction, setRestockScopeAction, setCanRaisePricesAction, setPhoneSimpleModeAction, getStoreSettingsAction, setModelPriceEnabledAction, setCanFiarAction, setFiadoPointsOnPayoffAction } from './actions';
 import { StoreIcon } from 'lucide-react'; // Sugerido para el badge de la tienda
 import { ASSIGNABLE_ROLES, ROLE_BADGE, ROLE_BADGE_CLASS, ROLE_HELP, ROLE_LABEL, type AppRole } from '@/lib/roles';
 
@@ -111,12 +111,18 @@ export default function UsersPage() {
   // SQL (modelPriceInstalled = false) la tarjeta no se muestra.
   const [modelPriceInstalled, setModelPriceInstalled] = useState(false);
   const [modelPriceByStore, setModelPriceByStore] = useState<Record<string, boolean>>({});
+  // Fiado (db/fiado_02_schema.sql): el permiso por empleado y, por tienda, si
+  // al terminar de pagar se suman los puntos. Sin el SQL no se muestran.
+  const [fiadoInstalled, setFiadoInstalled] = useState(false);
+  const [fiadoPointsInstalled, setFiadoPointsInstalled] = useState(false);
+  const [fiadoPointsByStore, setFiadoPointsByStore] = useState<Record<string, boolean>>({});
 
   const fetchUsers = async () => {
     const result = await getUsersAction();
     if (result.success && result.users) {
       setUsers(result.users);
       setPermsInstalled(!!result.permsInstalled);
+      setFiadoInstalled(!!result.fiadoInstalled);
     }
   };
 
@@ -125,6 +131,8 @@ export default function UsersPage() {
     if (result.success) {
       setModelPriceInstalled(result.installed);
       setModelPriceByStore(result.modelPrice);
+      setFiadoPointsInstalled(result.fiadoInstalled);
+      setFiadoPointsByStore(result.fiadoPoints);
     }
   };
 
@@ -218,6 +226,30 @@ export default function UsersPage() {
       const result = await setPhoneSimpleModeAction(userId, next);
       if (result.success) await fetchUsers();
       else alert('Error al cambiar el permiso: ' + result.error);
+    }
+  };
+
+  const handleSetFiar = async (userId: string, userName: string, current: boolean, next: boolean) => {
+    if (next === current) return;
+    const msg = next
+      ? `¿Darle a ${userName} el permiso de fiar? Le aparecen Fiado en la caja y Cuentas por cobrar en el menú.`
+      : `¿Quitarle a ${userName} el permiso de fiar? Ya no verá Fiado en la caja ni Cuentas por cobrar. Las deudas no se borran.`;
+    if (window.confirm(msg)) {
+      const result = await setCanFiarAction(userId, next);
+      if (result.success) await fetchUsers();
+      else alert('Error al cambiar el permiso: ' + result.error);
+    }
+  };
+
+  const handleSetFiadoPoints = async (storeId: string, storeName: string, current: boolean, next: boolean) => {
+    if (next === current) return;
+    const msg = next
+      ? `En ${storeName}, cuando un cliente termine de pagar un fiado, se le sumarán los puntos de esa compra. ¿Continuar?`
+      : `En ${storeName}, al terminar de pagar un fiado NO se sumarán puntos. ¿Continuar?`;
+    if (window.confirm(msg)) {
+      const result = await setFiadoPointsOnPayoffAction(storeId, next);
+      if (result.success) await fetchStoreSettings();
+      else alert('Error al cambiar el ajuste: ' + result.error);
     }
   };
 
@@ -354,6 +386,35 @@ export default function UsersPage() {
             </div>
           </div>
         )}
+
+        {/* Fiado: si al terminar de pagar se suman los puntos de la compra. */}
+        {fiadoPointsInstalled && stores.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-shrink-0">
+            <h2 className="font-semibold text-slate-700 pb-2 border-b border-slate-100">✪ Puntos al terminar de pagar un fiado</h2>
+            <p className="text-[11px] text-slate-500 mt-2 mb-3 leading-snug">
+              Al fiar no se ganan puntos. Cuando el cliente termina de pagar, se suman o no según esta tienda.
+            </p>
+            <div className="space-y-2">
+              {stores.map((store) => {
+                // Sin fila en store_settings = Sí (como el valor por defecto).
+                const on = fiadoPointsByStore[store.id] !== false;
+                return (
+                  <div key={store.id} className="flex justify-between items-center gap-2">
+                    <span className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                      <StoreIcon className="w-3.5 h-3.5 text-slate-400" />
+                      {store.name}
+                    </span>
+                    <TwoWayControl
+                      value={on}
+                      labels={['No', 'Sí']}
+                      onChange={(next) => handleSetFiadoPoints(store.id, store.name, on, next)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* === COLUMNA DERECHA: LISTA DE USUARIOS === */}
@@ -434,6 +495,16 @@ export default function UsersPage() {
                     </div>
                   </>
                 )}
+                {user.role === 'cashier' && fiadoInstalled && (
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-500">Fiado y cuentas por cobrar</span>
+                    <TwoWayControl
+                      value={!!user.can_fiar}
+                      labels={['No', 'Sí']}
+                      onChange={(next) => handleSetFiar(user.id, user.full_name, !!user.can_fiar, next)}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -449,6 +520,7 @@ export default function UsersPage() {
                   <th className="px-6 py-4 text-center">Reposición</th>
                   {permsInstalled && <th className="px-4 py-4 text-center">Subir precios</th>}
                   {permsInstalled && <th className="px-4 py-4 text-center">En el teléfono</th>}
+                  {fiadoInstalled && <th className="px-4 py-4 text-center">Fiado y cuentas por cobrar</th>}
                   <th className="px-6 py-4">Estado</th>
                   <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
@@ -505,6 +577,19 @@ export default function UsersPage() {
                             onChange={(next) => handleSetPhone(user.id, user.full_name, !!user.phone_simple_mode, next)}
                           />
                         ) : <span className="text-xs text-slate-400 italic">—</span>}
+                      </td>
+                    )}
+                    {fiadoInstalled && (
+                      <td className="px-4 py-4 text-center">
+                        {user.role === 'cashier' ? (
+                          <TwoWayControl
+                            value={!!user.can_fiar}
+                            labels={['No', 'Sí']}
+                            onChange={(next) => handleSetFiar(user.id, user.full_name, !!user.can_fiar, next)}
+                          />
+                        ) : user.role === 'owner'
+                          ? <span className="text-xs text-teal-700 font-semibold">Siempre</span>
+                          : <span className="text-xs text-slate-400 italic">—</span>}
                       </td>
                     )}
                     <td className="px-6 py-4">

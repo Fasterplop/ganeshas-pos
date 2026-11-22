@@ -117,6 +117,13 @@ export async function getUsersAction() {
       profiles = fallback.data;
     }
 
+    // Permiso de fiar (db/fiado_02_schema.sql), en una consulta aparte para no
+    // tocar las de arriba: sin la columna, la columna de Usuarios no se muestra.
+    const fiadoRes = await supabaseAdmin.from('profiles').select('id, can_fiar');
+    const fiadoInstalled = !fiadoRes.error;
+    const canFiarById: Record<string, boolean> = {};
+    for (const row of fiadoRes.data ?? []) canFiarById[row.id as string] = !!row.can_fiar;
+
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers();
     if (authError) throw authError;
 
@@ -133,10 +140,11 @@ export async function getUsersAction() {
         can_restock_local: profile.can_restock_local ?? false, // reponer solo en su tienda
         can_raise_prices: profile.can_raise_prices ?? false,   // subir precios (nunca bajarlos)
         phone_simple_mode: profile.phone_simple_mode ?? false, // en el teléfono: solo precio y caja
+        can_fiar: canFiarById[profile.id] ?? false,             // fiado en la caja + Cuentas por cobrar
       };
     });
 
-    return { success: true, users, permsInstalled };
+    return { success: true, users, permsInstalled, fiadoInstalled };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -191,17 +199,57 @@ export async function setPhoneSimpleModeAction(userId: string, value: boolean) {
   }
 }
 
+// Fiado (db/fiado_02_schema.sql): un solo permiso que enciende a la vez
+// «Fiado» en la caja y «Cuentas por cobrar» en el menú. Por el admin client:
+// profiles_perm_guard rechaza que un no-dueño lo cambie con su sesión.
+export async function setCanFiarAction(userId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+  try {
+    const { error } = await supabaseAdmin.from('profiles').update({ can_fiar: value }).eq('id', userId);
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // Precio por modelo (db/precio_modelo_01.sql): en qué tiendas se usa el 💲.
+// Y, con db/fiado_02_schema.sql, si al terminar de pagar un fiado se suman los
+// puntos (fiado_points_on_payoff; sin fila = sí, como el DEFAULT de la columna).
 // store_settings no tiene políticas de escritura: solo se cambia desde aquí,
 // con el admin client y después de comprobar que pide el dueño.
 export async function getStoreSettingsAction() {
   if (!(await isOwner())) return { success: false as const, error: 'Acceso denegado' };
   const { data, error } = await supabaseAdmin.from('store_settings').select('store_id, model_price_enabled');
   // Sin la tabla (SQL sin aplicar) la tarjeta no se muestra.
-  if (error) return { success: true as const, installed: false, modelPrice: {} as Record<string, boolean> };
+  if (error) {
+    return {
+      success: true as const, installed: false, modelPrice: {} as Record<string, boolean>,
+      fiadoInstalled: false, fiadoPoints: {} as Record<string, boolean>,
+    };
+  }
   const modelPrice: Record<string, boolean> = {};
   for (const row of data ?? []) modelPrice[row.store_id as string] = !!row.model_price_enabled;
-  return { success: true as const, installed: true, modelPrice };
+
+  const fiadoRes = await supabaseAdmin.from('store_settings').select('store_id, fiado_points_on_payoff');
+  const fiadoInstalled = !fiadoRes.error;
+  const fiadoPoints: Record<string, boolean> = {};
+  for (const row of fiadoRes.data ?? []) fiadoPoints[row.store_id as string] = row.fiado_points_on_payoff !== false;
+
+  return { success: true as const, installed: true, modelPrice, fiadoInstalled, fiadoPoints };
+}
+
+export async function setFiadoPointsOnPayoffAction(storeId: string, value: boolean) {
+  if (!(await isOwner())) return { success: false, error: 'Acceso denegado' };
+  try {
+    const { error } = await supabaseAdmin
+      .from('store_settings')
+      .upsert({ store_id: storeId, fiado_points_on_payoff: value, updated_at: new Date().toISOString() }, { onConflict: 'store_id' });
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function setModelPriceEnabledAction(storeId: string, value: boolean) {

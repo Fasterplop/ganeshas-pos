@@ -9,9 +9,9 @@ import LoyaltySettingsCard from '@/components/LoyaltySettingsCard';
 import { usePOSStore } from '@/store/usePOSStore'; // <-- 1. Importamos el contexto
 import { deleteSaleAction } from './actions';
 import ExcelJS from 'exceljs';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Maximize2 } from 'lucide-react';
 import { formatVariant } from '@/lib/productVariant';
-import { isMissingColumnError } from '@/lib/supabaseErrors';
+import { isMissingColumnError, isMissingTableError } from '@/lib/supabaseErrors';
 import {
   CASHEA_INITIAL_NO_METHOD,
   INITIAL_METHOD_COLS,
@@ -26,6 +26,12 @@ import {
 } from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
 import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, isExchange, isMissingExchangeColumn, manualDiscountOf } from '@/lib/exchange';
+import { FIADO_CHANGED_EVENT, useFiadoAccess } from '@/lib/fiado';
+
+// Venta fiada (db/fiado_01_enum.sql): cuenta como venta del día, pero su dinero
+// NO entró en caja. Lo que entra son sus abonos (`fiado_payments`), el día que
+// se cobran y en su método.
+const FIADO_METHOD = 'fiado';
 
 // PostgREST corta cada respuesta en 1000 filas (y trunca en silencio): las
 // consultas de ventas se paginan con .range() de a SALES_PAGE.
@@ -53,6 +59,7 @@ const prettyMethod = (m?: string | null) => (m ? m.replace(/_/g, ' ') : '');
 const paymentToText = (sale: any) => {
   // Cambio de producto sin diferencia de precio: no hubo cobro.
   if (sale.payment_method === EXCHANGE_NO_DIFF_METHOD) return 'sin diferencia (cambio)';
+  if (sale.payment_method === FIADO_METHOD) return 'Fiado';
   const m1 = prettyMethod(sale.payment_method) || 'N/A';
   if (!sale.payment_method_2) return m1;
   const a1 = Number(sale.payment_amount_1) || 0;
@@ -84,6 +91,9 @@ const CASHEA_INITIAL_ROW: (typeof PAYMENT_METHODS)[number] = {
 const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
   // Un cambio sin diferencia no movió dinero: no crea una fila "$0.00" en el desglose.
   if (sale.payment_method === EXCHANGE_NO_DIFF_METHOD) return;
+  // Un fiado no trajo dinero al venderse: sus abonos se suman aparte, en su
+  // método (ver todayAbonosByMethod). Sin esto saldría una fila «fiado».
+  if (sale.payment_method === FIADO_METHOD) return;
   if (sale.payment_method_2) {
     const a1 = Number(sale.payment_amount_1) || 0;
     const a2 = Number(sale.payment_amount_2) || 0;
@@ -103,8 +113,9 @@ const addSaleToBreakdown = (acc: Record<string, number>, sale: any) => {
 //   casheaMethod -> cómo se pagó la inicial (db/cashea_initial_method.sql)
 //   exchange     -> sales.kind / exchange_of_sale_id, sale_items.source_sale_item_id
 //                   (db/exchange_02_schema_and_rpc.sql)
-type ColFlags = { cashea: boolean; casheaMethod: boolean; exchange: boolean };
-const DEFAULT_FLAGS: ColFlags = { cashea: true, casheaMethod: true, exchange: true };
+//   fiado        -> sales.fiado_paid_at (db/fiado_02_schema.sql)
+type ColFlags = { cashea: boolean; casheaMethod: boolean; exchange: boolean; fiado: boolean };
+const DEFAULT_FLAGS: ColFlags = { cashea: true, casheaMethod: true, exchange: true, fiado: true };
 
 // Ejecuta un select y, si la BD todavía no tiene alguna de esas columnas,
 // reintenta sin ella (cada reintento apaga un flag, así que termina siempre).
@@ -116,6 +127,11 @@ async function selectWithFallback(
   let flags = { ...initial };
   for (;;) {
     const res = await run(flags);
+    if (res.error && flags.fiado && isMissingColumnError(res.error, 'fiado_paid_at')) {
+      console.warn('[dashboard] sales.fiado_paid_at no existe aún (aplicar db/fiado_02_schema.sql); historial sin estado de fiado.');
+      flags = { ...flags, fiado: false };
+      continue;
+    }
     if (res.error && flags.exchange && isMissingExchangeColumn(res.error)) {
       console.warn('[dashboard] columnas de cambios de producto no existen aún (aplicar db/exchange_02_schema_and_rpc.sql); historial sin cambios.');
       flags = { ...flags, exchange: false };
@@ -145,6 +161,7 @@ const historySelect = (flags: ColFlags) => `
   ${flags.cashea ? 'cashea_initial_usd,' : ''}
   ${flags.cashea && flags.casheaMethod ? `${INITIAL_METHOD_COLS},` : ''}
   ${flags.exchange ? 'kind, exchange_of_sale_id,' : ''}
+  ${flags.fiado ? 'fiado_paid_at,' : ''}
   bcv_rate,
   payment_method,
   payment_ref,
@@ -258,6 +275,16 @@ export default function DashboardPage() {
   const [todayInitialByMethod, setTodayInitialByMethod] = useState<Record<string, number>>({});
   // Cambios de producto registrados hoy (no cuentan como transacciones de venta).
   const [todayExchanges, setTodayExchanges] = useState(0);
+  // Fiado (db/fiado_02_schema.sql): lo vendido fiado hoy (no entró en caja) y
+  // los abonos cobrados hoy (sí entraron, en su método; también los de fiados
+  // de otros días). Sin el SQL aplicado quedan en 0 y Reportes queda como antes.
+  const [todayFiadoSold, setTodayFiadoSold] = useState(0);
+  const [todayAbonos, setTodayAbonos] = useState(0);
+  const [todayAbonosByMethod, setTodayAbonosByMethod] = useState<Record<string, number>>({});
+  // Lo que deben los clientes (solo para quien puede fiar), con la tienda a la
+  // que corresponde: al cambiar de tienda no se muestra el de la anterior.
+  const [porCobrar, setPorCobrar] = useState<{ storeId: string; value: number } | null>(null);
+  const fiadoAccess = useFiadoAccess();
   // El desglose por método de pago va cerrado: ocupa mucho y empuja el historial hacia abajo.
   const [showBreakdown, setShowBreakdown] = useState(false);
 
@@ -301,8 +328,16 @@ export default function DashboardPage() {
   // Venta cuya referencia de pago se está viendo COMPLETA (null = cerrado).
   // En la tabla la referencia va recortada; el botón "ver" abre esta ficha.
   const [refSale, setRefSale] = useState<RefSale | null>(null);
+  // Abonado de cada venta fiada visible en el historial (id de sales -> $).
+  const [fiadoPaidBySale, setFiadoPaidBySale] = useState<Record<string, number>>({});
   // Se incrementa tras registrar un cambio para recargar métricas, gráfico e historial.
   const [refreshKey, setRefreshKey] = useState(0);
+  // Un abono registrado o borrado (Cuentas por cobrar) recarga lo mismo.
+  useEffect(() => {
+    const onFiado = () => setRefreshKey(k => k + 1);
+    window.addEventListener(FIADO_CHANGED_EVENT, onFiado);
+    return () => window.removeEventListener(FIADO_CHANGED_EVENT, onFiado);
+  }, []);
   // El historial arranca en el DÍA ACTUAL (calculado en zona horaria de Caracas
   // para no correrse un día si se usa de noche — toISOString() usa UTC).
   const todayCaracas = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Caracas' });
@@ -317,6 +352,27 @@ export default function DashboardPage() {
     setHistoryDateRange({ start: todayCaracas, end: todayCaracas });
     historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+
+  // «⤢ Ver en grande»: el mismo historial (mismas fechas, mismas filas) a
+  // pantalla completa y con letra más grande. Se cierra con ✕ o con Esc; Esc no
+  // la cierra mientras el cambio de producto o la referencia están abiertos
+  // encima (esos se cierran primero).
+  const [historyBig, setHistoryBig] = useState(false);
+  useEffect(() => {
+    if (!historyBig) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (exchangeSaleId !== null || refSale !== null) return;
+      setHistoryBig(false);
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [historyBig, exchangeSaleId, refSale]);
 
   const parseSupabaseDate = (dateStr: string) => {
     if (!dateStr) return new Date();
@@ -413,7 +469,7 @@ export default function DashboardPage() {
 
       if (recentSales) {
         let tUSD = 0, tVES = 0, tWeek = 0, lWeek = 0, tMonth = 0, lMonth = 0;
-        let tTx = 0, tCasheaInitial = 0, tExchanges = 0;
+        let tTx = 0, tCasheaInitial = 0, tExchanges = 0, tFiado = 0;
         const byMethod: Record<string, number> = {};
         const initialByMethod: Record<string, number> = {};
 
@@ -427,6 +483,7 @@ export default function DashboardPage() {
             tUSD += amount;
             tVES += amount * Number(sale.bcv_rate);
             if (isExchange(sale)) tExchanges += 1; else tTx += 1;
+            if (sale.payment_method === FIADO_METHOD) tFiado += amount;
             tCasheaInitial += casheaInitialOf(sale);
             addCasheaInitialByMethod(initialByMethod, sale);
             addSaleToBreakdown(byMethod, sale);
@@ -444,13 +501,41 @@ export default function DashboardPage() {
         setTodayByMethod(byMethod);
         setTodayCasheaInitial(tCasheaInitial);
         setTodayInitialByMethod(initialByMethod);
+        setTodayFiadoSold(tFiado);
         setThisWeekUSD(tWeek);
         setThisMonthUSD(tMonth);
         setWeekGrowth(lWeek ? ((tWeek - lWeek) / lWeek) * 100 : 0);
         setMonthGrowth(lMonth ? ((tMonth - lMonth) / lMonth) * 100 : 0);
       } else {
         // Reset a cero si no hay ventas en la nueva tienda
-        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayExchanges(0); setTodayByMethod({}); setTodayCasheaInitial(0); setTodayInitialByMethod({}); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+        setTodayUSD(0); setTodayVES(0); setTodayTx(0); setTodayExchanges(0); setTodayByMethod({}); setTodayCasheaInitial(0); setTodayInitialByMethod({}); setTodayFiadoSold(0); setThisWeekUSD(0); setThisMonthUSD(0); setWeekGrowth(0); setMonthGrowth(0);
+      }
+
+      // A2. Abonos de fiado cobrados hoy en esta tienda (el inicial incluido):
+      // entraron en caja hoy, en su método, aunque la venta fiada sea de otro
+      // día. Sin db/fiado_02_schema.sql la tabla no existe: todo queda en 0 y
+      // Reportes se ve como antes.
+      {
+        let tAbonos = 0;
+        const abonosByMethod: Record<string, number> = {};
+        const { data: abonos, error: abonosError } = await supabase
+          .from('fiado_payments')
+          .select('amount_usd, payment_method')
+          .eq('store_id', currentStore.id)
+          .gte('created_at', startOfToday.toISOString())
+          .limit(SALES_PAGE);
+        if (abonosError) {
+          if (!isMissingTableError(abonosError)) console.warn('[dashboard] no se pudieron leer los abonos de hoy:', abonosError.message);
+        } else {
+          for (const a of abonos ?? []) {
+            const v = Number(a.amount_usd) || 0;
+            tAbonos += v;
+            const m = String(a.payment_method);
+            abonosByMethod[m] = (abonosByMethod[m] || 0) + v;
+          }
+        }
+        setTodayAbonos(tAbonos);
+        setTodayAbonosByMethod(abonosByMethod);
       }
 
       // B. Mejores Clientes AISLADOS POR TIENDA
@@ -589,6 +674,30 @@ export default function DashboardPage() {
         .limit(100));
 
       const rows = (res.data as SaleRow[] | null) ?? [];
+
+      // Abonado de cada venta fiada visible, para la etiqueta «Fiado · debe $X».
+      // Se lee ANTES de mostrar la tabla para que no parpadee «debe el total»;
+      // casi siempre no hay fiados en la lista y no se consulta nada.
+      const fiadoIds = rows
+        .filter((s) => s.payment_method === FIADO_METHOD)
+        .map((s) => s.id as string);
+      const paidBySale: Record<string, number> = {};
+      for (const ids of chunks(fiadoIds, IN_CHUNK)) {
+        const { data: pays, error: payError } = await supabase
+          .from('fiado_payments')
+          .select('sale_id, amount_usd')
+          .in('sale_id', ids);
+        if (payError) {
+          console.warn('[dashboard] no se pudieron leer los abonos del historial:', payError.message);
+          break;
+        }
+        for (const p of pays ?? []) {
+          const key = p.sale_id as string;
+          paidBySale[key] = (paidBySale[key] || 0) + (Number(p.amount_usd) || 0);
+        }
+      }
+      setFiadoPaidBySale(paidBySale);
+
       setSalesHistory(rows);
       setLoadingHistory(false);
 
@@ -631,6 +740,47 @@ export default function DashboardPage() {
     }
     fetchHistory();
   }, [historyDateRange, supabase, currentStore?.id, refreshKey]); // <-- Se vuelve a ejecutar si cambia la tienda o tras un cambio de producto
+
+  // =======================================================
+  // 4. TOTAL POR COBRAR (solo dueño y quien tiene el permiso de fiar)
+  //    = Σ (total − abonos) de las ventas fiadas abiertas de esta tienda.
+  // =======================================================
+  const fiadoAllowed = fiadoAccess.allowed;
+  const fiadoStoreId = currentStore?.id ?? null;
+  useEffect(() => {
+    if (!fiadoStoreId || !fiadoAllowed) return;
+    let alive = true;
+    (async () => {
+      const { data: open, error } = await supabase
+        .from('sales')
+        .select('id, total_amount')
+        .eq('store_id', fiadoStoreId)
+        .eq('payment_method', FIADO_METHOD)
+        .is('fiado_paid_at', null)
+        .limit(SALES_PAGE);
+      if (error) {
+        console.warn('[dashboard] no se pudo calcular el total por cobrar:', error.message);
+        if (alive) setPorCobrar(null);
+        return;
+      }
+      const sales = open ?? [];
+      let owed = sales.reduce((sum, s) => sum + (Number(s.total_amount) || 0), 0);
+      for (const ids of chunks(sales.map(s => s.id as string), IN_CHUNK)) {
+        const { data: pays, error: payError } = await supabase
+          .from('fiado_payments')
+          .select('amount_usd')
+          .in('sale_id', ids);
+        if (payError) {
+          console.warn('[dashboard] no se pudieron leer los abonos para el total por cobrar:', payError.message);
+          if (alive) setPorCobrar(null);
+          return;
+        }
+        owed -= (pays ?? []).reduce((sum, p) => sum + (Number(p.amount_usd) || 0), 0);
+      }
+      if (alive) setPorCobrar({ storeId: fiadoStoreId, value: Math.max(0, owed) });
+    })();
+    return () => { alive = false; };
+  }, [supabase, fiadoStoreId, fiadoAllowed, refreshKey]);
 
   const handleExportCSV = async () => {
     if (!currentStore || exporting) return;
@@ -879,10 +1029,13 @@ export default function DashboardPage() {
   //   Recibido en tienda = lo que entró en caja hoy = total − Cashea (Procesado)
   // Cada inicial suma en el método con que se pagó (pedido de Gerardo): así
   // Pago Móvil, Punto, etc. dicen todo lo que entró por ahí, inicial incluida.
+  // Fiado: lo vendido fiado hoy está en el total pero NO entró en caja; lo que
+  // entra son los abonos cobrados hoy (de ventas de hoy o de otros días), que
+  // suman en Recibido y en su método. Sin el SQL del fiado los dos son 0.
   const todayCashea = todayByMethod['cashea'] || 0;
   const todaySinCashea = Math.max(0, todayUSD - todayCashea);
   const todayCasheaProcesado = Math.max(0, todayCashea - todayCasheaInitial);
-  const todayRecibidoTienda = Math.max(0, todayUSD - todayCasheaProcesado);
+  const todayRecibidoTienda = Math.max(0, todayUSD - todayCasheaProcesado - todayFiadoSold + todayAbonos);
   const todayInitialNoMethod = todayInitialByMethod[CASHEA_INITIAL_NO_METHOD] || 0;
   const todayInitialList = casheaInitialByMethodList(todayInitialByMethod);
   const pctOfToday = (v: number) => (todayUSD > 0 ? Math.min(100, (v / todayUSD) * 100) : 0);
@@ -896,14 +1049,22 @@ export default function DashboardPage() {
       .filter(k => !PAYMENT_METHODS.some(m => m.key === k))
       .map(k => ({ key: k, label: prettyMethod(k), icon: '💠', iconBg: 'bg-slate-100', bar: 'bg-slate-400', text: 'text-slate-600' })),
   ].map(m => {
-    const initialIncluded = m.key === 'cashea' || m.key === 'cashea_inicial' ? 0 : (todayInitialByMethod[m.key] || 0);
+    const notCashea = m.key !== 'cashea' && m.key !== 'cashea_inicial';
+    const initialIncluded = notCashea ? (todayInitialByMethod[m.key] || 0) : 0;
+    const abonosIncluded = notCashea ? (todayAbonosByMethod[m.key] || 0) : 0;
     const amount = m.key === 'cashea'
       ? todayCasheaProcesado
       : m.key === 'cashea_inicial'
         ? todayInitialNoMethod
-        : (todayByMethod[m.key] || 0) + initialIncluded;
-    return { ...m, amount, initialIncluded, pct: pctOfToday(amount) };
+        : (todayByMethod[m.key] || 0) + initialIncluded + abonosIncluded;
+    return { ...m, amount, initialIncluded, abonosIncluded, pct: pctOfToday(amount) };
   });
+  // Tarjetas del fiado. «Abonos cobrados hoy» sale si hubo abonos, o siempre
+  // para quien puede fiar (así sabe dónde mirarlos). «Total por cobrar», solo
+  // para el dueño y quien tiene el permiso (pedido de Gerardo).
+  const showAbonosTile = todayAbonos > 0 || (fiadoAccess.installed && fiadoAccess.allowed);
+  const porCobrarHere = porCobrar && porCobrar.storeId === currentStore.id ? porCobrar.value : null;
+  const showPorCobrarTile = fiadoAccess.allowed && porCobrarHere !== null;
 
   // Cards compartidas por la vista del dueño y la del cajero.
   // gridClass: clases de posición dentro de la grilla que las contiene.
@@ -925,10 +1086,37 @@ export default function DashboardPage() {
           <p className="text-xs text-slate-500 truncate">Recibido en Tienda Hoy</p>
           <p className="text-2xl font-bold text-emerald-700 truncate">${todayRecibidoTienda.toFixed(2)}</p>
           <p className="text-xs text-slate-500 truncate">
-            {Math.round(pctOfToday(todayRecibidoTienda))}% del total <span className="text-slate-300 mx-1">|</span> Incluyendo pago inicial
+            {Math.round(pctOfToday(todayRecibidoTienda))}% del total <span className="text-slate-300 mx-1">|</span> Incluyendo pago inicial{todayAbonos > 0 ? ' y abonos' : ''}
           </p>
         </div>
       </div>
+
+      {/* Fiado: abonos cobrados hoy (ya suman arriba) y lo que deben los clientes.
+          No hay tarjeta de «lo fiado hoy» (pedido de Gerardo). */}
+      {(showAbonosTile || showPorCobrarTile) && (
+        <div className={`grid grid-cols-1 ${showAbonosTile && showPorCobrarTile ? 'sm:grid-cols-2' : ''} gap-3 mt-3`}>
+          {showAbonosTile && (
+            <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
+              <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💳</div>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-500 leading-tight">Abonos cobrados hoy</p>
+                <p className="text-xl font-bold text-emerald-600 truncate">${todayAbonos.toFixed(2)}</p>
+                <p className="text-xs text-slate-500">Ya suman en Recibido</p>
+              </div>
+            </div>
+          )}
+          {showPorCobrarTile && (
+            <div className="flex items-center gap-3 bg-amber-50 border border-amber-100 rounded-lg p-3 min-w-0">
+              <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">📋</div>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-500 leading-tight">Total por cobrar</p>
+                <p className="text-xl font-bold text-amber-700 truncate">${(porCobrarHere ?? 0).toFixed(2)}</p>
+                <p className="text-xs text-slate-500">Lo que deben tus clientes fiados</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Con / sin Cashea + iniciales cobradas. Los títulos hacen salto de
           línea (no se truncan). El cajero no ve "Ventas sin Cashea". */}
@@ -1006,6 +1194,11 @@ export default function DashboardPage() {
                     incluye ${m.initialIncluded.toFixed(2)} de iniciales Cashea
                   </p>
                 )}
+                {m.abonosIncluded > 0 && (
+                  <p className="text-[11px] text-emerald-700 mt-1">
+                    🧾 incluye ${m.abonosIncluded.toFixed(2)} de abonos de fiado
+                  </p>
+                )}
               </div>
             </div>
           ))}
@@ -1034,6 +1227,296 @@ export default function DashboardPage() {
       </button>
     </div>
   );
+
+  // ===== Historial de Transacciones =====
+  // La tabla se dibuja con la misma función en la tarjeta y en la vista en
+  // grande: `big` solo agranda la letra y quita el tope de altura de la lista
+  // de productos. Así las dos muestran siempre lo mismo.
+  const formatHistoryDay = (d: string) => d.split('-').reverse().join('/');
+  const historyDateLabel = historyDateRange.start === historyDateRange.end
+    ? formatHistoryDay(historyDateRange.start)
+    : `del ${formatHistoryDay(historyDateRange.start)} al ${formatHistoryDay(historyDateRange.end)}`;
+  const historyTotal = salesHistory.reduce((sum, s) => sum + (Number(s.total_amount) || 0), 0);
+
+  const handleAnularSale = async (saleId: string, exchange: boolean) => {
+    const msg = exchange
+      ? '¿Anular este cambio de producto? El stock y los puntos del cliente volverán a como estaban antes del cambio.'
+      : '¿Estás seguro de anular esta venta? El stock y los puntos del cliente serán revertidos inmediatamente.';
+    if (!confirm(msg)) return;
+    try {
+      await deleteSaleAction(saleId);
+
+      // Actualiza el estado local para que desaparezca al instante
+      setSalesHistory(prev => prev.filter(s => s.id !== saleId));
+      alert(exchange ? 'Cambio anulado con éxito' : 'Venta anulada con éxito');
+      // Un cambio anulado devuelve unidades a la venta origen: refrescar marcas y métricas.
+      setRefreshKey(k => k + 1);
+    } catch (error) {
+      if (error instanceof Error) {
+        alert(error.message);
+      } else {
+        alert('Ocurrió un error inesperado al intentar anular la venta.');
+      }
+    }
+  };
+
+  // Exportar y el rango de fechas: los mismos controles en la tarjeta y en grande.
+  const renderHistoryControls = () => (
+    <>
+      <button
+        onClick={handleExportCSV}
+        disabled={exporting}
+        className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed w-full sm:w-auto shrink-0"
+      >
+        {exporting ? '⏳ Exportando...' : '📥 Exportar a .xlsx'}
+      </button>
+
+      <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">
+        <input
+          type="date"
+          value={historyDateRange.start}
+          onChange={(e) => setHistoryDateRange(prev => ({ ...prev, start: e.target.value }))}
+          className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+        />
+        <span className="text-slate-400 font-medium">-</span>
+        <input
+          type="date"
+          value={historyDateRange.end}
+          onChange={(e) => setHistoryDateRange(prev => ({ ...prev, end: e.target.value }))}
+          className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
+        />
+      </div>
+    </>
+  );
+
+  const renderHistoryTable = (big: boolean) => {
+    if (salesHistory.length === 0) {
+      return (
+        <div className="py-10 text-center flex flex-col items-center">
+          <span className="text-4xl mb-2 opacity-50">📂</span>
+          <p className="text-slate-500 font-medium">No hay transacciones registradas en {currentStore.name}.</p>
+        </div>
+      );
+    }
+    // Tamaños: la tarjeta queda exactamente como antes; en grande todo sube un escalón.
+    const cell = big ? 'p-4' : 'p-3';
+    const tiny = big ? 'text-xs' : 'text-[10px]';
+    const small = big ? 'text-sm' : 'text-[11px]';
+    const chip = big ? 'text-sm' : 'text-xs';
+    const nameCell = big ? 'max-w-[220px] break-words' : 'max-w-[150px] truncate';
+    // En grande la cabecera queda fija arriba al bajar por la lista.
+    const th = `${cell} font-semibold${big ? ' sticky top-0 z-10 bg-slate-100' : ''}`;
+    return (
+      <table className={`w-full text-left border-collapse ${big ? 'text-base min-w-[1100px]' : 'text-sm min-w-[900px]'}`}>
+        <thead className="bg-slate-100 text-slate-600">
+          <tr>
+            <th className={`${th} rounded-tl-lg`}>Fecha</th>
+            <th className={th}>Cliente</th>
+            <th className={th}>Cajero</th>
+            <th className={th}>Productos</th>
+            <th className={th}>Pago</th>
+            <th className={`${th} text-center`}>Cantidad</th>
+            <th className={`${th} text-right rounded-tr-lg`}>Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {salesHistory.map((sale) => {
+            // Cambio de producto: fila de `sales` con kind = 'exchange' cuyas
+            // líneas negativas son lo devuelto y las positivas lo entregado.
+            const exchange = isExchange(sale);
+            const counts = exchangeCounts(sale.sale_items);
+            // Descuento manual de la cajera: en una venta, sobre el total; en un
+            // cambio, sobre la diferencia (db/exchange_03_discount.sql).
+            const manualDiscount = manualDiscountOf(sale, sale.sale_items);
+            const sourceDate = exchange && sale.exchange_of_sale_id ? sourceSaleDates[sale.exchange_of_sale_id] : null;
+            const hasReturns = !exchange && (sale.sale_items ?? []).some((it: { id: string }) => (returnedByLine[it.id] || 0) > 0);
+            return (
+            <tr key={sale.id} className={`hover:bg-slate-50 transition-colors ${exchange ? 'bg-amber-50/40' : ''}`}>
+              <td className={`${cell} text-slate-600 whitespace-nowrap`}>
+                {parseSupabaseDate(sale.created_at).toLocaleString('es-VE', {
+                  timeZone: 'America/Caracas',
+                  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
+                })}
+                {exchange && (
+                  <span className={`block mt-1 w-fit ${tiny} font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded`}>
+                    🔁 Cambio{sourceDate ? ` · venta del ${parseSupabaseDate(sourceDate).toLocaleDateString('es-VE', { timeZone: 'America/Caracas', day: '2-digit', month: '2-digit' })}` : ''}
+                  </span>
+                )}
+                {hasReturns && (
+                  <span className={`block mt-1 w-fit ${tiny} font-bold uppercase tracking-wider text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded`}>
+                    Con cambio
+                  </span>
+                )}
+              </td>
+              <td className={`${cell} text-slate-800 font-medium ${nameCell}`}>
+                {sale.customers?.full_name || 'Anónimo'}
+              </td>
+              <td className={`${cell} text-slate-600 ${nameCell}`}>
+                {sale.profiles?.full_name || 'Desconocido'}
+              </td>
+              <td className={`${cell} align-top ${big ? 'min-w-[320px]' : 'min-w-[230px]'}`}>
+                {/* Cada producto en dos renglones: el nombre COMPLETO (antes se
+                    cortaba con «…» y la talla, que iba detrás, no se llegaba a ver)
+                    y debajo código · talla/color · precio. En la tarjeta la lista
+                    tiene tope de altura; en grande se ve entera. */}
+                <ul className={big
+                  ? 'list-disc pl-5 text-slate-600 text-sm space-y-2'
+                  : 'list-disc pl-4 text-slate-600 text-xs space-y-1.5 max-h-48 overflow-y-auto pr-1 custom-scrollbar'}>
+                  {sale.sale_items?.map((item: HistoryItem, idx: number) => {
+                    const qty = Number(item.quantity) || 0;
+                    const returnedHere = exchange ? 0 : (returnedByLine[item.id ?? ''] || 0);
+                    const variant = formatVariant(item.products?.talla, item.products?.color);
+                    const code = itemCode(item);
+                    const muted = qty < 0 ? 'text-amber-600/80' : 'text-slate-400';
+                    return (
+                      <li key={idx} className={`${big ? 'max-w-[460px]' : 'max-w-[280px]'} ${qty < 0 ? 'text-amber-700' : ''}`}>
+                        <div className="break-words">
+                          <span className={`font-medium ${qty < 0 ? '' : 'text-slate-700'}`}>{qty < 0 ? `↩ ${-qty}x` : `${qty}x`}</span> {itemName(item)}
+                        </div>
+                        <div className={`${small} leading-snug ${muted}`}>
+                          {code && <span className={item.products?.sku_barcode ? 'font-mono' : 'italic'}>{code}</span>}
+                          {code && variant && ' · '}
+                          {variant && (
+                            <span className={`font-semibold ${qty < 0 ? 'text-amber-700' : 'text-slate-600'}`}>{variant}</span>
+                          )}
+                          {(code || variant) && ' · '}
+                          {qty < 0
+                            ? `devuelto · crédito $${Number(item.unit_price).toFixed(2)}`
+                            : `$${Number(item.unit_price).toFixed(2)}`}
+                          {returnedHere > 0 && (
+                            <span className="text-amber-700 font-semibold ml-1">({returnedHere} devuelto)</span>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </td>
+              <td className={cell}>
+                {sale.payment_method === FIADO_METHOD ? (() => {
+                  // Fiado: lo que debe todavía, o pagado. fiado_paid_at lo pone el
+                  // RPC al terminar de pagar (db/fiado_02_schema.sql).
+                  const debe = Math.max(0, Number(sale.total_amount) - (fiadoPaidBySale[sale.id] || 0));
+                  return sale.fiado_paid_at || debe <= 0.005 ? (
+                    <div className={`${chip} font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 inline-block px-2 py-1 rounded whitespace-nowrap`}>
+                      🧾 Fiado · pagado ✓
+                    </div>
+                  ) : (
+                    <div className={`${chip} font-semibold text-amber-800 bg-amber-50 border border-amber-200 inline-block px-2 py-1 rounded whitespace-nowrap`}>
+                      🧾 Fiado · debe ${debe.toFixed(2)}
+                    </div>
+                  );
+                })() : sale.payment_method === EXCHANGE_NO_DIFF_METHOD ? (
+                  <div className={`text-slate-500 font-medium ${chip} bg-slate-100 inline-block px-2 py-1 rounded`}>
+                    Sin diferencia
+                  </div>
+                ) : sale.payment_method_2 ? (
+                  <div className="flex flex-col gap-1 items-start">
+                    <span className={`capitalize text-slate-800 font-medium ${chip} bg-slate-100 inline-block px-2 py-1 rounded`}>
+                      {prettyMethod(sale.payment_method)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_1).toFixed(2)})</span>
+                    </span>
+                    <span className={`capitalize text-slate-800 font-medium ${chip} bg-slate-100 inline-block px-2 py-1 rounded`}>
+                      {prettyMethod(sale.payment_method_2)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_2).toFixed(2)})</span>
+                    </span>
+                  </div>
+                ) : (
+                  <div className={`capitalize text-slate-800 font-medium ${chip} bg-slate-100 inline-block px-2 py-1 rounded`}>
+                    {prettyMethod(sale.payment_method)}
+                  </div>
+                )}
+                {/* Inicial de Cashea y cómo se pagó: «Inicial $34.00 · Punto de Venta». Las
+                    ventas de antes de que la caja lo preguntara muestran solo el monto. */}
+                {(() => {
+                  const parts = casheaInitialParts(sale);
+                  if (parts.length === 0) return null;
+                  const how = parts.length === 2
+                    ? parts.map(p => `${casheaInitialMethodLabel(p.method)} $${p.amount.toFixed(2)}`).join(' + ')
+                    : casheaInitialMethodLabel(parts[0].method);
+                  return (
+                    <div className={`mt-1 ${small} font-semibold text-amber-800 bg-amber-50 border border-amber-200 inline-block px-2 py-0.5 rounded`}>
+                      Inicial ${casheaInitialOf(sale).toFixed(2)}{how && ` · ${how}`}
+                    </div>
+                  );
+                })()}
+                {sale.payment_ref && (
+                  <div className={`flex items-center gap-1 mt-1 ${big ? 'max-w-[220px]' : 'max-w-[150px]'}`}>
+                    <span className={`${small} text-slate-400 truncate`}>Ref: {sale.payment_ref}</span>
+                    <button
+                      type="button"
+                      onClick={() => setRefSale(sale)}
+                      title="Ver la referencia completa"
+                      aria-label="Ver la referencia completa"
+                      className={`shrink-0 ${tiny} font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5 hover:bg-teal-100 transition cursor-pointer`}
+                    >
+                      ver
+                    </button>
+                  </div>
+                )}
+              </td>
+              <td className={`${cell} text-center text-slate-700 font-semibold whitespace-nowrap`}>
+                {exchange ? (
+                  <span className={chip} title="devueltos / entregados">
+                    <span className="text-amber-700">↩{counts.returned}</span> / <span className="text-teal-700">+{counts.added}</span>
+                  </span>
+                ) : saleItemCount(sale)}
+              </td>
+              <td className={`${cell} text-right`}>
+                <p className={`font-bold text-slate-800${big ? ' text-lg' : ''}`}>
+                  ${Number(sale.total_amount).toFixed(2)}
+                  {exchange && (
+                    <span className={`${small} text-slate-500 font-medium ml-1`}>{Number(sale.total_amount) > 0 ? 'diferencia' : 'sin dif.'}</span>
+                  )}
+                </p>
+                <p className={`${small} text-slate-500 font-medium mt-0.5`}>
+                  Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
+                </p>
+                {manualDiscount > 0 && (
+                  <p className={`${small} text-rose-600 font-semibold mt-0.5`}>
+                    🏷 Descuento: −${manualDiscount.toFixed(2)}
+                  </p>
+                )}
+                {Number(sale.redemption_discount_usd) > 0 && (
+                  <p className={`${small} text-teal-600 font-semibold mt-0.5`}>
+                    ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}
+                  </p>
+                )}
+                {Number(sale.punto_de_venta_surcharge_usd) > 0 && (
+                  <p className={`${small} text-sky-600 font-semibold mt-0.5`}>
+                    💳 Recargo Punto de Venta: +${Number(sale.punto_de_venta_surcharge_usd).toFixed(2)}
+                  </p>
+                )}
+                {casheaInitialOf(sale) > 0 && (
+                  <p className={`${small} text-amber-600 font-semibold mt-0.5`}>
+                    🏪 Inicial Cashea: ${casheaInitialOf(sale).toFixed(2)} · Cashea: ${Math.max(0, casheaLeg(sale) - casheaInitialOf(sale)).toFixed(2)}
+                  </p>
+                )}
+
+                {/* Cambio de producto: cajero y owner (el RPC limita al cajero a su tienda) */}
+                <button
+                  type="button"
+                  onClick={() => setExchangeSaleId(sale.id)}
+                  className={`${chip} text-teal-700 hover:text-teal-900 mt-2 font-semibold`}
+                >
+                  🔁 Cambiar
+                </button>
+
+                {/* Botón de anular venta / cambio (solo owner) */}
+                {role === 'owner' && (
+                  <button
+                    onClick={() => handleAnularSale(sale.id, exchange)}
+                    className={`${chip} text-red-500 hover:text-red-700 mt-2 font-semibold${big ? ' ml-4' : ''}`}
+                  >
+                    {exchange ? 'Anular Cambio' : 'Anular Venta'}
+                  </button>
+                )}
+              </td>
+            </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  };
 
   const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
   const formattedDate = new Date().toLocaleDateString('es-ES', dateOptions);
@@ -1228,265 +1711,84 @@ export default function DashboardPage() {
       <div ref={historyRef} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col w-full min-h-[400px] scroll-mt-6">
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 w-full">
           <h3 className="text-lg font-bold text-slate-800 shrink-0">Historial de Transacciones</h3>
-          
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
-            <button 
-              onClick={handleExportCSV}
-              disabled={exporting}
-              className="text-sm bg-[#0f5c5c] text-white px-4 py-2 rounded-lg font-medium hover:bg-[#0a4545] transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed w-full sm:w-auto shrink-0"
-            >
-              {exporting ? '⏳ Exportando...' : '📥 Exportar a .xlsx'}
-            </button>
 
-            <div className="flex items-center justify-between gap-1 sm:gap-2 text-sm bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto">
-              <input 
-                type="date" 
-                value={historyDateRange.start} 
-                onChange={(e) => setHistoryDateRange(prev => ({ ...prev, start: e.target.value }))}
-                className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
-              />
-              <span className="text-slate-400 font-medium">-</span>
-              <input 
-                type="date" 
-                value={historyDateRange.end} 
-                onChange={(e) => setHistoryDateRange(prev => ({ ...prev, end: e.target.value }))}
-                className="bg-transparent border-none outline-none text-slate-700 cursor-pointer flex-1 min-w-0 text-center sm:text-left"
-              />
-            </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+            <button
+              type="button"
+              onClick={() => setHistoryBig(true)}
+              title="Ver el historial a pantalla completa, con letra más grande"
+              className="text-sm bg-white text-[#0f5c5c] border border-teal-300 px-4 py-2 rounded-lg font-semibold hover:bg-teal-50 transition flex items-center justify-center gap-2 w-full sm:w-auto shrink-0"
+            >
+              <Maximize2 className="w-4 h-4" /> Ver en grande
+            </button>
+            {renderHistoryControls()}
           </div>
         </div>
-        
+
         {loadingHistory ? (
           <div className="flex-1 flex justify-center items-center py-10">
             <p className="text-slate-500">Cargando transacciones...</p>
           </div>
         ) : (
           <div className="overflow-x-auto w-full">
-            {salesHistory.length === 0 ? (
-              <div className="py-10 text-center flex flex-col items-center">
-                <span className="text-4xl mb-2 opacity-50">📂</span>
-                <p className="text-slate-500 font-medium">No hay transacciones registradas en {currentStore.name}.</p>
-              </div>
-            ) : (
-              <table className="w-full text-left text-sm border-collapse min-w-[900px]">
-                <thead className="bg-slate-100 text-slate-600">
-                  <tr>
-                    <th className="p-3 font-semibold rounded-tl-lg">Fecha</th>
-                    <th className="p-3 font-semibold">Cliente</th>
-                    <th className="p-3 font-semibold">Cajero</th>
-                    <th className="p-3 font-semibold">Productos</th>
-                    <th className="p-3 font-semibold">Pago</th>
-                    <th className="p-3 font-semibold text-center">Cantidad</th>
-                    <th className="p-3 font-semibold text-right rounded-tr-lg">Total</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {salesHistory.map((sale) => {
-                    // Cambio de producto: fila de `sales` con kind = 'exchange' cuyas
-                    // líneas negativas son lo devuelto y las positivas lo entregado.
-                    const exchange = isExchange(sale);
-                    const counts = exchangeCounts(sale.sale_items);
-                    // Descuento manual de la cajera: en una venta, sobre el total; en un
-                    // cambio, sobre la diferencia (db/exchange_03_discount.sql).
-                    const manualDiscount = manualDiscountOf(sale, sale.sale_items);
-                    const sourceDate = exchange && sale.exchange_of_sale_id ? sourceSaleDates[sale.exchange_of_sale_id] : null;
-                    const hasReturns = !exchange && (sale.sale_items ?? []).some((it: { id: string }) => (returnedByLine[it.id] || 0) > 0);
-                    return (
-                    <tr key={sale.id} className={`hover:bg-slate-50 transition-colors ${exchange ? 'bg-amber-50/40' : ''}`}>
-                      <td className="p-3 text-slate-600 whitespace-nowrap">
-                        {parseSupabaseDate(sale.created_at).toLocaleString('es-VE', { 
-                          timeZone: 'America/Caracas',
-                          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
-                        })}
-                        {exchange && (
-                          <span className="block mt-1 w-fit text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                            🔁 Cambio{sourceDate ? ` · venta del ${parseSupabaseDate(sourceDate).toLocaleDateString('es-VE', { timeZone: 'America/Caracas', day: '2-digit', month: '2-digit' })}` : ''}
-                          </span>
-                        )}
-                        {hasReturns && (
-                          <span className="block mt-1 w-fit text-[10px] font-bold uppercase tracking-wider text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
-                            Con cambio
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-3 text-slate-800 font-medium max-w-[150px] truncate">
-                        {sale.customers?.full_name || 'Anónimo'}
-                      </td>
-                      <td className="p-3 text-slate-600 max-w-[150px] truncate">
-                        {sale.profiles?.full_name || 'Desconocido'}
-                      </td>
-                      <td className="p-3 align-top min-w-[230px]">
-                        {/* Cada producto en dos renglones: el nombre COMPLETO (antes se
-                            cortaba con «…» y la talla, que iba detrás, no se llegaba a ver)
-                            y debajo código · talla/color · precio. */}
-                        <ul className="list-disc pl-4 text-slate-600 text-xs space-y-1.5 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
-                          {sale.sale_items?.map((item: HistoryItem, idx: number) => {
-                            const qty = Number(item.quantity) || 0;
-                            const returnedHere = exchange ? 0 : (returnedByLine[item.id ?? ''] || 0);
-                            const variant = formatVariant(item.products?.talla, item.products?.color);
-                            const code = itemCode(item);
-                            const muted = qty < 0 ? 'text-amber-600/80' : 'text-slate-400';
-                            return (
-                              <li key={idx} className={`max-w-[280px] ${qty < 0 ? 'text-amber-700' : ''}`}>
-                                <div className="break-words">
-                                  <span className={`font-medium ${qty < 0 ? '' : 'text-slate-700'}`}>{qty < 0 ? `↩ ${-qty}x` : `${qty}x`}</span> {itemName(item)}
-                                </div>
-                                <div className={`text-[11px] leading-snug ${muted}`}>
-                                  {code && <span className={item.products?.sku_barcode ? 'font-mono' : 'italic'}>{code}</span>}
-                                  {code && variant && ' · '}
-                                  {variant && (
-                                    <span className={`font-semibold ${qty < 0 ? 'text-amber-700' : 'text-slate-600'}`}>{variant}</span>
-                                  )}
-                                  {(code || variant) && ' · '}
-                                  {qty < 0
-                                    ? `devuelto · crédito $${Number(item.unit_price).toFixed(2)}`
-                                    : `$${Number(item.unit_price).toFixed(2)}`}
-                                  {returnedHere > 0 && (
-                                    <span className="text-amber-700 font-semibold ml-1">({returnedHere} devuelto)</span>
-                                  )}
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </td>
-                      <td className="p-3">
-                        {sale.payment_method === EXCHANGE_NO_DIFF_METHOD ? (
-                          <div className="text-slate-500 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                            Sin diferencia
-                          </div>
-                        ) : sale.payment_method_2 ? (
-                          <div className="flex flex-col gap-1 items-start">
-                            <span className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                              {prettyMethod(sale.payment_method)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_1).toFixed(2)})</span>
-                            </span>
-                            <span className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                              {prettyMethod(sale.payment_method_2)} <span className="text-teal-700 font-semibold">(${Number(sale.payment_amount_2).toFixed(2)})</span>
-                            </span>
-                          </div>
-                        ) : (
-                          <div className="capitalize text-slate-800 font-medium text-xs bg-slate-100 inline-block px-2 py-1 rounded">
-                            {prettyMethod(sale.payment_method)}
-                          </div>
-                        )}
-                        {/* Inicial de Cashea y cómo se pagó: «Inicial $34.00 · Punto de Venta». Las
-                            ventas de antes de que la caja lo preguntara muestran solo el monto. */}
-                        {(() => {
-                          const parts = casheaInitialParts(sale);
-                          if (parts.length === 0) return null;
-                          const how = parts.length === 2
-                            ? parts.map(p => `${casheaInitialMethodLabel(p.method)} $${p.amount.toFixed(2)}`).join(' + ')
-                            : casheaInitialMethodLabel(parts[0].method);
-                          return (
-                            <div className="mt-1 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 inline-block px-2 py-0.5 rounded">
-                              Inicial ${casheaInitialOf(sale).toFixed(2)}{how && ` · ${how}`}
-                            </div>
-                          );
-                        })()}
-                        {sale.payment_ref && (
-                          <div className="flex items-center gap-1 mt-1 max-w-[150px]">
-                            <span className="text-[11px] text-slate-400 truncate">Ref: {sale.payment_ref}</span>
-                            <button
-                              type="button"
-                              onClick={() => setRefSale(sale)}
-                              title="Ver la referencia completa"
-                              aria-label="Ver la referencia completa"
-                              className="shrink-0 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5 hover:bg-teal-100 transition cursor-pointer"
-                            >
-                              ver
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                      <td className="p-3 text-center text-slate-700 font-semibold whitespace-nowrap">
-                        {exchange ? (
-                          <span className="text-xs" title="devueltos / entregados">
-                            <span className="text-amber-700">↩{counts.returned}</span> / <span className="text-teal-700">+{counts.added}</span>
-                          </span>
-                        ) : saleItemCount(sale)}
-                      </td>
-                      <td className="p-3 text-right">
-  <p className="font-bold text-slate-800">
-    ${Number(sale.total_amount).toFixed(2)}
-    {exchange && (
-      <span className="text-[11px] text-slate-500 font-medium ml-1">{Number(sale.total_amount) > 0 ? 'diferencia' : 'sin dif.'}</span>
-    )}
-  </p>
-  <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-    Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
-  </p>
-  {manualDiscount > 0 && (
-    <p className="text-[11px] text-rose-600 font-semibold mt-0.5">
-      🏷 Descuento: −${manualDiscount.toFixed(2)}
-    </p>
-  )}
-  {Number(sale.redemption_discount_usd) > 0 && (
-    <p className="text-[11px] text-teal-600 font-semibold mt-0.5">
-      ✪ Canje: −${Number(sale.redemption_discount_usd).toFixed(2)}
-    </p>
-  )}
-  {Number(sale.punto_de_venta_surcharge_usd) > 0 && (
-    <p className="text-[11px] text-sky-600 font-semibold mt-0.5">
-      💳 Recargo Punto de Venta: +${Number(sale.punto_de_venta_surcharge_usd).toFixed(2)}
-    </p>
-  )}
-  {casheaInitialOf(sale) > 0 && (
-    <p className="text-[11px] text-amber-600 font-semibold mt-0.5">
-      🏪 Inicial Cashea: ${casheaInitialOf(sale).toFixed(2)} · Cashea: ${Math.max(0, casheaLeg(sale) - casheaInitialOf(sale)).toFixed(2)}
-    </p>
-  )}
-
-  {/* Cambio de producto: cajero y owner (el RPC limita al cajero a su tienda) */}
-  <button
-    type="button"
-    onClick={() => setExchangeSaleId(sale.id)}
-    className="text-xs text-teal-700 hover:text-teal-900 mt-2 font-semibold"
-  >
-    🔁 Cambiar
-  </button>
-
-  {/* Botón de anular venta / cambio (solo owner) */}
-  {role === 'owner' && (
-  <button 
-    onClick={async () => {
-      const msg = exchange
-        ? '¿Anular este cambio de producto? El stock y los puntos del cliente volverán a como estaban antes del cambio.'
-        : '¿Estás seguro de anular esta venta? El stock y los puntos del cliente serán revertidos inmediatamente.';
-      if (confirm(msg)) {
-        try {
-           await deleteSaleAction(sale.id);
-           
-           // Actualiza el estado local para que desaparezca al instante
-           setSalesHistory(prev => prev.filter(s => s.id !== sale.id));
-           alert(exchange ? 'Cambio anulado con éxito' : 'Venta anulada con éxito');
-           // Un cambio anulado devuelve unidades a la venta origen: refrescar marcas y métricas.
-           setRefreshKey(k => k + 1);
-           
-        } catch (error) {
-           // CORRECCIÓN TYPESCRIPT: Verificamos si es una instancia de Error
-           if (error instanceof Error) {
-             alert(error.message);
-           } else {
-             alert('Ocurrió un error inesperado al intentar anular la venta.');
-           }
-        }
-      }
-    }}
-    className="text-xs text-red-500 hover:text-red-700 mt-2 font-semibold"
-  >
-    {exchange ? 'Anular Cambio' : 'Anular Venta'}
-  </button>
-)}
-</td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
+            {renderHistoryTable(false)}
           </div>
         )}
       </div>
+
+      {/* --- HISTORIAL EN GRANDE (pantalla completa) --- */}
+      {/* z-40: el cambio de producto y la referencia (<Modal>, z-50) se abren
+          ENCIMA de esta vista; Anular usa el confirm() del navegador. La lista
+          se desplaza dentro de la vista (también a lo ancho en el teléfono). */}
+      {historyBig && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="historial-grande-titulo"
+          className="fixed inset-0 z-40 bg-white flex flex-col font-sans"
+        >
+          <div className="shrink-0 border-b border-slate-200 px-4 md:px-8 py-3 md:py-4 flex flex-wrap items-center gap-3">
+            <div className="flex-1 min-w-[180px]">
+              <h2 id="historial-grande-titulo" className="text-xl md:text-2xl font-bold text-slate-800">Historial de Transacciones</h2>
+              <p className="text-sm text-slate-500">Vista ampliada · <strong className="text-teal-700">{currentStore.name}</strong></p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHistoryBig(false)}
+              title="Cerrar (Esc)"
+              className="order-2 lg:order-3 shrink-0 text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 px-4 py-2 rounded-lg transition"
+            >
+              ✕ Cerrar
+            </button>
+            <div className="order-3 lg:order-2 w-full lg:w-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              {renderHistoryControls()}
+            </div>
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-auto overscroll-contain px-4 md:px-8 py-4">
+            {loadingHistory ? (
+              <p className="py-10 text-center text-slate-500">Cargando transacciones...</p>
+            ) : renderHistoryTable(true)}
+          </div>
+
+          <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 md:px-8 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+            {loadingHistory ? (
+              <p className="text-sm text-slate-500">Cargando...</p>
+            ) : (
+              <>
+                <p className="text-sm md:text-base text-slate-600">
+                  <strong className="text-slate-800">{salesHistory.length} {salesHistory.length === 1 ? 'transacción' : 'transacciones'}</strong> · {historyDateLabel}
+                  {/* El historial trae como mucho 100 ventas (ver fetchHistory). */}
+                  {salesHistory.length >= 100 && (
+                    <span className="block sm:inline sm:ml-2 text-xs text-amber-700">Se ven las 100 más recientes; el Excel trae todas.</span>
+                  )}
+                </p>
+                <p className="text-lg md:text-xl font-bold text-slate-800">Total: ${historyTotal.toFixed(2)}</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* --- MODAL DE CAMBIO DE PRODUCTO (se abre desde una fila del historial) --- */}
       <ExchangeModal

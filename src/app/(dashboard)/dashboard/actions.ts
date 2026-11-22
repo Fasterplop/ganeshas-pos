@@ -32,6 +32,12 @@ export async function deleteSaleAction(saleId: string) {
 
   if (rpcError) {
     console.error('Error al eliminar venta:', rpcError)
+    // Venta fiada con abonos (db/fiado_02_schema.sql). Mismo texto que
+    // fiadoErrorMessage en src/lib/fiado.ts, que no se puede importar aquí
+    // porque es un módulo de cliente ('use client').
+    if ((rpcError.message ?? '').includes('FIADO_HAS_PAYMENTS')) {
+      throw new Error('Esta venta fiada tiene abonos. Primero borra esos abonos en Cuentas por cobrar.')
+    }
     throw new Error(exchangeErrorMessage(
       rpcError,
       'Ocurrió un error al intentar anular la venta y revertir el inventario.',

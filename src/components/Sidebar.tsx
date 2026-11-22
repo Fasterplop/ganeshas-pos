@@ -16,9 +16,11 @@ interface SidebarProps {
   userRole: Role;
   userName: string;
   stores: Store[]; // <-- Nueva prop para recibir las tiendas
+  /** Dueño, o con el permiso de fiar (Usuarios): ve «Cuentas por cobrar». */
+  canFiar?: boolean;
 }
 
-export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
+export default function Sidebar({ userRole, userName, stores, canFiar }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
@@ -37,6 +39,8 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
     { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
     { name: 'Novedades', path: '/novedades', roles: ['owner'] },
     { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
+    // Solo con el permiso de fiar (ver canFiar), el mismo que enciende «Fiado» en la caja.
+    { name: 'Cuentas por cobrar', path: '/cuentas-por-cobrar', roles: ['owner', 'cashier', 'vendedor'] },
     { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
     { name: 'Traslados', path: '/traslados', roles: ['owner', 'cashier'] },
     { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
@@ -47,7 +51,8 @@ export default function Sidebar({ userRole, userName, stores }: SidebarProps) {
     { name: 'Usuarios', path: '/users', roles: ['owner'] },
   ];
 
-  const filteredMenu = menuItems.filter(item => item.roles.includes(userRole));
+  const filteredMenu = menuItems.filter(item =>
+    item.roles.includes(userRole) && (item.path !== '/cuentas-por-cobrar' || !!canFiar));
 
   return (
     <aside className="hidden md:flex flex-col w-64 bg-[#0f5c5c] text-white min-h-screen shadow-xl print:hidden shrink-0">

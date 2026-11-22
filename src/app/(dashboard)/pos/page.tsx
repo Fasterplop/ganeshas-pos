@@ -31,6 +31,7 @@ import {
   type TransferResult,
 } from '@/lib/transfers';
 import { fetchTwinHere } from '@/lib/traslados';
+import { FIADO_METHODS, fiadoErrorMessage, registrarAbono, useFiadoAccess, type FiadoMethod } from '@/lib/fiado';
 import { ilikeWords } from '@/lib/search';
 
 
@@ -137,6 +138,22 @@ export default function POSPage() {
   const [discountType, setDiscountType] = useState<DiscountType>('none');
   const [discountValue, setDiscountValue] = useState<string>('');
 
+  // FIADO (db/fiado_02_schema.sql): el botón «Fiado» solo lo ve el dueño o
+  // quien tenga el permiso en Usuarios. Con él encendido no hay método de
+  // pago, descuento, canje de puntos, Cashea ni recargo: el cliente deja un
+  // abono inicial opcional (con su método, o dividido en dos) y debe el resto.
+  const fiadoAccess = useFiadoAccess();
+  const [fiadoMode, setFiadoMode] = useState(false);
+  const [fiadoInitial, setFiadoInitial] = useState<string>('');
+  const [fiadoMethod, setFiadoMethod] = useState<FiadoMethod | null>(null);
+  const [fiadoSplit, setFiadoSplit] = useState(false);
+  const [fiadoMethod2, setFiadoMethod2] = useState<FiadoMethod | null>(null);
+  const [fiadoAmount1, setFiadoAmount1] = useState<string>('');
+  // Lo que el cliente ya debe en esta tienda (aviso al poner la cédula). Se
+  // guarda con la tienda y la cédula consultadas: si cambian, el aviso no se
+  // muestra hasta que llegue la respuesta nueva.
+  const [debtLookup, setDebtLookup] = useState<{ key: string; debt: number | null } | null>(null);
+
   const [isLoading, setIsLoading] = useState(false);
 
   const [productSearch, setProductSearch] = useState('');
@@ -219,6 +236,12 @@ export default function POSPage() {
     setWaOptedOut(false);
     setShowCustomer(false);
     setShowExchange(false);
+    setFiadoMode(false);
+    setFiadoInitial('');
+    setFiadoMethod(null);
+    setFiadoSplit(false);
+    setFiadoMethod2(null);
+    setFiadoAmount1('');
     redeemTouchedRef.current = false;
     // Transferencias: lo traído que se tenía guardado era de la tienda
     // anterior, y una ventana de "traer" abierta ya no aplica (se cierra como
@@ -285,13 +308,44 @@ export default function POSPage() {
     };
   }, [docType, docNumber, currentStore?.id]);
 
+  // Si el cliente ya debe en esta tienda, la caja lo avisa (solo a quien puede
+  // fiar: las demás no ven Cuentas por cobrar).
+  const storeIdForDebt = currentStore?.id ?? null;
+  const debtKey = fiadoAccess.allowed && storeIdForDebt && docNumber.trim() !== ''
+    ? `${storeIdForDebt}|${docType}${docNumber.trim()}`
+    : null;
+  useEffect(() => {
+    if (!debtKey || !storeIdForDebt) return;
+    const fullDocumentId = debtKey.slice(debtKey.indexOf('|') + 1);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const { data, error } = await createClient()
+        .from('sales')
+        .select('total_amount, fiado_payments(amount_usd)')
+        .eq('store_id', storeIdForDebt)
+        .eq('customer_id', fullDocumentId)
+        .eq('payment_method', 'fiado')
+        .is('fiado_paid_at', null);
+      if (cancelled) return;
+      if (error || !data) { setDebtLookup({ key: debtKey, debt: null }); return; }
+      const debt = (data as { total_amount: number; fiado_payments: { amount_usd: number }[] | null }[])
+        .reduce((sum, s) => sum + Number(s.total_amount) - (s.fiado_payments ?? []).reduce((a, p) => a + Number(p.amount_usd), 0), 0);
+      setDebtLookup({ key: debtKey, debt: debt > 0.005 ? Number(debt.toFixed(2)) : null });
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [debtKey, storeIdForDebt]);
+  const customerDebt = debtKey && debtLookup?.key === debtKey ? debtLookup.debt : null;
+
   // Cálculos de totales y descuentos
   const subtotalUSD = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
   const totalItems = cart.reduce((acc, item) => acc + item.quantity, 0);
 
   let discountAmount = 0;
   // El descuento manual NO aplica en modo de pago dividido.
-  const discountAllowed = !splitPayment && paymentMethod !== null && DISCOUNT_METHODS.includes(paymentMethod);
+  const discountAllowed = !fiadoMode && !splitPayment && paymentMethod !== null && DISCOUNT_METHODS.includes(paymentMethod);
   if (discountAllowed && discountValue !== '' && !isNaN(Number(discountValue))) {
     const val = Number(discountValue);
     if (discountType === 'percent') {
@@ -309,8 +363,10 @@ export default function POSPage() {
     : 0;
   const maxBlocksByTotal = Math.floor(totalAfterManual / loyaltyCfg.discount_per_block_usd);
   const maxBlocks = Math.max(0, Math.min(maxBlocksByBalance, maxBlocksByTotal));
-  const redemptionDiscount = redeemBlocks * loyaltyCfg.discount_per_block_usd;
-  const pointsToConsume = redeemBlocks * loyaltyCfg.points_per_block;
+  // Al fiar no se canjean puntos (pedido de Gerardo).
+  const activeRedeemBlocks = fiadoMode ? 0 : redeemBlocks;
+  const redemptionDiscount = activeRedeemBlocks * loyaltyCfg.discount_per_block_usd;
+  const pointsToConsume = activeRedeemBlocks * loyaltyCfg.points_per_block;
 
   // Total de la venta ANTES del recargo de Punto de Venta (lo que valen los
   // artículos, ya con descuento manual y canje de puntos aplicados).
@@ -334,6 +390,49 @@ export default function POSPage() {
   // Total final a cobrar (ya incluye el recargo de Punto de Venta, si aplica).
   const totalUSD = baseTotalUSD + pdvSurchargeAmount;
   const totalVES = totalUSD * bcvRate;
+
+  // --- Fiado: abono inicial (opcional) y lo que queda a deber -------------
+  const fiadoInitialNum = fiadoMode && fiadoInitial !== '' && !isNaN(Number(fiadoInitial))
+    ? Number(Number(fiadoInitial).toFixed(2))
+    : 0;
+  const fiadoInitialInvalid = fiadoMode && (fiadoInitialNum < 0 || (fiadoInitialNum > 0 && fiadoInitialNum >= totalUSD));
+  const fiadoAmount1Num = fiadoAmount1 !== '' && !isNaN(Number(fiadoAmount1)) ? Number(fiadoAmount1) : 0;
+  const fiadoAmount2Num = Math.max(0, Number((fiadoInitialNum - fiadoAmount1Num).toFixed(2)));
+  const fiadoSplitInvalid = fiadoSplit && fiadoAmount1 !== '' && (fiadoAmount1Num <= 0 || fiadoAmount2Num <= 0);
+  const fiadoReceived = fiadoInitialInvalid ? 0 : fiadoInitialNum;
+  const fiadoOwes = Math.max(0, Number((totalUSD - fiadoReceived).toFixed(2)));
+  // ¿Es un cliente que ya existe? (get_global_points lo encontró)
+  const customerKnown = customerPoints !== null;
+
+  // Encender o apagar «Fiado». Al encender se limpia todo lo que no aplica.
+  const resetFiado = () => {
+    setFiadoMode(false);
+    setFiadoInitial('');
+    setFiadoMethod(null);
+    setFiadoSplit(false);
+    setFiadoMethod2(null);
+    setFiadoAmount1('');
+  };
+  const toggleFiado = () => {
+    if (fiadoMode) {
+      resetFiado();
+      return;
+    }
+    setFiadoMode(true);
+    setPaymentMethod(null);
+    setSplitPayment(false);
+    setPaymentMethod2(null);
+    setSplitAmount1('');
+    setPdvSurchargeEnabled(false);
+    setDiscountType('none');
+    setDiscountValue('');
+    setCasheaInitial('');
+    setCasheaInitialMethod(null);
+    setCasheaInitialSplit(false);
+    setCasheaInitialMethod2(null);
+    setCasheaInitialAmount1('');
+    if (docNumber.trim() === '') setShowCustomer(true);
+  };
 
   // Montos finales por método (con el recargo sumado al que corresponda a Punto de Venta).
   const splitAmount1Final = splitAmount1Num + (paymentMethod === 'punto_de_venta' ? pdvSurchargeAmount : 0);
@@ -968,8 +1067,41 @@ export default function POSPage() {
 
   const handleCheckout = async () => {
     if (cart.length === 0) return showNotification('El carrito está vacío', 'error');
-    if (!paymentMethod) return showNotification('Debes seleccionar un método de pago', 'error');
+    if (!paymentMethod && !fiadoMode) return showNotification('Debes seleccionar un método de pago', 'error');
     if (!currentStore) return showNotification('Error crítico: No hay tienda activa.', 'error');
+
+    // Fiado: cliente obligatorio y un abono inicial menor al total.
+    if (fiadoMode) {
+      if (!fiadoAccess.allowed) return showNotification('No tienes permiso para fiar. Pídeselo al dueño.', 'error');
+      if (docNumber.trim() === '') {
+        setShowCustomer(true);
+        return showNotification('Para fiar, agrega el cliente: cédula y nombre.', 'error');
+      }
+      if (customerName.trim() === '' && !customerLookupName) {
+        setShowCustomer(true);
+        return showNotification('Para fiar, escribe el nombre del cliente.', 'error');
+      }
+      if (!customerKnown && customerPhone.trim() === '') {
+        setShowCustomer(true);
+        return showNotification('Cliente nuevo: para fiar, escribe también su teléfono.', 'error');
+      }
+      if (totalUSD <= 0) return showNotification('No se puede fiar un total de $0.00', 'error');
+      if (fiadoInitial !== '' && isNaN(Number(fiadoInitial))) return showNotification('El abono inicial debe ser un número', 'error');
+      if (fiadoInitialNum < 0) return showNotification('El abono inicial no puede ser negativo', 'error');
+      if (fiadoInitialNum > 0 && fiadoInitialNum >= totalUSD) {
+        return showNotification('El abono inicial debe ser menor al total. Si paga todo, no es fiado: apaga «Fiado».', 'error');
+      }
+      if (fiadoInitialNum > 0) {
+        if (!fiadoMethod) return showNotification('Elige cómo pagó el abono inicial', 'error');
+        if (fiadoSplit) {
+          if (!fiadoMethod2) return showNotification('Elige el segundo método del abono', 'error');
+          if (fiadoMethod2 === fiadoMethod) return showNotification('Los dos métodos del abono deben ser distintos', 'error');
+          if (fiadoAmount1Num <= 0 || fiadoAmount2Num <= 0) {
+            return showNotification(`El monto del método 1 del abono debe ser mayor a $0 y menor a $${fiadoInitialNum.toFixed(2)}`, 'error');
+          }
+        }
+      }
+    }
 
     // Validación del pago dividido
     if (splitPayment) {
@@ -1094,13 +1226,13 @@ export default function POSPage() {
       // Funciona como compuerta de elegibilidad: si falla (saldo insuficiente
       // o carrera perdida), abortamos el checkout sin crear la venta.
       // ==========================================
-      if (redeemBlocks > 0) {
+      if (activeRedeemBlocks > 0) {
         if (!finalCustomerId) {
           throw new Error('Para canjear puntos debes asociar un cliente con su cédula.');
         }
         const { error: redeemError } = await supabase.rpc('redeem_points_global', {
           p_document_id: finalCustomerId,
-          p_points: redeemBlocks * loyaltyCfg.points_per_block,
+          p_points: activeRedeemBlocks * loyaltyCfg.points_per_block,
         });
         if (redeemError) {
           throw new Error('El saldo de puntos cambió o es insuficiente. Refresca el cliente e intenta de nuevo.');
@@ -1118,8 +1250,9 @@ export default function POSPage() {
         customer_id: finalCustomerId,
         total_amount: totalUSD,
         bcv_rate: bcvRate,
-        payment_method: paymentMethod,
-        payment_ref: paymentRef.trim() === '' ? null : paymentRef.trim(),
+        // Fiado: la referencia del abono inicial va con el abono, no con la venta.
+        payment_method: fiadoMode ? 'fiado' : paymentMethod,
+        payment_ref: fiadoMode || paymentRef.trim() === '' ? null : paymentRef.trim(),
         payment_method_2: splitPayment ? paymentMethod2 : null,
         payment_amount_1: splitPayment ? splitAmount1Final : null,
         payment_amount_2: splitPayment ? splitAmount2Num : null,
@@ -1161,7 +1294,10 @@ export default function POSPage() {
       }
       const { data: saleData, error: saleError } = saleInsert;
 
-      if (saleError) throw saleError;
+      if (saleError) {
+        if (fiadoMode) throw new Error(fiadoErrorMessage(saleError));
+        throw saleError;
+      }
 
       // ⚡ NUEVO: Preparamos los items evaluando si son rápidos o normales
       const itemsToInsert = cart.map(item => {
@@ -1217,9 +1353,49 @@ export default function POSPage() {
       }
 
       // ==========================================
+      // FIADO: abono inicial. La venta ya quedó debiendo el total; si el abono
+      // fallara, la deuda no se pierde (sigue completa) y se avisa para
+      // registrarlo en Cuentas por cobrar.
+      // ==========================================
+      let fiadoInitialError: string | null = null;
+      if (fiadoMode && finalCustomerId && fiadoInitialNum > 0) {
+        try {
+          await registrarAbono(supabase, {
+            storeId: currentStore.id,
+            customerId: finalCustomerId,
+            amount: fiadoSplit ? fiadoAmount1Num : fiadoInitialNum,
+            method: fiadoMethod as FiadoMethod,
+            method2: fiadoSplit ? fiadoMethod2 : null,
+            amount2: fiadoSplit ? fiadoAmount2Num : null,
+            ref: paymentRef,
+            bcvRate,
+            saleId: saleData.id,
+          });
+        } catch (e) {
+          fiadoInitialError = e instanceof Error ? e.message : 'error desconocido';
+        }
+      }
+
+      // Al fiar no se suman puntos: se suman (o no, según la tienda) cuando
+      // termina de pagar. El gasto del cliente sí cuenta desde hoy.
+      if (fiadoMode && finalCustomerId) {
+        const { data: custData } = await supabase
+          .from('customers')
+          .select('total_spent')
+          .eq('document_id', finalCustomerId)
+          .eq('store_id', currentStore.id)
+          .single();
+        await supabase
+          .from('customers')
+          .update({ total_spent: (custData?.total_spent || 0) + totalUSD })
+          .eq('document_id', finalCustomerId)
+          .eq('store_id', currentStore.id);
+      }
+
+      // ==========================================
       // PUNTOS Y GASTO DEL CLIENTE (Aplica automático a productos rápidos)
       // ==========================================
-      if (finalCustomerId) {
+      if (finalCustomerId && !fiadoMode) {
          // ⚡ NOTA: totalUSD ya incluye el precio de los productos rápidos
          // Regla de acumulación: 1 punto por cada $1 gastado (los centavos no suman).
          const pointsEarned = Math.floor(totalUSD);
@@ -1252,7 +1428,16 @@ export default function POSPage() {
          }).catch(() => {});
       }
 
-      showNotification('¡Venta registrada con éxito!', 'success');
+      if (fiadoMode) {
+        const who = cleanName || customerLookupName || finalCustomerId;
+        if (fiadoInitialError) {
+          showNotification(`Fiado guardado: ${who} debe $${totalUSD.toFixed(2)}. El abono inicial NO se registró (${fiadoInitialError}). Regístralo en Cuentas por cobrar.`, 'error');
+        } else {
+          showNotification(`Fiado guardado: ${who} debe $${fiadoOwes.toFixed(2)}`, 'success');
+        }
+      } else {
+        showNotification('¡Venta registrada con éxito!', 'success');
+      }
       clearCart();
       setDocNumber('');
       setCustomerName('');
@@ -1272,6 +1457,8 @@ export default function POSPage() {
       setWaOptIn(false);
       setWaOptedOut(false);
       setShowCustomer(false);
+      resetFiado();
+      setDebtLookup(null);
       redeemTouchedRef.current = false;
 
       setTimeout(() => {
@@ -1312,6 +1499,154 @@ export default function POSPage() {
     setShowCustomer(false);
     searchInputRef.current?.focus();
   };
+
+  // Panel de cobro con «Fiado» encendido: abono inicial (opcional), cómo lo
+  // pagó, lo recibido hoy y lo que queda a deber.
+  const renderFiadoPanel = () => (
+    <div className="bg-white rounded-xl shadow-sm border-2 border-[#0f5c5c] p-4 flex flex-col gap-3 shrink-0">
+      <div>
+        <h3 className="text-lg md:text-xl font-bold text-slate-800">🧾 Fiado</h3>
+        <p className="text-sm text-slate-500">El cliente se lleva todo y paga después en Cuentas por cobrar.</p>
+      </div>
+
+      {customerDebt !== null && (
+        <p className="text-sm font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          🔔 {customerName.trim() || customerLookupName || 'Este cliente'} ya debe ${customerDebt.toFixed(2)}
+        </p>
+      )}
+
+      <div>
+        <label className="block text-sm font-semibold text-slate-700 mb-1">
+          Abono inicial <span className="font-normal text-slate-400">(opcional)</span>
+        </label>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={fiadoInitial}
+            onChange={(e) => setFiadoInitial(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            placeholder="0.00"
+            className={`w-full pl-7 pr-3 py-2.5 border rounded-lg bg-white text-slate-800 text-lg outline-none focus:ring-2 transition ${fiadoInitialInvalid ? 'border-red-400 focus:ring-red-400' : 'border-slate-300 focus:ring-teal-600'}`}
+          />
+        </div>
+        {fiadoInitialInvalid && fiadoInitialNum > 0 && (
+          <p className="text-sm text-red-500 mt-1">Debe ser menor al total (${totalUSD.toFixed(2)}).</p>
+        )}
+      </div>
+
+      {fiadoInitialNum > 0 && !fiadoInitialInvalid && (
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-slate-700">
+              ¿Cómo pagó el abono? <span className="text-red-500">*</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => { setFiadoSplit((v) => !v); setFiadoMethod2(null); setFiadoAmount1(''); }}
+              className={`text-xs font-bold px-2.5 py-1 rounded-lg border transition whitespace-nowrap ${
+                fiadoSplit ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-50'
+              }`}
+            >
+              {fiadoSplit ? '✕ Un solo método' : '➗ Dividir abono'}
+            </button>
+          </div>
+          {!fiadoSplit ? (
+            <div className="grid grid-cols-2 gap-2">
+              {FIADO_METHODS.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() => setFiadoMethod(o.id)}
+                  className={`py-2 rounded-lg border flex items-center justify-center gap-2 transition ${fiadoMethod === o.id ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-600'}`}
+                >
+                  <span className="text-lg">{o.icon}</span>
+                  <span className="text-sm font-medium text-center">{o.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <select
+                  value={fiadoMethod ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value as FiadoMethod;
+                    setFiadoMethod(val);
+                    if (fiadoMethod2 === val) setFiadoMethod2(null);
+                  }}
+                  className={methodSelectClass}
+                >
+                  <option value="" disabled>Método 1...</option>
+                  {FIADO_METHODS.map((o) => (
+                    <option key={o.id} value={o.id}>{o.icon} {o.label}</option>
+                  ))}
+                </select>
+                <div className="relative w-28 shrink-0">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={fiadoAmount1}
+                    onChange={(e) => setFiadoAmount1(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    placeholder="0.00"
+                    className={`w-full pl-7 pr-2 py-2.5 border rounded-lg bg-white text-slate-800 text-base outline-none focus:ring-2 transition ${fiadoSplitInvalid ? 'border-red-400 focus:ring-red-400' : 'border-slate-300 focus:ring-teal-600'}`}
+                  />
+                </div>
+              </div>
+              <div className="flex gap-2 items-center">
+                <select
+                  value={fiadoMethod2 ?? ''}
+                  onChange={(e) => setFiadoMethod2(e.target.value as FiadoMethod)}
+                  className={methodSelectClass}
+                >
+                  <option value="" disabled>Método 2...</option>
+                  {FIADO_METHODS.filter((o) => o.id !== fiadoMethod).map((o) => (
+                    <option key={o.id} value={o.id}>{o.icon} {o.label}</option>
+                  ))}
+                </select>
+                <span className="w-28 shrink-0 text-right text-base font-semibold text-slate-700">${fiadoAmount2Num.toFixed(2)}</span>
+              </div>
+            </>
+          )}
+          <input
+            type="text"
+            value={paymentRef}
+            onChange={(e) => setPaymentRef(e.target.value)}
+            placeholder="Referencia del abono (opcional)"
+            className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
+          />
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+          <span className="text-sm font-semibold text-emerald-800">Recibido hoy</span>
+          <span className="text-lg font-bold text-emerald-700">${fiadoReceived.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between items-center bg-amber-50 border-2 border-amber-300 rounded-lg px-3 py-2">
+          <span className="text-sm font-semibold text-amber-900">Queda a deber</span>
+          <span className="text-2xl font-extrabold text-amber-700">${fiadoOwes.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <p className="text-xs text-center text-slate-500 border border-dashed border-slate-300 rounded-lg py-1.5">
+        Sin ✪ puntos y sin Cashea mientras sea fiado
+      </p>
+
+      <button
+        onClick={handleCheckout}
+        disabled={isLoading || cart.length === 0}
+        className="w-full bg-[#0f5c5c] hover:bg-[#0a4545] disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-4 px-4 rounded-xl transition flex items-center justify-center gap-2 text-2xl shadow-md shrink-0"
+      >
+        {isLoading ? 'Procesando...' : '🧾 Finalizar venta'}
+      </button>
+    </div>
+  );
 
   // Botones − cantidad + de una fila del carrito. En la PC van en la columna
   // Cant.; en el teléfono, debajo del nombre.
@@ -1407,14 +1742,34 @@ export default function POSPage() {
           <h1 className="text-xl md:text-2xl font-bold text-slate-800">Terminal de Venta</h1>
           <p className="text-sm text-slate-500">Operando en: <strong className="text-teal-700">{currentStore.name}</strong></p>
         </div>
-        {/* Los cambios se hacen en la PC: en el teléfono no se muestra. */}
-        <button
-          type="button"
-          onClick={() => setShowExchange(true)}
-          className="hidden md:block px-4 py-2 rounded-lg font-bold border-2 bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 transition whitespace-nowrap"
-        >
-          🔁 Cambio de producto
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Fiado: solo el dueño y quien tenga el permiso en Usuarios. */}
+          {fiadoAccess.allowed && (
+            <button
+              type="button"
+              onClick={toggleFiado}
+              aria-pressed={fiadoMode}
+              className={`px-3 md:px-4 py-2 rounded-lg font-bold border-2 transition whitespace-nowrap flex items-center gap-2 ${
+                fiadoMode
+                  ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
+                  : 'bg-white text-[#0f5c5c] border-teal-300 hover:bg-teal-50'
+              }`}
+            >
+              <span className={`w-4 h-4 rounded border-2 flex items-center justify-center text-[11px] leading-none ${fiadoMode ? 'bg-white text-[#0f5c5c] border-white' : 'border-[#0f5c5c]'}`}>
+                {fiadoMode ? '✓' : ''}
+              </span>
+              Fiado
+            </button>
+          )}
+          {/* Los cambios se hacen en la PC: en el teléfono no se muestra. */}
+          <button
+            type="button"
+            onClick={() => setShowExchange(true)}
+            className="hidden md:block px-4 py-2 rounded-lg font-bold border-2 bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 transition whitespace-nowrap"
+          >
+            🔁 Cambio de producto
+          </button>
+        </div>
       </div>
 
       <ExchangeModal
@@ -1808,11 +2163,16 @@ export default function POSPage() {
                 Inicial en tienda: ${casheaInitialNum.toFixed(2)}{casheaInitialMethodShort && ` (${casheaInitialMethodShort})`} · Cashea: ${casheaRemaining.toFixed(2)}
               </p>
             )}
+            {fiadoMode && (
+              <p className="text-amber-200 text-lg mb-1 bg-[#0a4545] px-3 py-1 rounded">
+                🧾 Fiado · hoy ${fiadoReceived.toFixed(2)} · debe ${fiadoOwes.toFixed(2)}
+              </p>
+            )}
             <p className="text-teal-200 text-base">Bs. {totalVES.toFixed(2)} (Tasa BCV: {bcvRate.toFixed(2)})</p>
           </div>
 
           {/* TARJETA DE CANJE DE PUNTOS (aparece al detectar un cliente) */}
-          {customerPoints !== null && (
+          {customerPoints !== null && !fiadoMode && (
             <div className="bg-white rounded-xl shadow-sm border-2 border-teal-200 p-4 shrink-0">
               <div className="flex items-center justify-between mb-0.5">
                 <h3 className="text-xl md:text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -1868,7 +2228,9 @@ export default function POSPage() {
             </div>
           )}
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col shrink-0">
+          {fiadoMode && renderFiadoPanel()}
+
+          <div className={`bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex-col shrink-0 ${fiadoMode ? 'hidden' : 'flex'}`}>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-lg md:text-xl font-bold text-slate-800">Método de Pago <span className="text-red-500">*</span></h3>
               <button
