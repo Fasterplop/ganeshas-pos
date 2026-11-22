@@ -107,9 +107,11 @@ export default function POSPage() {
   // El cliente pidió la baja ("Cancelar promociones"): no se le vuelve a
   // escribir nunca, y el cajero no puede re-suscribirlo desde la caja.
   const [waOptedOut, setWaOptedOut] = useState(false);
-  // En el teléfono los datos del cliente van plegados detrás de un botón (en
-  // la PC se ven siempre).
+  // Los datos del cliente van plegados en una sola línea (teléfono y PC): se
+  // abren al tocarla y se cierran solos al seguir con la venta.
   const [showCustomer, setShowCustomer] = useState(false);
+  const customerBoxRef = useRef<HTMLDivElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
@@ -171,6 +173,24 @@ export default function POSPage() {
   // ==========================================
   // MITIGACIÓN CASO #2 TDD: Cambio de Tienda
   // ==========================================
+  // Datos del cliente abiertos: el cursor va a la cédula, y un clic fuera de
+  // ellos (buscar producto, elegir método, etc.) los vuelve a plegar. Se usa
+  // 'click' y no 'pointerdown' para que la línea se pliegue DESPUÉS de que el
+  // botón tocado haga lo suyo: si no, en el teléfono la pantalla se corre
+  // entre el toque y el soltar, y el toque se pierde.
+  useEffect(() => {
+    if (!showCustomer) return;
+    docInputRef.current?.focus();
+    const onClick = (e: MouseEvent) => {
+      const box = customerBoxRef.current;
+      if (box && e.target instanceof Node && e.target.isConnected && !box.contains(e.target)) {
+        setShowCustomer(false);
+      }
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, [showCustomer]);
+
   useEffect(() => {
     // Si el currentStore cambia, reseteamos absolutamente toda la interfaz del POS
     clearCart();
@@ -1009,6 +1029,7 @@ export default function POSPage() {
       // ==========================================
       if (fullDocumentId || cleanPhone !== '' || cleanName !== '') {
         if (!fullDocumentId) {
+           setShowCustomer(true);
            throw new Error('Debes ingresar el número de cédula para poder asociar al cliente.');
         }
 
@@ -1041,7 +1062,10 @@ export default function POSPage() {
               .eq('store_id', currentStore.id);
               
             if (updateError) {
-                if (updateError.code === '23505') throw new Error('Este número de teléfono ya está asociado a otro cliente.');
+                if (updateError.code === '23505') {
+                  setShowCustomer(true);
+                  throw new Error('Este número de teléfono ya está asociado a otro cliente.');
+                }
                 throw updateError;
             }
           }
@@ -1270,15 +1294,24 @@ export default function POSPage() {
     );
   }
 
-  // Lo que se ve en el botón del cliente con los datos plegados (teléfono),
-  // para que no quede escondido que la venta ya lleva un cliente.
-  const customerSummary = docNumber.trim()
-    ? [
-        `${docType}${docNumber.trim()}`,
-        customerName.trim() || customerLookupName,
-        customerPoints !== null ? `${customerPoints} pts` : null,
-      ].filter(Boolean).join(' · ')
-    : null;
+  // Lo que se ve en la línea del cliente con los datos plegados, para que no
+  // quede escondido que la venta ya lleva un cliente (o datos a medio poner).
+  const customerParts = [
+    customerName.trim() || customerLookupName,
+    docNumber.trim() ? `${docType}${docNumber.trim()}` : null,
+    customerPhone.trim() || null,
+    customerPoints !== null ? `${customerPoints} pts` : null,
+  ].filter(Boolean) as string[];
+  const hasCustomer = docNumber.trim() !== '' || customerName.trim() !== '' || customerPhone.trim() !== '';
+  const customerClosedWithData = hasCustomer && !showCustomer;
+
+  // Enter en un dato del cliente: pliega la línea y vuelve al buscador.
+  const closeCustomerOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    setShowCustomer(false);
+    searchInputRef.current?.focus();
+  };
 
   // Botones − cantidad + de una fila del carrito. En la PC van en la columna
   // Cant.; en el teléfono, debajo del nombre.
@@ -1422,29 +1455,44 @@ export default function POSPage() {
         {/* Columna Izquierda: Búsqueda y Carrito */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden md:min-h-[600px] lg:min-h-0">
           <div className="p-3 md:p-4 border-b border-slate-200 space-y-3 md:space-y-4 bg-slate-50 shrink-0">
-            <div>
-              <h3 className="hidden md:block text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Datos del Cliente (Opcional)</h3>
+            <div ref={customerBoxRef}>
+              {/* Una sola línea: «Agregar cliente» plegada; al tocarla se abren
+                  los datos de siempre; con datos puestos muestra el cliente y
+                  «Cambiar». */}
               <button
                 type="button"
                 onClick={() => setShowCustomer(v => !v)}
                 aria-expanded={showCustomer}
-                className="md:hidden w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-left hover:bg-slate-50 transition"
+                aria-controls="pos-customer-fields"
+                className={`w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border bg-white text-left hover:bg-slate-50 transition ${hasCustomer || showCustomer ? 'border-teal-500' : 'border-slate-300'}`}
               >
                 <span className="flex items-center gap-2.5 min-w-0">
                   <span className="text-xl shrink-0">👤</span>
-                  <span className="min-w-0">
-                    <span className="block text-base font-semibold text-slate-700">
-                      Cliente <span className="font-normal text-slate-400">(opcional)</span>
+                  {customerClosedWithData ? (
+                    <span className="min-w-0">
+                      <span className="block text-xs text-slate-500 leading-tight">Cliente</span>
+                      <span className="block text-base truncate">
+                        <span className="font-semibold text-slate-800">{customerParts[0]}</span>
+                        {customerParts.length > 1 && (
+                          <span className="text-slate-400"> · {customerParts.slice(1).join(' · ')}</span>
+                        )}
+                      </span>
                     </span>
-                    {customerSummary && (
-                      <span className="block text-sm font-medium text-teal-700 truncate">{customerSummary}</span>
-                    )}
-                  </span>
+                  ) : (
+                    <span className="block text-base font-semibold text-slate-700">
+                      {showCustomer ? 'Datos del cliente' : 'Agregar cliente'}{' '}
+                      <span className="font-normal text-slate-400">(opcional)</span>
+                    </span>
+                  )}
                 </span>
-                <span className={`text-slate-400 text-sm shrink-0 transition-transform ${showCustomer ? 'rotate-180' : ''}`}>▼</span>
+                {customerClosedWithData ? (
+                  <span className="text-sm font-bold text-teal-700 shrink-0">Cambiar</span>
+                ) : (
+                  <span className={`text-slate-400 text-sm shrink-0 transition-transform ${showCustomer ? 'rotate-180' : ''}`}>▼</span>
+                )}
               </button>
 
-              <div className={`${showCustomer ? 'mt-3' : 'hidden'} md:block md:mt-0`}>
+              <div id="pos-customer-fields" className={showCustomer ? 'mt-3' : 'hidden'}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                   <div className="flex">
                     <select
@@ -1458,9 +1506,11 @@ export default function POSPage() {
                       <option value="G-">G-</option>
                     </select>
                     <input
+                      ref={docInputRef}
                       type="text"
                       value={docNumber}
                       onChange={(e) => setDocNumber(e.target.value)}
+                      onKeyDown={closeCustomerOnEnter}
                       placeholder="Número de Identificación..."
                       className="w-full pl-3 pr-4 py-2.5 border border-slate-300 rounded-r-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                     />
@@ -1471,6 +1521,7 @@ export default function POSPage() {
                       type="text"
                       value={customerPhone}
                       onChange={(e) => setCustomerPhone(e.target.value)}
+                      onKeyDown={closeCustomerOnEnter}
                       placeholder="📱 Teléfono (Ej: 04141234567)"
                       className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                     />
@@ -1482,6 +1533,7 @@ export default function POSPage() {
                     type="text"
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
+                    onKeyDown={closeCustomerOnEnter}
                     placeholder="👤 Nombre Completo..."
                     className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-teal-600 transition"
                   />
@@ -1513,8 +1565,6 @@ export default function POSPage() {
                 </div>
               </div>
             </div>
-
-            <hr className="hidden md:block border-slate-200" />
 
             {/* SECCIÓN DE BÚSQUEDA Y PRODUCTO RÁPIDO */}
             <div className="relative">
