@@ -25,7 +25,7 @@ import {
   isMissingInitialMethodColumn,
 } from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
-import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, exchangeDiscountOf, isExchange, isMissingExchangeColumn } from '@/lib/exchange';
+import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, isExchange, isMissingExchangeColumn, manualDiscountOf } from '@/lib/exchange';
 
 // PostgREST corta cada respuesta en 1000 filas (y trunca en silencio): las
 // consultas de ventas se paginan con .range() de a SALES_PAGE.
@@ -664,6 +664,7 @@ export default function DashboardPage() {
         { header: 'Cantidad de artículos', key: 'cantidad',   width: 13, style: { numFmt: '#,##0' } },
         { header: 'Referencia',            key: 'referencia', width: 16 },
         { header: 'Descuento USD',         key: 'descuento',  width: 14, style: { numFmt: '"$"#,##0.00' } },
+        { header: 'Canje puntos USD',      key: 'canje',      width: 16, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Recargo PDV USD',       key: 'recargo',    width: 16, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Inicial Cashea USD',    key: 'inicial',    width: 17, style: { numFmt: '"$"#,##0.00' } },
         { header: 'Inicial pagada con',    key: 'inicialMetodo', width: 24 },
@@ -703,6 +704,7 @@ export default function DashboardPage() {
       let totalSumaUSD = 0;
       let totalSumaVES = 0;
       let totalDescuento = 0;
+      let totalCanje = 0;
       let totalRecargo = 0;
       let totalInicial = 0;
       let totalCantidad = 0;
@@ -728,12 +730,15 @@ export default function DashboardPage() {
 
         const amountUSD = Number(sale.total_amount) || 0;
         const amountVES = amountUSD * (Number(sale.bcv_rate) || 0);
-        const descuentoUSD = Number(sale.redemption_discount_usd) || 0;
+        // Descuento = el que puso la cajera (% o $); el canje de puntos va aparte.
+        const descuentoUSD = manualDiscountOf(sale, items);
+        const canjeUSD = Number(sale.redemption_discount_usd) || 0;
         const recargoUSD = Number(sale.punto_de_venta_surcharge_usd) || 0;
         const inicialUSD = casheaInitialOf(sale);
         totalSumaUSD += amountUSD;
         totalSumaVES += amountVES;
         totalDescuento += descuentoUSD;
+        totalCanje += canjeUSD;
         totalRecargo += recargoUSD;
         totalInicial += inicialUSD;
         totalCantidad += itemCount;
@@ -750,6 +755,7 @@ export default function DashboardPage() {
           referencia: sale.payment_ref || 'N/A',
           cantidad: itemCount,
           descuento: descuentoUSD,
+          canje: canjeUSD,
           recargo: recargoUSD,
           inicial: inicialUSD,
           inicialMetodo,
@@ -801,6 +807,7 @@ export default function DashboardPage() {
         fecha: 'TOTALES GENERALES',
         cantidad: totalCantidad,
         descuento: totalDescuento,
+        canje: totalCanje,
         recargo: totalRecargo,
         inicial: totalInicial,
         usd: totalSumaUSD,
@@ -1258,8 +1265,9 @@ export default function DashboardPage() {
                     // líneas negativas son lo devuelto y las positivas lo entregado.
                     const exchange = isExchange(sale);
                     const counts = exchangeCounts(sale.sale_items);
-                    // Descuento manual sobre la diferencia del cambio (db/exchange_03_discount.sql).
-                    const exchangeDiscount = exchange ? exchangeDiscountOf(sale, sale.sale_items) : 0;
+                    // Descuento manual de la cajera: en una venta, sobre el total; en un
+                    // cambio, sobre la diferencia (db/exchange_03_discount.sql).
+                    const manualDiscount = manualDiscountOf(sale, sale.sale_items);
                     const sourceDate = exchange && sale.exchange_of_sale_id ? sourceSaleDates[sale.exchange_of_sale_id] : null;
                     const hasReturns = !exchange && (sale.sale_items ?? []).some((it: { id: string }) => (returnedByLine[it.id] || 0) > 0);
                     return (
@@ -1386,9 +1394,9 @@ export default function DashboardPage() {
   <p className="text-[11px] text-slate-500 font-medium mt-0.5">
     Bs. {(Number(sale.total_amount) * Number(sale.bcv_rate)).toFixed(2)}
   </p>
-  {exchangeDiscount > 0 && (
+  {manualDiscount > 0 && (
     <p className="text-[11px] text-rose-600 font-semibold mt-0.5">
-      🏷 Descuento: −${exchangeDiscount.toFixed(2)}
+      🏷 Descuento: −${manualDiscount.toFixed(2)}
     </p>
   )}
   {Number(sale.redemption_discount_usd) > 0 && (

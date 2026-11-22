@@ -78,14 +78,16 @@ export function exchangeDiscountUsd(diff: number, type: ExchangeDiscountType, va
 }
 
 /**
- * Descuento manual que tuvo un cambio ya registrado. No hay columna: sale de
- * lo que valían sus líneas (devueltas en negativo) menos lo que se cobró, igual
- * que el descuento manual de una venta. Menos de un centavo se toma como 0
- * (redondeo de las líneas).
+ * Descuento manual que tuvo una venta o un cambio ya registrado (el que pone
+ * la cajera en %, o en $). No hay columna: sale de lo que valían sus líneas
+ * (las devueltas de un cambio en negativo) menos lo que se cobró sin el
+ * recargo de Punto de Venta y sumando el canje de puntos. Las ofertas no
+ * cuentan como descuento porque la línea ya guarda el precio de oferta.
+ * Menos de un centavo se toma como 0 (redondeo de las líneas).
  */
-export function exchangeDiscountOf(
+export function manualDiscountOf(
   sale: { total_amount: unknown; punto_de_venta_surcharge_usd?: unknown; redemption_discount_usd?: unknown },
-  items: { quantity: unknown; unit_price: unknown }[] | null | undefined,
+  items: { quantity?: unknown; unit_price?: unknown }[] | null | undefined,
 ): number {
   const diff = (items ?? []).reduce(
     (acc, it) => acc + round2((Number(it.quantity) || 0) * (Number(it.unit_price) || 0)), 0);
