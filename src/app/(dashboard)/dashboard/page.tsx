@@ -465,15 +465,36 @@ export default function DashboardPage() {
 
       // C. Top Productos usando un Inner Join con Sales para AISLAR POR TIENDA
       // ⚡ CORRECCIÓN: Solicitamos custom_name y unit_price para los productos rápidos
-      const { data: saleItems } = await supabase
-        .from('sale_items')
-        .select('product_id, quantity, custom_name, unit_price, products(name, price, talla, color), sales!inner(store_id)')
-        .eq('sales.store_id', currentStore.id);
+      // Paginado con .range() y orden fijo por id: PostgREST corta en 1000
+      // filas en silencio, y sin orden cada página podría repetir o saltarse
+      // líneas. Si una página falla, el ranking no se muestra a medias.
+      const itemRows: unknown[] = [];
+      let itemsFailed = false;
+      for (let from = 0; ; from += SALES_PAGE) {
+        const { data, error } = await supabase
+          .from('sale_items')
+          .select('product_id, quantity, custom_name, unit_price, products(name, price, talla, color, is_active), sales!inner(store_id)')
+          .eq('sales.store_id', currentStore.id)
+          .order('id', { ascending: true })
+          .range(from, from + SALES_PAGE - 1);
+        if (error) {
+          console.warn('[dashboard] no se pudo leer sale_items para Top Productos:', error.message);
+          itemsFailed = true;
+          break;
+        }
+        itemRows.push(...(data ?? []));
+        if (!data || data.length < SALES_PAGE) break;
+      }
+      const saleItems = itemsFailed ? null : itemRows;
 
       if (saleItems) {
         const productCounts: Record<string, { id: string, name: string, variant: string, price: number, qty: number }> = {};
 
         saleItems.forEach((item: any) => {
+          // Producto eliminado (is_active = false es borrado lógico): no entra
+          // al ranking. Los productos rápidos (sin product_id) sí cuentan.
+          if (item.product_id && item.products?.is_active === false) return;
+
           // Si no hay product_id, usamos el custom_name como ID temporal
           const pId = item.product_id || `quick-${item.custom_name}`;
 
