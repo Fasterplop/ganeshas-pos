@@ -23,6 +23,22 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type { LucideIcon } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Banknote,
+  ChartNoAxesColumn,
+  ChevronRight,
+  CreditCard,
+  FileText,
+  Package,
+  Shirt,
+  ShoppingCart,
+  Smartphone,
+  Store as StoreIcon,
+  ToyBrick,
+} from 'lucide-react';
+import CasheaLogo from '@/components/CasheaLogo';
 import { createClient } from '@/lib/supabase/client';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
 import { usePOSStore, type Store } from '@/store/usePOSStore';
@@ -71,6 +87,26 @@ interface SaleRow {
 type AbonoRow = CobroAbono & { created_at: string };
 
 const COBRO_LABEL: Record<string, string> = Object.fromEntries(COBRO_METHODS.map((m) => [m.key, m.label]));
+
+// Íconos del dibujo: cada forma de pago en su cuadrito de color.
+const METHOD_ICON: Record<string, { Icon: LucideIcon; box: string }> = {
+  efectivo: { Icon: Banknote, box: 'bg-emerald-100 text-emerald-700' },
+  punto_de_venta: { Icon: CreditCard, box: 'bg-sky-100 text-sky-600' },
+  zelle: { Icon: ArrowLeftRight, box: 'bg-violet-100 text-violet-600' },
+  pago_movil: { Icon: Smartphone, box: 'bg-indigo-100 text-indigo-700' },
+};
+const renderMethodIcon = (key: string) => {
+  if (key === 'cashea' || key === 'cashea_sin_metodo') return <CasheaLogo className="w-8 h-8 rounded-lg" />;
+  const m = METHOD_ICON[key] ?? { Icon: Banknote, box: 'bg-slate-100 text-slate-500' };
+  return (
+    <span className={`w-8 h-8 rounded-lg ${m.box} flex items-center justify-center shrink-0`}>
+      <m.Icon className="w-4 h-4" aria-hidden />
+    </span>
+  );
+};
+// La tienda de ropa lleva ropa; la de juguetes, un juguete (como el dibujo).
+const storeIconOf = (name: string): LucideIcon =>
+  /ropa/i.test(name) ? Shirt : /jugu/i.test(name) ? ToyBrick : StoreIcon;
 
 interface PaymentRow {
   id: string;
@@ -308,6 +344,7 @@ export default function ResumenPage() {
       .filter((st) => st.is_active !== false || byStore.has(st.id) || (cobros.totalByStore[st.id] ?? 0) > 0)
       .map((st) => ({ ...st, total: round2(byStore.get(st.id)?.total ?? 0), ventas: byStore.get(st.id)?.ventas ?? 0 }));
   }, [sales, stores, cobros]);
+  const activeStores = stores.filter((st) => st.is_active !== false);
   const storeSel = storeFilter === 'all' ? null : (stores.find((st) => st.id === storeFilter) ?? null);
   const salesF = useMemo(
     () => (storeSel ? sales.filter((s) => s.store_id === storeSel.id) : sales),
@@ -578,10 +615,14 @@ export default function ResumenPage() {
       actions={
         <>
           <button onClick={exportMovimientos} disabled={!!exporting} className={btnSecondary}>
-            {exporting === 'movimientos' ? 'Exportando…' : '📥 Movimientos'}
+            {exporting === 'movimientos' ? 'Exportando…' : (
+              <span className="inline-flex items-center gap-2"><ChartNoAxesColumn className="w-4 h-4" aria-hidden /> Movimientos</span>
+            )}
           </button>
           <button onClick={exportContador} disabled={!!exporting} className={btnSecondary}>
-            {exporting === 'contador' ? 'Exportando…' : '📦 Paquete contador'}
+            {exporting === 'contador' ? 'Exportando…' : (
+              <span className="inline-flex items-center gap-2"><Package className="w-4 h-4 text-orange-500" aria-hidden /> Paquete contador</span>
+            )}
           </button>
         </>
       }
@@ -591,27 +632,25 @@ export default function ResumenPage() {
 
         {/* Filtros, como el dibujo de Gerardo: tienda, desde, hasta, Hoy, Este mes. */}
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-slate-500">Tienda</span>
+          <span className="text-slate-600">Tienda</span>
           <select
             value={storeFilter}
             onChange={(e) => setStoreFilter(e.target.value)}
-            className={`${inputClass} w-auto`}
+            className={`${inputClass} w-auto min-w-[11rem]`}
           >
             <option value="all">Todas las tiendas</option>
-            {stores
-              .filter((st) => st.is_active !== false)
-              .map((st) => (
-                <option key={st.id} value={st.id}>{st.name}</option>
-              ))}
+            {activeStores.map((st) => (
+              <option key={st.id} value={st.id}>{st.name}</option>
+            ))}
           </select>
-          <span className="text-slate-500 ml-1">Desde</span>
+          <span className="text-slate-600 ml-2">Desde</span>
           <input
             type="date"
             value={dateRange.start}
             onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
             className={`${inputClass} w-auto`}
           />
-          <span className="text-slate-500">Hasta</span>
+          <span className="text-slate-600 ml-2">Hasta</span>
           <input
             type="date"
             value={dateRange.end}
@@ -621,10 +660,10 @@ export default function ResumenPage() {
           <button
             type="button"
             onClick={() => setDateRange({ start: hoy, end: hoy })}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+            className={`ml-1 px-4 py-2 rounded-lg text-sm font-semibold border transition ${
               dateRange.start === hoy && dateRange.end === hoy
-                ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-teal-500'
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-500'
             }`}
           >
             Hoy
@@ -632,10 +671,10 @@ export default function ResumenPage() {
           <button
             type="button"
             onClick={() => setDateRange({ start: caracasMonthStart(hoy), end: hoy })}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+            className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${
               dateRange.start === caracasMonthStart(hoy) && dateRange.end === hoy
-                ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-teal-500'
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-500'
             }`}
           >
             Este mes
@@ -647,31 +686,39 @@ export default function ResumenPage() {
         ) : (
           <>
             {/* --- Las cuatro tarjetas del dibujo --- */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
               {[
                 {
-                  icon: '🏪', bg: 'bg-emerald-50', label: 'Ventas totales', value: fmtUSD(ventasF.total), tone: 'text-emerald-700',
-                  sub: `${ventasF.count} ${ventasF.count === 1 ? 'venta' : 'ventas'} · ${storeSel ? storeSel.name : 'todas las tiendas'}`,
+                  Icon: StoreIcon, iconBox: 'bg-emerald-50 text-emerald-600', label: 'Ventas totales',
+                  value: fmtUSD(ventasF.total), tone: 'text-emerald-700',
+                  sub: `${ventasF.count} ${ventasF.count === 1 ? 'venta' : 'ventas'} · ${
+                    storeSel ? storeSel.name : activeStores.length === 2 ? 'ambas tiendas' : 'todas las tiendas'
+                  }`,
                 },
                 {
-                  icon: '🛒', bg: 'bg-orange-50', label: 'Compras y gastos', value: fmtUSD(round2(kpi.compras + kpi.envios)), tone: 'text-orange-600',
-                  sub: storeSel ? 'Mercancía y fletes · de todo el negocio' : 'Mercancía y fletes',
+                  Icon: ShoppingCart, iconBox: 'bg-orange-50 text-orange-500', label: 'Compras y gastos',
+                  value: fmtUSD(round2(kpi.compras + kpi.envios)), tone: 'text-orange-500',
+                  sub: storeSel ? 'De todo el negocio' : null,
                 },
                 {
-                  icon: '📄', bg: 'bg-sky-50', label: 'Gastos operativos', value: fmtUSD(kpi.gastos), tone: 'text-slate-800',
-                  sub: storeSel ? 'De todo el negocio' : 'Luz, alquiler, sueldos…',
+                  Icon: FileText, iconBox: 'bg-sky-50 text-sky-600', label: 'Gastos operativos',
+                  value: fmtUSD(kpi.gastos), tone: 'text-slate-800',
+                  sub: storeSel ? 'De todo el negocio' : null,
                 },
                 {
-                  icon: '💵', bg: 'bg-emerald-50', label: 'Efectivo disponible', value: fmtUSD(kpi.efectivo), tone: kpi.efectivo < 0 ? 'text-red-600' : 'text-emerald-700',
-                  sub: kpi.tarjetas > 0 ? `${fmtUSD(kpi.tarjetas)} en tarjetas` : 'Bancos, Zelle y caja',
+                  Icon: Banknote, iconBox: 'bg-emerald-50 text-emerald-600', label: 'Efectivo disponible',
+                  value: fmtUSD(kpi.efectivo), tone: kpi.efectivo < 0 ? 'text-red-600' : 'text-emerald-700',
+                  sub: storeSel ? 'De todo el negocio' : null,
                 },
-              ].map((c) => (
-                <div key={c.label} className="bg-white p-3.5 sm:p-4 rounded-xl shadow-sm border border-slate-200 flex items-start gap-3 min-w-0">
-                  <span className={`w-10 h-10 rounded-lg ${c.bg} flex items-center justify-center text-xl shrink-0`} aria-hidden>{c.icon}</span>
+              ].map(({ Icon, iconBox, label, value, tone, sub }) => (
+                <div key={label} className="bg-white px-4 py-4 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4 min-w-0">
+                  <span className={`w-12 h-12 rounded-xl ${iconBox} flex items-center justify-center shrink-0`}>
+                    <Icon className="w-6 h-6" aria-hidden />
+                  </span>
                   <div className="min-w-0">
-                    <p className="text-[10px] sm:text-[11px] uppercase tracking-widest text-slate-400 font-bold leading-tight">{c.label}</p>
-                    <p className={`text-lg sm:text-2xl font-bold mt-0.5 break-words ${c.tone}`}>{c.value}</p>
-                    <p className="text-[11px] sm:text-xs text-slate-500 leading-snug">{c.sub}</p>
+                    <p className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold leading-tight">{label}</p>
+                    <p className={`text-2xl font-bold mt-0.5 break-words ${tone}`}>{value}</p>
+                    {sub && <p className="text-xs text-slate-500 leading-snug">{sub}</p>}
                   </div>
                 </div>
               ))}
@@ -680,43 +727,49 @@ export default function ResumenPage() {
             {/* --- Ventas por tienda --- */}
             {tiendasF.length > 0 && (
               <div>
-                <h3 className="font-bold text-slate-800 mb-3">Ventas por tienda</h3>
-                <div className={`grid grid-cols-1 ${tiendasF.length > 1 ? 'sm:grid-cols-2' : ''} gap-4`}>
-                  {tiendasF.map((st) => (
-                    <div key={st.id} className="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-600 p-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="font-bold text-slate-800 truncate">{st.name}</p>
-                        <button
-                          type="button"
-                          onClick={() => verEnReportes(st)}
-                          className="text-xs font-semibold text-teal-700 hover:underline whitespace-nowrap"
-                        >
-                          Ver detalle ›
-                        </button>
+                <h3 className="text-xl font-bold text-slate-800 mb-3">Ventas por tienda</h3>
+                <div className={`grid grid-cols-1 ${tiendasF.length > 1 ? 'md:grid-cols-2' : ''} gap-4`}>
+                  {tiendasF.map((st) => {
+                    const SIcon = storeIconOf(st.name);
+                    return (
+                      <div key={st.id} className="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-600 p-5 flex gap-4">
+                        <span className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                          <SIcon className="w-6 h-6" aria-hidden />
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-lg font-bold text-slate-800 truncate">{st.name}</p>
+                            <button
+                              type="button"
+                              onClick={() => verEnReportes(st)}
+                              className="text-sm font-medium text-emerald-700 hover:underline whitespace-nowrap inline-flex items-center gap-0.5"
+                            >
+                              Ver detalle <ChevronRight className="w-4 h-4" aria-hidden />
+                            </button>
+                          </div>
+                          <p className="text-3xl font-bold text-emerald-700 mt-1">{fmtUSD(st.total)}</p>
+                          <p className="text-sm text-slate-500">{st.ventas} {st.ventas === 1 ? 'venta' : 'ventas'}</p>
+                        </div>
                       </div>
-                      <p className="text-2xl sm:text-3xl font-bold text-emerald-700 mt-1">{fmtUSD(st.total)}</p>
-                      <p className="text-xs text-slate-500">{st.ventas} {st.ventas === 1 ? 'venta' : 'ventas'}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
 
             {/* --- Cobros por tienda y forma de pago --- */}
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-              <div className="px-4 pt-4 pb-2">
-                <h3 className="font-bold text-slate-800">Cobros por tienda y forma de pago</h3>
-                <p className="text-xs text-slate-500">Desglose del período seleccionado.</p>
-              </div>
-              <div className="overflow-x-auto px-4 pb-4">
-                <table className="w-full text-sm min-w-[520px]">
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+              <h3 className="text-xl font-bold text-slate-800">Cobros por tienda y forma de pago</h3>
+              <p className="text-sm text-slate-500 mb-3">Desglose del período seleccionado.</p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] border-collapse">
                   <thead>
-                    <tr className="bg-slate-50 text-slate-600 text-xs">
-                      <th className="text-left font-semibold px-3 py-2 rounded-l-lg">Forma de pago</th>
-                      {tiendasF.map((st) => (
-                        <th key={st.id} className="text-right font-semibold px-3 py-2">{st.name}</th>
+                    <tr className="bg-sky-50 text-slate-800 text-sm">
+                      <th className="text-left font-bold px-4 py-2.5 rounded-tl-lg">Forma de pago</th>
+                      {tiendasF.map((st, i) => (
+                        <th key={st.id} className={`text-right font-bold px-4 py-2.5 ${i % 2 === 1 ? 'bg-emerald-100/60 text-center' : ''}`}>{st.name}</th>
                       ))}
-                      <th className="text-right font-semibold px-3 py-2 rounded-r-lg">Total</th>
+                      <th className="text-right font-bold px-4 py-2.5 rounded-tr-lg">Total</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -724,71 +777,72 @@ export default function ResumenPage() {
                       const rowTotal = tiendasF.reduce((a, st) => a + (cobrosF.usd[m.key]?.[st.id] ?? 0), 0);
                       return (
                         <tr key={m.key}>
-                          <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">
-                            <span className="mr-2" aria-hidden>{m.icon}</span>
-                            {m.label}
+                          <td className="px-4 py-2 text-slate-800 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-3">
+                              {renderMethodIcon(m.key)}
+                              {m.label}
+                            </span>
                           </td>
-                          {tiendasF.map((st) => (
-                            <td key={st.id} className="px-3 py-2.5 text-right text-slate-800 tabular-nums">
+                          {tiendasF.map((st, i) => (
+                            <td
+                              key={st.id}
+                              className={`px-4 py-2 text-right tabular-nums ${i % 2 === 1 ? 'bg-emerald-50/70 text-emerald-700 font-medium' : 'text-slate-800'}`}
+                            >
                               {fmtUSD(cobrosF.usd[m.key]?.[st.id] ?? 0)}
                             </td>
                           ))}
-                          <td className="px-3 py-2.5 text-right font-semibold text-slate-800 tabular-nums">{fmtUSD(rowTotal)}</td>
+                          <td className="px-4 py-2 text-right text-slate-800 tabular-nums">{fmtUSD(rowTotal)}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot>
-                    <tr className="bg-emerald-50 font-bold text-slate-800">
-                      <td className="px-3 py-2.5 rounded-l-lg">TOTAL COBRADO</td>
-                      {tiendasF.map((st) => (
-                        <td key={st.id} className="px-3 py-2.5 text-right text-emerald-700 tabular-nums">
+                    <tr className="bg-emerald-50 text-lg font-bold">
+                      <td className="px-4 py-2.5 text-slate-800 rounded-bl-lg">TOTAL COBRADO</td>
+                      {tiendasF.map((st, i) => (
+                        <td key={st.id} className={`px-4 py-2.5 text-right text-emerald-700 tabular-nums ${i % 2 === 1 ? 'bg-emerald-100/60' : ''}`}>
                           {fmtUSD(cobrosF.totalByStore[st.id] ?? 0)}
                         </td>
                       ))}
-                      <td className="px-3 py-2.5 text-right text-emerald-700 tabular-nums rounded-r-lg">{fmtUSD(cobrosF.total)}</td>
+                      <td className="px-4 py-2.5 text-right text-emerald-700 tabular-nums rounded-br-lg">{fmtUSD(cobrosF.total)}</td>
                     </tr>
                   </tfoot>
                 </table>
-                <div className="flex flex-wrap items-start justify-between gap-2 mt-3">
-                  <p className="text-xs text-slate-500 flex-1 min-w-[240px]">
-                    En bolívares, a la tasa de cada venta:{' '}
-                    <strong>Bs. {totalBsF.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
-                    {cobrosF.abonos > 0 && <> Incluye {fmtUSD(cobrosF.abonos)} de abonos de fiado.</>}
-                    {Math.abs(cobrosF.total - ventasF.total) > 0.005 && (
-                      <> No coincide con «Ventas totales» porque lo fiado se cobra después, en abonos.</>
-                    )}
-                  </p>
-                  {tiendasF.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => verEnReportes(storeSel ?? tiendasF[0])}
-                      className="text-xs font-semibold text-teal-700 hover:underline whitespace-nowrap"
-                    >
-                      Ver detalle en Reportes ›
-                    </button>
+              </div>
+              <div className="flex flex-wrap items-start justify-between gap-2 mt-3">
+                <p className="text-xs text-slate-500 flex-1 min-w-[240px]">
+                  En bolívares, a la tasa de cada venta:{' '}
+                  <strong>Bs. {totalBsF.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
+                  {cobrosF.abonos > 0 && <> Incluye {fmtUSD(cobrosF.abonos)} de abonos de fiado.</>}
+                  {Math.abs(cobrosF.total - ventasF.total) > 0.005 && (
+                    <> No coincide con «Ventas totales» porque lo fiado se cobra después, en abonos.</>
                   )}
-                </div>
+                </p>
+                {tiendasF.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => verEnReportes(storeSel ?? tiendasF[0])}
+                    className="text-sm font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-800 whitespace-nowrap inline-flex items-center gap-0.5"
+                  >
+                    Ver detalle en Reportes <ChevronRight className="w-4 h-4" aria-hidden />
+                  </button>
+                )}
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {/* --- Próximos pagos --- */}
               <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-                <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="font-bold text-slate-800 text-sm">Próximos pagos (7 días)</h3>
-                  <span className="text-xs font-semibold text-slate-600">
-                    {fmtUSD(kpi.proximosTotal)}
-                  </span>
+                <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="font-bold text-slate-800 text-base">Próximos pagos (7 días)</h3>
+                  <span className="text-sm font-semibold text-slate-700">{fmtUSD(kpi.proximosTotal)}</span>
                 </div>
                 {kpi.proximos.length === 0 ? (
-                  <p className="text-sm text-slate-400 py-10 text-center">
-                    Nada vence en los próximos 7 días.
-                  </p>
+                  <p className="text-sm text-slate-500 py-12 text-center">Nada vence en los próximos 7 días.</p>
                 ) : (
                   <div className="divide-y divide-slate-100">
                     {kpi.proximos.slice(0, 8).map((e) => (
-                      <div key={e.id} className="px-4 py-2.5 flex items-center gap-3">
+                      <div key={e.id} className="px-5 py-2.5 flex items-center gap-3">
                         <DueBadge dueDate={e.due_date} />
                         <span className="flex-1 text-sm text-slate-800 truncate">
                           {supplierName(e.supplier_id) || e.description || 'Sin concepto'}
@@ -802,13 +856,11 @@ export default function ResumenPage() {
 
               {/* --- Dónde está el dinero --- */}
               <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-                <h3 className="px-4 py-3 border-b border-slate-100 font-bold text-slate-800 text-sm">
+                <h3 className="px-5 py-3.5 border-b border-slate-100 font-bold text-slate-800 text-base">
                   Dónde está el dinero
                 </h3>
                 {balances.filter((b) => b.is_active && !b.is_personal).length === 0 ? (
-                  <p className="text-sm text-slate-400 py-10 text-center">
-                    Todavía no hay cuentas registradas.
-                  </p>
+                  <p className="text-sm text-slate-500 py-12 text-center">Todavía no hay cuentas registradas.</p>
                 ) : (
                   <div className="divide-y divide-slate-100">
                     {balances
@@ -817,17 +869,17 @@ export default function ResumenPage() {
                       .map((b) => {
                         const card = b.kind === 'tarjeta_credito';
                         return (
-                          <div key={b.account_id} className="px-4 py-2.5 flex items-center gap-3">
+                          <div key={b.account_id} className="px-5 py-2.5 flex items-center gap-3">
                             <span className="flex-1 text-sm text-slate-800 truncate">{b.name}</span>
                             {card && (
-                              <span className="text-[10px] uppercase tracking-wide font-bold text-slate-400">
-                                deuda
+                              <span className="text-[10px] uppercase tracking-wide font-bold text-slate-500 bg-slate-100 rounded-md px-2 py-0.5">
+                                Deuda
                               </span>
                             )}
                             <span
-                              className={`text-sm font-semibold ${
+                              className={`text-base font-bold tabular-nums ${
                                 card
-                                  ? 'text-amber-700'
+                                  ? 'text-orange-500'
                                   : Number(b.balance_usd) < 0
                                     ? 'text-red-600'
                                     : 'text-emerald-700'
