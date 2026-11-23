@@ -12,24 +12,17 @@
 // 23-nov-2026): cuánto entró por cada forma de pago, para declarar. Se arma con
 // src/lib/finanzas/cobros.ts, con la misma regla que el desglose de Reportes.
 //
-// Ojo con dos cosas al comparar con /dashboard:
-//   - Aquí no hay filtro de sucursal: suma TODAS las tiendas (la tabla de
-//     cobros sí las separa en columnas).
+// La pantalla sigue el dibujo de Gerardo: filtro de tienda y fechas, cuatro
+// tarjetas (ventas, compras y gastos, gastos operativos, efectivo), ventas por
+// tienda, cobros por tienda y forma de pago, próximos pagos y dónde está el
+// dinero. El filtro de tienda solo toca lo que sale de las ventas.
+//
+// Ojo al comparar con /dashboard:
 //   - "Salió" es lo devengado (lo que se compró y se gastó en el período),
 //     no lo que se pagó. Lo pagado se ve en el movimiento de cada cuenta.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { createClient } from '@/lib/supabase/client';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
 import { usePOSStore, type Store } from '@/store/usePOSStore';
@@ -40,7 +33,6 @@ import type { Account } from '@/components/finanzas/AccountFormModal';
 import type { Supplier } from '@/components/finanzas/SupplierFormModal';
 import {
   FinNotice,
-  FinStatCard,
   Notice,
   DueBadge,
   btnSecondary,
@@ -114,6 +106,9 @@ export default function ResumenPage() {
   const [sales, setSales] = useState<SaleRow[]>([]);
   const [abonos, setAbonos] = useState<AbonoRow[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  // «Tienda» del dibujo: filtra lo que viene de las ventas (tarjeta de ventas,
+  // ventas por tienda y cobros). Compras, gastos y efectivo son del negocio.
+  const [storeFilter, setStoreFilter] = useState<string>('all');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [balances, setBalances] = useState<BalanceRow[]>([]);
@@ -313,6 +308,26 @@ export default function ResumenPage() {
       .filter((st) => st.is_active !== false || byStore.has(st.id) || (cobros.totalByStore[st.id] ?? 0) > 0)
       .map((st) => ({ ...st, total: round2(byStore.get(st.id)?.total ?? 0), ventas: byStore.get(st.id)?.ventas ?? 0 }));
   }, [sales, stores, cobros]);
+  const storeSel = storeFilter === 'all' ? null : (stores.find((st) => st.id === storeFilter) ?? null);
+  const salesF = useMemo(
+    () => (storeSel ? sales.filter((s) => s.store_id === storeSel.id) : sales),
+    [sales, storeSel],
+  );
+  const cobrosF = useMemo(
+    () => (storeSel ? buildCobros(salesF, abonos.filter((a) => a.store_id === storeSel.id)) : cobros),
+    [storeSel, salesF, abonos, cobros],
+  );
+  const tiendasF = storeSel ? tiendas.filter((st) => st.id === storeSel.id) : tiendas;
+  const ventasF = useMemo(
+    () => ({
+      total: round2(salesF.reduce((a, s) => a + (Number(s.total_amount) || 0), 0)),
+      count: salesF.filter((s) => s.kind !== 'exchange').length,
+    }),
+    [salesF],
+  );
+  const totalBsF = round2(
+    Object.values(cobrosF.bs).reduce((a, byStore) => a + Object.values(byStore).reduce((x, v) => x + v, 0), 0),
+  );
   const totalBs = useMemo(
     () => round2(Object.values(cobros.bs).reduce((a, byStore) => a + Object.values(byStore).reduce((x, v) => x + v, 0), 0)),
     [cobros],
@@ -329,25 +344,6 @@ export default function ResumenPage() {
     return parts.map((p) => `${COBRO_LABEL[p.method] ?? p.method} ${fmtUSD(p.usd)}`).join(' + ');
   };
 
-  // Serie diaria de entradas y salidas para el gráfico.
-  const chartData = useMemo(() => {
-    const map = new Map<string, { dia: string; entro: number; salio: number }>();
-    const push = (day: string, key: 'entro' | 'salio', amount: number) => {
-      const row = map.get(day) ?? { dia: day, entro: 0, salio: 0 };
-      row[key] = round2(row[key] + amount);
-      map.set(day, row);
-    };
-    for (const s of sales) {
-      const day = parseSupabaseDate(s.created_at)
-        .toLocaleDateString('en-CA', { timeZone: 'America/Caracas' });
-      push(day, 'entro', Number(s.total_amount));
-    }
-    for (const e of delPeriodo) push(e.expense_date, 'salio', Number(e.amount_usd));
-
-    return [...map.values()]
-      .sort((a, b) => a.dia.localeCompare(b.dia))
-      .map((r) => ({ ...r, label: `${r.dia.slice(8, 10)}/${r.dia.slice(5, 7)}` }));
-  }, [sales, delPeriodo]);
 
   // --- Exportaciones ---------------------------------------------------------
   const movimientosSheet = () => {
@@ -578,7 +574,7 @@ export default function ResumenPage() {
   return (
     <FinShell
       title="Resumen financiero"
-      subtitle="Cuánto entró, cuánto salió, cuánto queda y cuánto se debe."
+      subtitle="Ventas y cobros de cada tienda, por forma de pago."
       actions={
         <>
           <button onClick={exportMovimientos} disabled={!!exporting} className={btnSecondary}>
@@ -593,15 +589,29 @@ export default function ResumenPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
+        {/* Filtros, como el dibujo de Gerardo: tienda, desde, hasta, Hoy, Este mes. */}
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-slate-500">Período</span>
+          <span className="text-slate-500">Tienda</span>
+          <select
+            value={storeFilter}
+            onChange={(e) => setStoreFilter(e.target.value)}
+            className={`${inputClass} w-auto`}
+          >
+            <option value="all">Todas las tiendas</option>
+            {stores
+              .filter((st) => st.is_active !== false)
+              .map((st) => (
+                <option key={st.id} value={st.id}>{st.name}</option>
+              ))}
+          </select>
+          <span className="text-slate-500 ml-1">Desde</span>
           <input
             type="date"
             value={dateRange.start}
             onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
             className={`${inputClass} w-auto`}
           />
-          <span className="text-slate-400">al</span>
+          <span className="text-slate-500">Hasta</span>
           <input
             type="date"
             value={dateRange.end}
@@ -630,58 +640,49 @@ export default function ResumenPage() {
           >
             Este mes
           </button>
-          <span className="text-xs text-slate-400 ml-2">Suma todas las sucursales.</span>
         </div>
 
         {loading ? (
           <div className="py-20 text-center text-slate-400 text-sm">Cargando el resumen…</div>
         ) : (
           <>
+            {/* --- Las cuatro tarjetas del dibujo --- */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <FinStatCard
-                label="Entró"
-                value={fmtUSD(kpi.entro)}
-                tone="emerald"
-                sub={`${kpi.ventasCount} ventas del período`}
-              />
-              <FinStatCard
-                label="Salió"
-                value={fmtUSD(kpi.salio)}
-                tone="amber"
-                sub={`Compras, gastos y fletes · Pagado: ${fmtUSD(kpi.pagado)}`}
-              />
-              <FinStatCard
-                label="Queda"
-                value={fmtUSD(kpi.queda)}
-                tone={kpi.queda < 0 ? 'red' : 'teal'}
-                sub="Margen del período, no tu efectivo"
-              />
-              <FinStatCard
-                label="Se debe"
-                value={fmtUSD(kpi.deuda)}
-                tone={kpi.deuda > 0 ? 'red' : 'default'}
-                sub={kpi.vencido > 0 ? `${fmtUSD(kpi.vencido)} ya vencido` : 'Nada vencido'}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <FinStatCard label="Compras" value={fmtUSD(kpi.compras)} sub="Mercancía del período" />
-              <FinStatCard label="Gastos operativos" value={fmtUSD(kpi.gastos)} />
-              <FinStatCard label="Fletes" value={fmtUSD(kpi.envios)} sub="Envío de cajas" />
-              <FinStatCard
-                label="Efectivo disponible"
-                value={fmtUSD(kpi.efectivo)}
-                tone={kpi.efectivo < 0 ? 'red' : 'emerald'}
-                sub={kpi.tarjetas > 0 ? `${fmtUSD(kpi.tarjetas)} en tarjetas` : 'Bancos, Zelle y caja'}
-              />
+              {[
+                {
+                  icon: '🏪', bg: 'bg-emerald-50', label: 'Ventas totales', value: fmtUSD(ventasF.total), tone: 'text-emerald-700',
+                  sub: `${ventasF.count} ${ventasF.count === 1 ? 'venta' : 'ventas'} · ${storeSel ? storeSel.name : 'todas las tiendas'}`,
+                },
+                {
+                  icon: '🛒', bg: 'bg-orange-50', label: 'Compras y gastos', value: fmtUSD(round2(kpi.compras + kpi.envios)), tone: 'text-orange-600',
+                  sub: storeSel ? 'Mercancía y fletes · de todo el negocio' : 'Mercancía y fletes',
+                },
+                {
+                  icon: '📄', bg: 'bg-sky-50', label: 'Gastos operativos', value: fmtUSD(kpi.gastos), tone: 'text-slate-800',
+                  sub: storeSel ? 'De todo el negocio' : 'Luz, alquiler, sueldos…',
+                },
+                {
+                  icon: '💵', bg: 'bg-emerald-50', label: 'Efectivo disponible', value: fmtUSD(kpi.efectivo), tone: kpi.efectivo < 0 ? 'text-red-600' : 'text-emerald-700',
+                  sub: kpi.tarjetas > 0 ? `${fmtUSD(kpi.tarjetas)} en tarjetas` : 'Bancos, Zelle y caja',
+                },
+              ].map((c) => (
+                <div key={c.label} className="bg-white p-3.5 sm:p-4 rounded-xl shadow-sm border border-slate-200 flex items-start gap-3 min-w-0">
+                  <span className={`w-10 h-10 rounded-lg ${c.bg} flex items-center justify-center text-xl shrink-0`} aria-hidden>{c.icon}</span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] sm:text-[11px] uppercase tracking-widest text-slate-400 font-bold leading-tight">{c.label}</p>
+                    <p className={`text-lg sm:text-2xl font-bold mt-0.5 break-words ${c.tone}`}>{c.value}</p>
+                    <p className="text-[11px] sm:text-xs text-slate-500 leading-snug">{c.sub}</p>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* --- Ventas por tienda --- */}
-            {tiendas.length > 0 && (
+            {tiendasF.length > 0 && (
               <div>
                 <h3 className="font-bold text-slate-800 mb-3">Ventas por tienda</h3>
-                <div className={`grid grid-cols-1 ${tiendas.length > 1 ? 'sm:grid-cols-2' : ''} gap-4`}>
-                  {tiendas.map((st) => (
+                <div className={`grid grid-cols-1 ${tiendasF.length > 1 ? 'sm:grid-cols-2' : ''} gap-4`}>
+                  {tiendasF.map((st) => (
                     <div key={st.id} className="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-600 p-4">
                       <div className="flex items-center justify-between gap-2">
                         <p className="font-bold text-slate-800 truncate">{st.name}</p>
@@ -690,13 +691,11 @@ export default function ResumenPage() {
                           onClick={() => verEnReportes(st)}
                           className="text-xs font-semibold text-teal-700 hover:underline whitespace-nowrap"
                         >
-                          Ver en Reportes ›
+                          Ver detalle ›
                         </button>
                       </div>
                       <p className="text-2xl sm:text-3xl font-bold text-emerald-700 mt-1">{fmtUSD(st.total)}</p>
-                      <p className="text-xs text-slate-500">
-                        {st.ventas} {st.ventas === 1 ? 'venta' : 'ventas'} · cobrado {fmtUSD(cobros.totalByStore[st.id] ?? 0)}
-                      </p>
+                      <p className="text-xs text-slate-500">{st.ventas} {st.ventas === 1 ? 'venta' : 'ventas'}</p>
                     </div>
                   ))}
                 </div>
@@ -707,31 +706,31 @@ export default function ResumenPage() {
             <div className="bg-white rounded-xl shadow-sm border border-slate-200">
               <div className="px-4 pt-4 pb-2">
                 <h3 className="font-bold text-slate-800">Cobros por tienda y forma de pago</h3>
-                <p className="text-xs text-slate-500">Lo que entró en el período y por dónde entró. Para declarar.</p>
+                <p className="text-xs text-slate-500">Desglose del período seleccionado.</p>
               </div>
               <div className="overflow-x-auto px-4 pb-4">
                 <table className="w-full text-sm min-w-[520px]">
                   <thead>
                     <tr className="bg-slate-50 text-slate-600 text-xs">
                       <th className="text-left font-semibold px-3 py-2 rounded-l-lg">Forma de pago</th>
-                      {tiendas.map((st) => (
+                      {tiendasF.map((st) => (
                         <th key={st.id} className="text-right font-semibold px-3 py-2">{st.name}</th>
                       ))}
                       <th className="text-right font-semibold px-3 py-2 rounded-r-lg">Total</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {cobros.methods.map((m) => {
-                      const rowTotal = tiendas.reduce((a, st) => a + (cobros.usd[m.key]?.[st.id] ?? 0), 0);
+                    {cobrosF.methods.map((m) => {
+                      const rowTotal = tiendasF.reduce((a, st) => a + (cobrosF.usd[m.key]?.[st.id] ?? 0), 0);
                       return (
                         <tr key={m.key}>
                           <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">
                             <span className="mr-2" aria-hidden>{m.icon}</span>
                             {m.label}
                           </td>
-                          {tiendas.map((st) => (
+                          {tiendasF.map((st) => (
                             <td key={st.id} className="px-3 py-2.5 text-right text-slate-800 tabular-nums">
-                              {fmtUSD(cobros.usd[m.key]?.[st.id] ?? 0)}
+                              {fmtUSD(cobrosF.usd[m.key]?.[st.id] ?? 0)}
                             </td>
                           ))}
                           <td className="px-3 py-2.5 text-right font-semibold text-slate-800 tabular-nums">{fmtUSD(rowTotal)}</td>
@@ -742,77 +741,35 @@ export default function ResumenPage() {
                   <tfoot>
                     <tr className="bg-emerald-50 font-bold text-slate-800">
                       <td className="px-3 py-2.5 rounded-l-lg">TOTAL COBRADO</td>
-                      {tiendas.map((st) => (
+                      {tiendasF.map((st) => (
                         <td key={st.id} className="px-3 py-2.5 text-right text-emerald-700 tabular-nums">
-                          {fmtUSD(cobros.totalByStore[st.id] ?? 0)}
+                          {fmtUSD(cobrosF.totalByStore[st.id] ?? 0)}
                         </td>
                       ))}
-                      <td className="px-3 py-2.5 text-right text-emerald-700 tabular-nums rounded-r-lg">{fmtUSD(cobros.total)}</td>
+                      <td className="px-3 py-2.5 text-right text-emerald-700 tabular-nums rounded-r-lg">{fmtUSD(cobrosF.total)}</td>
                     </tr>
                   </tfoot>
                 </table>
-                <p className="text-xs text-slate-500 mt-3">
-                  En bolívares, a la tasa de cada venta:{' '}
-                  <strong>Bs. {totalBs.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
-                  {' '}El detalle por tienda y forma de pago, en dólares y bolívares, va en el «Paquete contador».
-                  {cobros.abonos > 0 && <> Incluye {fmtUSD(cobros.abonos)} de abonos de fiado.</>}
-                  {Math.abs(cobros.total - kpi.entro) > 0.005 && (
-                    <> No coincide con «Entró» porque lo fiado se cobra después, en abonos.</>
+                <div className="flex flex-wrap items-start justify-between gap-2 mt-3">
+                  <p className="text-xs text-slate-500 flex-1 min-w-[240px]">
+                    En bolívares, a la tasa de cada venta:{' '}
+                    <strong>Bs. {totalBsF.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
+                    {cobrosF.abonos > 0 && <> Incluye {fmtUSD(cobrosF.abonos)} de abonos de fiado.</>}
+                    {Math.abs(cobrosF.total - ventasF.total) > 0.005 && (
+                      <> No coincide con «Ventas totales» porque lo fiado se cobra después, en abonos.</>
+                    )}
+                  </p>
+                  {tiendasF.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => verEnReportes(storeSel ?? tiendasF[0])}
+                      className="text-xs font-semibold text-teal-700 hover:underline whitespace-nowrap"
+                    >
+                      Ver detalle en Reportes ›
+                    </button>
                   )}
-                </p>
-              </div>
-            </div>
-
-            {/* --- Entradas vs salidas --- */}
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-              <h3 className="font-bold text-slate-800 text-sm mb-4">Entró y salió, día a día</h3>
-              {chartData.length === 0 ? (
-                <p className="text-sm text-slate-400 py-12 text-center">
-                  No hay movimientos en el período.
-                </p>
-              ) : (
-                <div className="h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="colorEntro" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#0d9488" stopOpacity={0.35} />
-                          <stop offset="95%" stopColor="#0d9488" stopOpacity={0} />
-                        </linearGradient>
-                        <linearGradient id="colorSalio" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} />
-                      <YAxis tick={{ fontSize: 11, fill: '#64748b' }} width={70} />
-                      <Tooltip
-                        contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                        formatter={(value: unknown, name: unknown) => [
-                          fmtUSD(Number(value)),
-                          name === 'entro' ? 'Entró' : 'Salió',
-                        ]}
-                      />
-                      <Legend formatter={(v: unknown) => (v === 'entro' ? 'Entró' : 'Salió')} />
-                      <Area
-                        type="monotone"
-                        dataKey="entro"
-                        stroke="#0d9488"
-                        fill="url(#colorEntro)"
-                        strokeWidth={2}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="salio"
-                        stroke="#f59e0b"
-                        fill="url(#colorSalio)"
-                        strokeWidth={2}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
                 </div>
-              )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -887,11 +844,9 @@ export default function ResumenPage() {
             </div>
 
             <p className="text-xs text-slate-400">
-              Los ingresos se leen de las ventas del POS y suman todas las sucursales.{' '}
-              <strong>&quot;Salió&quot;</strong> es lo que costó el período: una compra a 30 días cuenta el
-              día que la haces. <strong>&quot;Pagado&quot;</strong> es el dinero que de verdad salió de tus
-              cuentas en el período. Por eso <strong>&quot;Queda&quot; no es tu efectivo</strong>: es el margen
-              del período. Lo que tienes de verdad es <strong>&quot;Efectivo disponible&quot;</strong>.
+              «Ventas totales» y los cobros se leen de las ventas del POS. En los cobros, la inicial de Cashea
+              cuenta en el método con que se pagó y el resto en «Cashea (lo paga Cashea)»; un fiado cuenta el día
+              de cada abono. Compras, gastos y efectivo son de todo el negocio.
             </p>
           </>
         )}
