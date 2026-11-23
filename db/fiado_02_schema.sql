@@ -28,8 +28,10 @@
 --   2. store_settings.fiado_points_on_payoff (interruptor por tienda, nace en
 --      true: al terminar de pagar se suman los puntos como en una venta normal).
 --   3. sales.fiado_paid_at, sales.fiado_points_awarded y el trigger
---      sales_fiado_guard: no se fía sin permiso ni sin cliente, y nadie marca
---      una venta como pagada a mano.
+--      sales_fiado_guard: no se fía sin permiso ni sin cliente, nadie marca
+--      una venta como pagada a mano, y no se le quita el cliente a un fiado
+--      que todavía debe (delete_customer_global desvincula las ventas antes
+--      de borrar un cliente: con una deuda abierta, el borrado se rechaza).
 --   4. fiado_payments (solo lectura por la API; se escribe con los RPC).
 --   5. can_fiar(): ¿el usuario actual puede fiar y cobrar?
 --   6. fiado_abonar(...): registra un abono (también el inicial).
@@ -42,7 +44,7 @@
 --   NOT_AUTHORIZED, INVALID_ARGUMENTS, INVALID_METHOD, NOTHING_OWED,
 --   AMOUNT_EXCEEDS_BALANCE, PAYMENT_NOT_FOUND, FIADO_NOT_ALLOWED,
 --   FIADO_NEEDS_CUSTOMER, FIADO_INVALID, FIADO_CHANGE_NOT_ALLOWED,
---   FIADO_HAS_PAYMENTS.
+--   FIADO_HAS_PAYMENTS, FIADO_CUSTOMER_OWES.
 --
 -- CÓMO APLICAR: en el SQL Editor de Supabase, DESPUÉS de db/fiado_01_enum.sql,
 -- el archivo ENTERO, con las tiendas cerradas y las pestañas de Advisors y
@@ -125,7 +127,7 @@ AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.profiles
      WHERE id = auth.uid()
-       AND is_active
+       AND COALESCE(is_active, true)
        AND (role::text = 'owner' OR can_fiar)
   );
 $$;
@@ -173,6 +175,12 @@ BEGIN
        AND COALESCE(current_setting('app.fiado_rpc', true), '') <> '1' THEN
       RAISE EXCEPTION 'FIADO_CHANGE_NOT_ALLOWED';
     END IF;
+  END IF;
+
+  -- Un fiado que todavía debe no se queda sin cliente (ni cambia de cliente).
+  IF OLD.payment_method::text = 'fiado' AND OLD.fiado_paid_at IS NULL
+     AND NEW.customer_id IS DISTINCT FROM OLD.customer_id THEN
+    RAISE EXCEPTION 'FIADO_CUSTOMER_OWES';
   END IF;
   RETURN NEW;
 END;

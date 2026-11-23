@@ -314,7 +314,11 @@ export default function CustomersPage() {
     });
 
     if (error) {
-      alert('No se pudo eliminar el cliente: ' + error.message);
+      // Un cliente con un fiado abierto no se borra (db/fiado_02_schema.sql).
+      const msg = error.message.includes('FIADO_CUSTOMER_OWES')
+        ? 'Este cliente todavía debe un fiado. Primero tiene que terminar de pagar (Cuentas por cobrar).'
+        : error.message;
+      alert('No se pudo eliminar el cliente: ' + msg);
       return;
     }
     setCustomers((prev) => prev.filter((c) => c.document_id !== documentId));

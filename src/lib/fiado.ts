@@ -49,6 +49,7 @@ const FIADO_ERRORS: Record<string, string> = {
   FIADO_INVALID: 'Una venta fiada no se puede dividir ni ir por Cashea.',
   FIADO_CHANGE_NOT_ALLOWED: 'Una venta fiada solo cambia registrando abonos.',
   FIADO_HAS_PAYMENTS: 'Esta venta fiada tiene abonos. Primero borra esos abonos en Cuentas por cobrar.',
+  FIADO_CUSTOMER_OWES: 'Este cliente todavía debe un fiado. Primero tiene que terminar de pagar (Cuentas por cobrar).',
 };
 
 /** Traduce un error de los RPC / trigger de fiado a un mensaje para la cajera. */
