@@ -1,14 +1,17 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { usePOSStore, Store } from '@/store/usePOSStore';
 
 import { tieneTiendaFija, type AppRole } from '@/lib/roles';
 import { useNovedadesBadge } from '@/lib/useNovedadesBadge';
 import { useTrasladosBadge } from '@/lib/useTrasladosBadge';
+import { MENU_GROUPS, MENU_TOP_PATHS, isMenuActive, visibleMenu, type MenuItem } from '@/lib/menu';
 
 type Role = AppRole;
 
@@ -35,24 +38,88 @@ export default function Sidebar({ userRole, userName, stores, canFiar }: Sidebar
     router.refresh();
   };
 
-  const menuItems = [
-    { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
-    { name: 'Novedades', path: '/novedades', roles: ['owner'] },
-    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
-    // Solo con el permiso de fiar (ver canFiar), el mismo que enciende «Fiado» en la caja.
-    { name: 'Cuentas por cobrar', path: '/cuentas-por-cobrar', roles: ['owner', 'cashier', 'vendedor'] },
-    { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
-    { name: 'Traslados', path: '/traslados', roles: ['owner', 'cashier'] },
-    { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
-    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'vendedor', 'consulta'] },
-    { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
-    { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
-    { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },
-    { name: 'Usuarios', path: '/users', roles: ['owner'] },
-  ];
+  const items = visibleMenu(userRole, canFiar);
+  const isOwner = userRole === 'owner';
+  const badgeFor = (path: string) =>
+    path === '/novedades' ? novedades : path === '/traslados' ? porRecibir : 0;
 
-  const filteredMenu = menuItems.filter(item =>
-    item.roles.includes(userRole) && (item.path !== '/cuentas-por-cobrar' || !!canFiar));
+  // Menú compacto del dueño: un grupo abierto a la vez. Por defecto, el de la
+  // página en que está; si toca otro grupo, manda lo que tocó (hasta que
+  // cambie de página).
+  const activeGroup = MENU_GROUPS.find(g => g.paths.some(p => isMenuActive(pathname, p)))?.id ?? null;
+  const [picked, setPicked] = useState<{ path: string; group: string | null } | null>(null);
+  const openGroup = picked && picked.path === pathname ? picked.group : activeGroup;
+  const toggleGroup = (id: string) => setPicked({ path: pathname, group: openGroup === id ? null : id });
+
+  const renderBadge = (n: number, title?: string) => (
+    <span
+      title={title}
+      className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold shrink-0"
+    >
+      {n > 99 ? '99+' : n}
+    </span>
+  );
+
+  const renderLink = (item: MenuItem, sub = false) => {
+    const isActive = isMenuActive(pathname, item.path);
+    const Icon = item.icon;
+    const badge = badgeFor(item.path);
+    return (
+      <Link
+        key={item.path}
+        href={item.path}
+        className={`flex items-center gap-3 rounded-lg transition-colors ${sub ? 'px-3 py-1.5 text-sm' : 'px-3 py-2.5'} ${
+          isActive
+            ? 'bg-teal-500 text-white font-semibold shadow-sm'
+            : 'text-teal-100 hover:bg-teal-800 hover:text-white'
+        }`}
+      >
+        {!sub && <Icon className="w-5 h-5 shrink-0" aria-hidden />}
+        <span className="flex-1 min-w-0 truncate">{item.name}</span>
+        {badge > 0 && renderBadge(badge, item.path === '/traslados' ? 'Envíos por confirmar' : undefined)}
+      </Link>
+    );
+  };
+
+  const renderGrouped = () => (
+    <>
+      {items.filter(i => MENU_TOP_PATHS.includes(i.path)).map(i => renderLink(i))}
+      <div className="my-3 border-t border-teal-600/60" />
+      {MENU_GROUPS.map(g => {
+        const groupItems = g.paths
+          .map(p => items.find(i => i.path === p))
+          .filter((i): i is MenuItem => !!i);
+        if (groupItems.length === 0) return null;
+        const open = openGroup === g.id;
+        const GroupIcon = g.icon;
+        const groupBadge = groupItems.reduce((sum, i) => sum + badgeFor(i.path), 0);
+        return (
+          <div key={g.id}>
+            <button
+              type="button"
+              onClick={() => toggleGroup(g.id)}
+              aria-expanded={open}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                open ? 'bg-teal-800 text-white font-semibold' : 'text-teal-100 hover:bg-teal-800 hover:text-white'
+              }`}
+            >
+              <GroupIcon className="w-5 h-5 shrink-0" aria-hidden />
+              <span className="flex-1 min-w-0 text-left truncate">{g.name}</span>
+              {!open && groupBadge > 0 && renderBadge(groupBadge)}
+              {open
+                ? <ChevronDown className="w-4 h-4 shrink-0" aria-hidden />
+                : <ChevronRight className="w-4 h-4 shrink-0" aria-hidden />}
+            </button>
+            {open && (
+              <div className="ml-5 mt-1 mb-2 pl-3 border-l-2 border-teal-400/70 space-y-0.5">
+                {groupItems.map(i => renderLink(i, true))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
 
   return (
     <aside className="hidden md:flex flex-col w-64 bg-[#0f5c5c] text-white min-h-screen shadow-xl print:hidden shrink-0">
@@ -93,37 +160,9 @@ export default function Sidebar({ userRole, userName, stores, canFiar }: Sidebar
       )}
       {/* -------------------------------------- */}
 
-      {/* Menú Dinámico */}
-      <nav className="flex-1 px-4 py-6 space-y-2">
-        {filteredMenu.map((item) => {
-          const isActive = pathname === item.path;
-          return (
-            <Link
-              key={item.path}
-              href={item.path}
-              className={`block px-4 py-3 rounded-lg transition-colors ${
-                isActive 
-                  ? 'bg-teal-700 text-white font-semibold' 
-                  : 'text-teal-100 hover:bg-teal-800 hover:text-white'
-              }`}
-            >
-              {item.name}
-              {item.path === '/novedades' && novedades > 0 && (
-                <span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle">
-                  {novedades > 99 ? '99+' : novedades}
-                </span>
-              )}
-              {item.path === '/traslados' && porRecibir > 0 && (
-                <span
-                  title="Envíos por confirmar"
-                  className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle"
-                >
-                  {porRecibir}
-                </span>
-              )}
-            </Link>
-          );
-        })}
+      {/* Menú: el dueño, compacto y por grupos; los empleados, su lista con íconos. */}
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        {isOwner ? renderGrouped() : items.map(i => renderLink(i))}
       </nav>
 
       {/* Info del Usuario al final con Botón de Log Out */}

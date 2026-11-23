@@ -26,7 +26,7 @@ import {
 } from '@/lib/cashea';
 import ExchangeModal from '@/components/ExchangeModal';
 import { EXCHANGE_NO_DIFF_METHOD, exchangeCounts, isExchange, isMissingExchangeColumn, manualDiscountOf } from '@/lib/exchange';
-import { FIADO_CHANGED_EVENT, useFiadoAccess } from '@/lib/fiado';
+import { FIADO_CHANGED_EVENT } from '@/lib/fiado';
 
 // Venta fiada (db/fiado_01_enum.sql): cuenta como venta del día, pero su dinero
 // NO entró en caja. Lo que entra son sus abonos (`fiado_payments`), el día que
@@ -283,8 +283,6 @@ export default function DashboardPage() {
   const [todayAbonosByMethod, setTodayAbonosByMethod] = useState<Record<string, number>>({});
   // Lo que deben los clientes (solo para quien puede fiar), con la tienda a la
   // que corresponde: al cambiar de tienda no se muestra el de la anterior.
-  const [porCobrar, setPorCobrar] = useState<{ storeId: string; value: number } | null>(null);
-  const fiadoAccess = useFiadoAccess();
   // El desglose por método de pago va cerrado: ocupa mucho y empuja el historial hacia abajo.
   const [showBreakdown, setShowBreakdown] = useState(false);
 
@@ -741,47 +739,6 @@ export default function DashboardPage() {
     fetchHistory();
   }, [historyDateRange, supabase, currentStore?.id, refreshKey]); // <-- Se vuelve a ejecutar si cambia la tienda o tras un cambio de producto
 
-  // =======================================================
-  // 4. TOTAL POR COBRAR (solo dueño y quien tiene el permiso de fiar)
-  //    = Σ (total − abonos) de las ventas fiadas abiertas de esta tienda.
-  // =======================================================
-  const fiadoAllowed = fiadoAccess.allowed;
-  const fiadoStoreId = currentStore?.id ?? null;
-  useEffect(() => {
-    if (!fiadoStoreId || !fiadoAllowed) return;
-    let alive = true;
-    (async () => {
-      const { data: open, error } = await supabase
-        .from('sales')
-        .select('id, total_amount')
-        .eq('store_id', fiadoStoreId)
-        .eq('payment_method', FIADO_METHOD)
-        .is('fiado_paid_at', null)
-        .limit(SALES_PAGE);
-      if (error) {
-        console.warn('[dashboard] no se pudo calcular el total por cobrar:', error.message);
-        if (alive) setPorCobrar(null);
-        return;
-      }
-      const sales = open ?? [];
-      let owed = sales.reduce((sum, s) => sum + (Number(s.total_amount) || 0), 0);
-      for (const ids of chunks(sales.map(s => s.id as string), IN_CHUNK)) {
-        const { data: pays, error: payError } = await supabase
-          .from('fiado_payments')
-          .select('amount_usd')
-          .in('sale_id', ids);
-        if (payError) {
-          console.warn('[dashboard] no se pudieron leer los abonos para el total por cobrar:', payError.message);
-          if (alive) setPorCobrar(null);
-          return;
-        }
-        owed -= (pays ?? []).reduce((sum, p) => sum + (Number(p.amount_usd) || 0), 0);
-      }
-      if (alive) setPorCobrar({ storeId: fiadoStoreId, value: Math.max(0, owed) });
-    })();
-    return () => { alive = false; };
-  }, [supabase, fiadoStoreId, fiadoAllowed, refreshKey]);
-
   const handleExportCSV = async () => {
     if (!currentStore || exporting) return;
     setExporting(true);
@@ -1059,12 +1016,6 @@ export default function DashboardPage() {
         : (todayByMethod[m.key] || 0) + initialIncluded + abonosIncluded;
     return { ...m, amount, initialIncluded, abonosIncluded, pct: pctOfToday(amount) };
   });
-  // Tarjetas del fiado. «Abonos cobrados hoy» sale si hubo abonos, o siempre
-  // para quien puede fiar (así sabe dónde mirarlos). «Total por cobrar», solo
-  // para el dueño y quien tiene el permiso (pedido de Gerardo).
-  const showAbonosTile = todayAbonos > 0 || (fiadoAccess.installed && fiadoAccess.allowed);
-  const porCobrarHere = porCobrar && porCobrar.storeId === currentStore.id ? porCobrar.value : null;
-  const showPorCobrarTile = fiadoAccess.allowed && porCobrarHere !== null;
 
   // Cards compartidas por la vista del dueño y la del cajero.
   // gridClass: clases de posición dentro de la grilla que las contiene.
@@ -1091,32 +1042,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Fiado: abonos cobrados hoy (ya suman arriba) y lo que deben los clientes.
-          No hay tarjeta de «lo fiado hoy» (pedido de Gerardo). */}
-      {(showAbonosTile || showPorCobrarTile) && (
-        <div className={`grid grid-cols-1 ${showAbonosTile && showPorCobrarTile ? 'sm:grid-cols-2' : ''} gap-3 mt-3`}>
-          {showAbonosTile && (
-            <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-lg p-3 min-w-0">
-              <div className="w-11 h-11 rounded-lg bg-emerald-100 flex items-center justify-center text-xl shrink-0">💳</div>
-              <div className="min-w-0">
-                <p className="text-xs text-slate-500 leading-tight">Abonos cobrados hoy</p>
-                <p className="text-xl font-bold text-emerald-600 truncate">${todayAbonos.toFixed(2)}</p>
-                <p className="text-xs text-slate-500">Ya suman en Recibido</p>
-              </div>
-            </div>
-          )}
-          {showPorCobrarTile && (
-            <div className="flex items-center gap-3 bg-amber-50 border border-amber-100 rounded-lg p-3 min-w-0">
-              <div className="w-11 h-11 rounded-lg bg-amber-100 flex items-center justify-center text-xl shrink-0">📋</div>
-              <div className="min-w-0">
-                <p className="text-xs text-slate-500 leading-tight">Total por cobrar</p>
-                <p className="text-xl font-bold text-amber-700 truncate">${(porCobrarHere ?? 0).toFixed(2)}</p>
-                <p className="text-xs text-slate-500">Lo que deben tus clientes fiados</p>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Fiado: sin tarjetas propias (pedido de Gerardo, 23-nov). Los abonos ya
+          suman en Recibido y en su método; lo que deben está en Cuentas por cobrar. */}
 
       {/* Con / sin Cashea + iniciales cobradas. Los títulos hacen salto de
           línea (no se truncan). El cajero no ve "Ventas sin Cashea". */}

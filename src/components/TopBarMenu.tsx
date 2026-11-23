@@ -10,6 +10,7 @@ import { type AppRole } from '@/lib/roles';
 import { PHONE_SIMPLE_PATHS } from '@/lib/phoneMode';
 import { useNovedadesBadge } from '@/lib/useNovedadesBadge';
 import { useTrasladosBadge } from '@/lib/useTrasladosBadge';
+import { MENU_ITEMS, isMenuActive, visibleMenu, type MenuItem } from '@/lib/menu';
 
 type Role = AppRole;
 
@@ -38,30 +39,13 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple, ca
     router.refresh();
   };
 
-  const menuItems = [
-    { name: 'Reportes', path: '/dashboard', roles: ['owner', 'cashier'] },
-    { name: 'Novedades', path: '/novedades', roles: ['owner'] },
-    { name: 'Registro de Ventas', path: '/pos', roles: ['owner', 'cashier', 'vendedor'] },
-    // Solo con el permiso de fiar (ver canFiar), el mismo que enciende «Fiado» en la caja.
-    { name: 'Cuentas por cobrar', path: '/cuentas-por-cobrar', roles: ['owner', 'cashier', 'vendedor'] },
-    { name: 'Inventario', path: '/inventory', roles: ['owner', 'cashier'] },
-    { name: 'Traslados', path: '/traslados', roles: ['owner', 'cashier'] },
-    { name: 'Clientes', path: '/customers', roles: ['owner', 'cashier'] },
-    { name: 'Consultar precio', path: '/consultar-precio', roles: ['owner', 'cashier', 'vendedor', 'consulta'] },
-    { name: 'Etiquetas', path: '/labels', roles: ['owner', 'cashier'] },
-    { name: 'Ofertas', path: '/ofertas', roles: ['owner'] },
-    { name: 'Finanzas', path: '/finanzas', roles: ['owner'] },
-    { name: 'Usuarios', path: '/users', roles: ['owner'] },
-  ];
-
   // En modo teléfono, Consultar precio primero y la caja como «Vender».
-  const filteredMenu = phoneSimple
+  const filteredMenu: MenuItem[] = phoneSimple
     ? PHONE_SIMPLE_PATHS
-        .map(path => menuItems.find(item => item.path === path))
-        .filter((item): item is (typeof menuItems)[number] => !!item && item.roles.includes(userRole))
+        .map(path => MENU_ITEMS.find(item => item.path === path))
+        .filter((item): item is MenuItem => !!item && item.roles.includes(userRole))
         .map(item => (item.path === '/pos' ? { ...item, name: 'Vender' } : item))
-    : menuItems.filter(item =>
-        item.roles.includes(userRole) && (item.path !== '/cuentas-por-cobrar' || !!canFiar));
+    : visibleMenu(userRole, canFiar);
 
   return (
     <header className="md:hidden w-full bg-[#0f5c5c] text-white print:hidden flex flex-col shadow-md shrink-0">
@@ -115,17 +99,19 @@ export default function TopBarMenu({ userRole, userName, stores, phoneSimple, ca
       {/* Fila inferior: Menú horizontal deslizable */}
       <nav className="flex overflow-x-auto gap-2 px-3 py-2 scrollbar-hide items-center">
         {filteredMenu.map((item) => {
-          const isActive = pathname === item.path;
+          const isActive = isMenuActive(pathname, item.path);
+          const Icon = item.icon;
           return (
             <Link
               key={item.path}
               href={item.path}
-              className={`whitespace-nowrap px-4 py-2 rounded-full text-sm transition-colors ${
+              className={`whitespace-nowrap inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm transition-colors ${
                 isActive 
                   ? 'bg-teal-700 text-white font-semibold' 
                   : 'text-teal-100 hover:bg-teal-800'
               }`}
             >
+              <Icon className="w-4 h-4 shrink-0" aria-hidden />
               {item.name}
               {item.path === '/novedades' && novedades > 0 && (
                 <span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold align-middle">

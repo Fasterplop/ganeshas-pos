@@ -8,12 +8,18 @@
 // Los ingresos se LEEN de `sales` (la tabla del POS) sin escribir ni una fila:
 // es el único punto donde este módulo toca el resto del sistema.
 //
+// «Ventas por tienda» y «Cobros por tienda y forma de pago» (pedido de Gerardo,
+// 23-nov-2026): cuánto entró por cada forma de pago, para declarar. Se arma con
+// src/lib/finanzas/cobros.ts, con la misma regla que el desglose de Reportes.
+//
 // Ojo con dos cosas al comparar con /dashboard:
-//   - Aquí no hay filtro de sucursal: suma TODAS las tiendas.
+//   - Aquí no hay filtro de sucursal: suma TODAS las tiendas (la tabla de
+//     cobros sí las separa en columnas).
 //   - "Salió" es lo devengado (lo que se compró y se gastó en el período),
 //     no lo que se pagó. Lo pagado se ve en el movimiento de cada cuenta.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Area,
   AreaChart,
@@ -26,6 +32,8 @@ import {
 } from 'recharts';
 import { createClient } from '@/lib/supabase/client';
 import { useFinanceFilters } from '@/store/useFinanceFilters';
+import { usePOSStore, type Store } from '@/store/usePOSStore';
+import { buildCobros, cobrosDeVenta, COBRO_METHODS, type CobroAbono } from '@/lib/finanzas/cobros';
 import FinShell from '@/components/finanzas/FinShell';
 import type { Expense, Category } from '@/components/finanzas/ExpenseFormModal';
 import type { Account } from '@/components/finanzas/AccountFormModal';
@@ -42,6 +50,7 @@ import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
 import {
   caracasBounds,
+  caracasMonthStart,
   caracasToday,
   formatDate,
   parseSupabaseDate,
@@ -56,7 +65,20 @@ interface SaleRow {
   bcv_rate: number;
   created_at: string;
   kind: string;
+  store_id: string;
+  payment_method: string | null;
+  payment_method_2: string | null;
+  payment_amount_1: number | null;
+  payment_amount_2: number | null;
+  cashea_initial_usd: number | null;
+  cashea_initial_method: string | null;
+  cashea_initial_method_2: string | null;
+  cashea_initial_amount_2: number | null;
 }
+
+type AbonoRow = CobroAbono & { created_at: string };
+
+const COBRO_LABEL: Record<string, string> = Object.fromEntries(COBRO_METHODS.map((m) => [m.key, m.label]));
 
 interface PaymentRow {
   id: string;
@@ -85,9 +107,13 @@ const KIND_LABEL: Record<string, string> = { compra: 'Compra', gasto: 'Gasto', e
 
 export default function ResumenPage() {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
   const { dateRange, setDateRange } = useFinanceFilters();
+  const setCurrentStore = usePOSStore((st) => st.setCurrentStore);
 
   const [sales, setSales] = useState<SaleRow[]>([]);
+  const [abonos, setAbonos] = useState<AbonoRow[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [balances, setBalances] = useState<BalanceRow[]>([]);
@@ -109,13 +135,28 @@ export default function ResumenPage() {
     const { rows: saleRows, error: saleErr } = await fetchAllPages<SaleRow>((from, to) =>
       supabase
         .from('sales')
-        .select('id, total_amount, bcv_rate, created_at, kind')
+        .select(
+          'id, total_amount, bcv_rate, created_at, kind, store_id, payment_method, payment_method_2, payment_amount_1, payment_amount_2, cashea_initial_usd, cashea_initial_method, cashea_initial_method_2, cashea_initial_amount_2',
+        )
         .gte('created_at', fromISO)
         .lte('created_at', toISO)
         .order('created_at', { ascending: false })
         .range(from, to),
     );
     if (saleErr) setNotice({ type: 'error', text: `Ventas: ${finErrorMessage(saleErr)}` });
+
+    // Abonos de fiado del período (db/fiado_02_schema.sql): son dinero que
+    // entró, en su método, el día del abono. Sin la tabla, la lista va vacía.
+    const { rows: abonoRows } = await fetchAllPages<AbonoRow>((from, to) =>
+      supabase
+        .from('fiado_payments')
+        .select('store_id, amount_usd, payment_method, bcv_rate, created_at')
+        .gte('created_at', fromISO)
+        .lte('created_at', toISO)
+        .order('created_at', { ascending: false })
+        .range(from, to),
+    );
+    const { data: storeRows } = await supabase.from('stores').select('id, name, is_active').order('name');
 
     // TODOS los egresos abiertos, mas los del periodo: la deuda no se filtra
     // por fechas, es lo que se debe hoy.
@@ -173,6 +214,8 @@ export default function ResumenPage() {
     ]);
 
     setSales(saleRows);
+    setAbonos(abonoRows);
+    setStores((storeRows ?? []) as Store[]);
     setExpenses(expRows);
     setPayments(pay.rows);
     setBalances(bal.rows);
@@ -255,6 +298,37 @@ export default function ResumenPage() {
     };
   }, [sales, delPeriodo, expenses, balances, payments, hoy]);
 
+  // Cobros por tienda y forma de pago, y ventas por tienda.
+  const cobros = useMemo(() => buildCobros(sales, abonos), [sales, abonos]);
+  const tiendas = useMemo(() => {
+    const byStore = new Map<string, { total: number; ventas: number }>();
+    for (const s of sales) {
+      const row = byStore.get(s.store_id) ?? { total: 0, ventas: 0 };
+      row.total += Number(s.total_amount) || 0;
+      if (s.kind !== 'exchange') row.ventas += 1;
+      byStore.set(s.store_id, row);
+    }
+    // Las tiendas activas siempre salen; una inactiva, solo si vendió o cobró en el período.
+    return stores
+      .filter((st) => st.is_active !== false || byStore.has(st.id) || (cobros.totalByStore[st.id] ?? 0) > 0)
+      .map((st) => ({ ...st, total: round2(byStore.get(st.id)?.total ?? 0), ventas: byStore.get(st.id)?.ventas ?? 0 }));
+  }, [sales, stores, cobros]);
+  const totalBs = useMemo(
+    () => round2(Object.values(cobros.bs).reduce((a, byStore) => a + Object.values(byStore).reduce((x, v) => x + v, 0), 0)),
+    [cobros],
+  );
+  const verEnReportes = (st: Store) => {
+    setCurrentStore(st);
+    router.push('/dashboard');
+  };
+  const formaDePago = (s: SaleRow) => {
+    if (s.payment_method === 'fiado') return 'Fiado (se cobra en abonos)';
+    const parts = cobrosDeVenta(s);
+    if (parts.length === 0) return s.kind === 'exchange' ? 'Sin diferencia (cambio)' : '';
+    if (parts.length === 1) return COBRO_LABEL[parts[0].method] ?? parts[0].method;
+    return parts.map((p) => `${COBRO_LABEL[p.method] ?? p.method} ${fmtUSD(p.usd)}`).join(' + ');
+  };
+
   // Serie diaria de entradas y salidas para el gráfico.
   const chartData = useMemo(() => {
     const map = new Map<string, { dia: string; entro: number; salio: number }>();
@@ -286,6 +360,7 @@ export default function ResumenPage() {
           _orden: day,
           tipo: 'Ingreso',
           detalle: s.kind === 'exchange' ? 'Cambio de producto' : 'Venta',
+          forma: formaDePago(s),
           categoria: '',
           proveedor: '',
           cuenta: '',
@@ -302,6 +377,7 @@ export default function ResumenPage() {
           _orden: p.paid_at,
           tipo: 'Egreso',
           detalle: exp ? (exp.description ?? KIND_LABEL[exp.kind] ?? '') : 'Pago',
+          forma: '',
           categoria: exp ? categoryName(exp.category_id) : '',
           proveedor: exp ? (supplierName(exp.supplier_id) ?? '') : '',
           cuenta: accountName(p.account_id),
@@ -319,6 +395,7 @@ export default function ResumenPage() {
         { header: 'Fecha', key: 'fecha', width: 13 },
         { header: 'Tipo', key: 'tipo', width: 11 },
         { header: 'Detalle', key: 'detalle', width: 30, wrap: true },
+        { header: 'Forma de pago', key: 'forma', width: 24, wrap: true },
         { header: 'Categoría', key: 'categoria', width: 18 },
         { header: 'Proveedor', key: 'proveedor', width: 22 },
         { header: 'Cuenta usada', key: 'cuenta', width: 24 },
@@ -334,6 +411,34 @@ export default function ResumenPage() {
       },
       totalsLabel: 'TOTALES',
       note: 'Ingresos = ventas del POS. Egresos = pagos registrados, con la cuenta que se usó. Ningún pago mueve el saldo de las cuentas: ese saldo se lleva a mano desde Cuentas.',
+    };
+  };
+
+  // Cobros por tienda y forma de pago, en dólares y en bolívares (a la tasa de
+  // cada venta o abono): la hoja para declarar.
+  const cobrosSheet = () => {
+    const rows = tiendas.flatMap((st) =>
+      cobros.methods
+        .filter((m) => (cobros.usd[m.key]?.[st.id] ?? 0) > 0)
+        .map((m) => ({
+          tienda: st.name,
+          forma: m.label,
+          usd: round2(cobros.usd[m.key]?.[st.id] ?? 0),
+          bs: round2(cobros.bs[m.key]?.[st.id] ?? 0),
+        })),
+    );
+    return {
+      name: 'Cobros por forma de pago',
+      columns: [
+        { header: 'Tienda', key: 'tienda', width: 22 },
+        { header: 'Forma de pago', key: 'forma', width: 28 },
+        { header: 'Cobrado USD', key: 'usd', width: 16, numFmt: FMT_USD },
+        { header: 'Cobrado Bs', key: 'bs', width: 18 },
+      ],
+      rows,
+      totals: { usd: cobros.total, bs: totalBs },
+      totalsLabel: 'TOTAL COBRADO',
+      note: 'Lo que entró en el período por cada forma de pago. Cashea: la inicial va en el método con que se pagó y el resto en «Cashea (lo paga Cashea)». Un fiado cuenta el día de cada abono, en su método. Bs a la tasa BCV de cada venta.',
     };
   };
 
@@ -374,12 +479,14 @@ export default function ResumenPage() {
           periodEnd: dateRange.end,
           extra: [
             ['Entró', fmtUSD(kpi.entro)],
+            ['Total cobrado', fmtUSD(cobros.total)],
             ['Salió', fmtUSD(kpi.salio)],
             ['Queda', fmtUSD(kpi.queda)],
             ['Deuda abierta', fmtUSD(kpi.deuda)],
           ],
         },
         sheets: [
+          cobrosSheet(),
           movimientosSheet(),
           {
             name: 'Compras del período',
@@ -501,6 +608,28 @@ export default function ResumenPage() {
             onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
             className={`${inputClass} w-auto`}
           />
+          <button
+            type="button"
+            onClick={() => setDateRange({ start: hoy, end: hoy })}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+              dateRange.start === hoy && dateRange.end === hoy
+                ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-teal-500'
+            }`}
+          >
+            Hoy
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateRange({ start: caracasMonthStart(hoy), end: hoy })}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+              dateRange.start === caracasMonthStart(hoy) && dateRange.end === hoy
+                ? 'bg-[#0f5c5c] text-white border-[#0f5c5c]'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-teal-500'
+            }`}
+          >
+            Este mes
+          </button>
           <span className="text-xs text-slate-400 ml-2">Suma todas las sucursales.</span>
         </div>
 
@@ -545,6 +674,93 @@ export default function ResumenPage() {
                 tone={kpi.efectivo < 0 ? 'red' : 'emerald'}
                 sub={kpi.tarjetas > 0 ? `${fmtUSD(kpi.tarjetas)} en tarjetas` : 'Bancos, Zelle y caja'}
               />
+            </div>
+
+            {/* --- Ventas por tienda --- */}
+            {tiendas.length > 0 && (
+              <div>
+                <h3 className="font-bold text-slate-800 mb-3">Ventas por tienda</h3>
+                <div className={`grid grid-cols-1 ${tiendas.length > 1 ? 'sm:grid-cols-2' : ''} gap-4`}>
+                  {tiendas.map((st) => (
+                    <div key={st.id} className="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-600 p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-bold text-slate-800 truncate">{st.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => verEnReportes(st)}
+                          className="text-xs font-semibold text-teal-700 hover:underline whitespace-nowrap"
+                        >
+                          Ver en Reportes ›
+                        </button>
+                      </div>
+                      <p className="text-2xl sm:text-3xl font-bold text-emerald-700 mt-1">{fmtUSD(st.total)}</p>
+                      <p className="text-xs text-slate-500">
+                        {st.ventas} {st.ventas === 1 ? 'venta' : 'ventas'} · cobrado {fmtUSD(cobros.totalByStore[st.id] ?? 0)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* --- Cobros por tienda y forma de pago --- */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+              <div className="px-4 pt-4 pb-2">
+                <h3 className="font-bold text-slate-800">Cobros por tienda y forma de pago</h3>
+                <p className="text-xs text-slate-500">Lo que entró en el período y por dónde entró. Para declarar.</p>
+              </div>
+              <div className="overflow-x-auto px-4 pb-4">
+                <table className="w-full text-sm min-w-[520px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 text-xs">
+                      <th className="text-left font-semibold px-3 py-2 rounded-l-lg">Forma de pago</th>
+                      {tiendas.map((st) => (
+                        <th key={st.id} className="text-right font-semibold px-3 py-2">{st.name}</th>
+                      ))}
+                      <th className="text-right font-semibold px-3 py-2 rounded-r-lg">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {cobros.methods.map((m) => {
+                      const rowTotal = tiendas.reduce((a, st) => a + (cobros.usd[m.key]?.[st.id] ?? 0), 0);
+                      return (
+                        <tr key={m.key}>
+                          <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">
+                            <span className="mr-2" aria-hidden>{m.icon}</span>
+                            {m.label}
+                          </td>
+                          {tiendas.map((st) => (
+                            <td key={st.id} className="px-3 py-2.5 text-right text-slate-800 tabular-nums">
+                              {fmtUSD(cobros.usd[m.key]?.[st.id] ?? 0)}
+                            </td>
+                          ))}
+                          <td className="px-3 py-2.5 text-right font-semibold text-slate-800 tabular-nums">{fmtUSD(rowTotal)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-emerald-50 font-bold text-slate-800">
+                      <td className="px-3 py-2.5 rounded-l-lg">TOTAL COBRADO</td>
+                      {tiendas.map((st) => (
+                        <td key={st.id} className="px-3 py-2.5 text-right text-emerald-700 tabular-nums">
+                          {fmtUSD(cobros.totalByStore[st.id] ?? 0)}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2.5 text-right text-emerald-700 tabular-nums rounded-r-lg">{fmtUSD(cobros.total)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                <p className="text-xs text-slate-500 mt-3">
+                  En bolívares, a la tasa de cada venta:{' '}
+                  <strong>Bs. {totalBs.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
+                  {' '}El detalle por tienda y forma de pago, en dólares y bolívares, va en el «Paquete contador».
+                  {cobros.abonos > 0 && <> Incluye {fmtUSD(cobros.abonos)} de abonos de fiado.</>}
+                  {Math.abs(cobros.total - kpi.entro) > 0.005 && (
+                    <> No coincide con «Entró» porque lo fiado se cobra después, en abonos.</>
+                  )}
+                </p>
+              </div>
             </div>
 
             {/* --- Entradas vs salidas --- */}
