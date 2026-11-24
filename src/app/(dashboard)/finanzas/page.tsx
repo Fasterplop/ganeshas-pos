@@ -38,7 +38,7 @@ import {
 } from 'lucide-react';
 import CasheaLogo from '@/components/CasheaLogo';
 import { createClient } from '@/lib/supabase/client';
-import { useFinanceFilters } from '@/store/useFinanceFilters';
+import type { FinDateRange } from '@/store/useFinanceFilters';
 import { usePOSStore, type Store } from '@/store/usePOSStore';
 import { buildCobros, cobrosDeVenta, COBRO_METHODS, type CobroAbono } from '@/lib/finanzas/cobros';
 import FinShell from '@/components/finanzas/FinShell';
@@ -163,7 +163,13 @@ const KIND_LABEL: Record<string, string> = { compra: 'Compra', gasto: 'Gasto', e
 export default function ResumenPage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  const { dateRange, setDateRange } = useFinanceFilters();
+  // El Resumen abre siempre en «Este mes», como la foto de Gerardo (23-nov).
+  // Tiene su propio período: el filtro compartido de las otras pestañas arranca
+  // en todo el historial a propósito (ver useFinanceFilters) y no se toca.
+  const [dateRange, setDateRange] = useState<FinDateRange>(() => ({
+    start: caracasMonthStart(),
+    end: caracasToday(),
+  }));
   const setCurrentStore = usePOSStore((st) => st.setCurrentStore);
 
   const [sales, setSales] = useState<SaleRow[]>([]);
