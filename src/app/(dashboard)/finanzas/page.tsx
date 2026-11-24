@@ -32,11 +32,9 @@ import {
   CreditCard,
   FileText,
   Package,
-  Shirt,
   ShoppingCart,
   Smartphone,
   Store as StoreIcon,
-  ToyBrick,
 } from 'lucide-react';
 import CasheaLogo from '@/components/CasheaLogo';
 import { createClient } from '@/lib/supabase/client';
@@ -52,7 +50,6 @@ import {
   Notice,
   DueBadge,
   btnSecondary,
-  inputClass,
 } from '@/components/finanzas/ui';
 import { fetchAllPages } from '@/lib/finanzas/queries';
 import { finErrorMessage } from '@/lib/finanzas/errors';
@@ -104,9 +101,39 @@ const renderMethodIcon = (key: string) => {
     </span>
   );
 };
-// La tienda de ropa lleva ropa; la de juguetes, un juguete (como el dibujo).
-const storeIconOf = (name: string): LucideIcon =>
-  /ropa/i.test(name) ? Shirt : /jugu/i.test(name) ? ToyBrick : StoreIcon;
+// Campos de los filtros: mismo borde que el resto de Finanzas, pero de ancho
+// propio, para que Tienda / Desde / Hasta / Hoy / Este mes vayan en una fila.
+const filterField =
+  'h-10 border border-slate-300 rounded-lg px-3 bg-white text-sm text-slate-800 ' +
+  'focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500';
+// Percha para la tienda de ropa y osito para la de juguetes, como la foto de
+// Gerardo. Lucide no trae ninguno de los dos: van dibujados con el mismo trazo.
+type IconProps = { className?: string };
+const svgProps = {
+  viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2,
+  strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true,
+};
+function HangerIcon({ className }: IconProps) {
+  return (
+    <svg {...svgProps} className={className}>
+      <path d="M10 5.2a2 2 0 1 1 2 2v1.6" />
+      <path d="M12 8.8 3.2 15.6a1.2 1.2 0 0 0 .7 2.1h16.2a1.2 1.2 0 0 0 .7-2.1Z" />
+    </svg>
+  );
+}
+function TeddyIcon({ className }: IconProps) {
+  return (
+    <svg {...svgProps} className={className}>
+      <circle cx="6.6" cy="5.4" r="2.3" />
+      <circle cx="17.4" cy="5.4" r="2.3" />
+      <circle cx="12" cy="9.2" r="5" />
+      <ellipse cx="12" cy="10.9" rx="1.9" ry="1.4" />
+      <path d="M8.3 13.6C6.4 14.8 5.6 16.5 5.6 18c0 2 2.7 3 6.4 3s6.4-1 6.4-3c0-1.5-.8-3.2-2.7-4.4" />
+    </svg>
+  );
+}
+const storeIconOf = (name: string): React.ComponentType<IconProps> =>
+  /ropa/i.test(name) ? HangerIcon : /jugu/i.test(name) ? TeddyIcon : StoreIcon;
 
 interface PaymentRow {
   id: string;
@@ -630,55 +657,65 @@ export default function ResumenPage() {
       <div className="space-y-5">
         <FinNotice notice={notice} onClose={() => setNotice(null)} />
 
-        {/* Filtros, como el dibujo de Gerardo: tienda, desde, hasta, Hoy, Este mes. */}
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-slate-600">Tienda</span>
-          <select
-            value={storeFilter}
-            onChange={(e) => setStoreFilter(e.target.value)}
-            className={`${inputClass} w-auto min-w-[11rem]`}
-          >
-            <option value="all">Todas las tiendas</option>
-            {activeStores.map((st) => (
-              <option key={st.id} value={st.id}>{st.name}</option>
-            ))}
-          </select>
-          <span className="text-slate-600 ml-2">Desde</span>
-          <input
-            type="date"
-            value={dateRange.start}
-            onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-            className={`${inputClass} w-auto`}
-          />
-          <span className="text-slate-600 ml-2">Hasta</span>
-          <input
-            type="date"
-            value={dateRange.end}
-            onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-            className={`${inputClass} w-auto`}
-          />
-          <button
-            type="button"
-            onClick={() => setDateRange({ start: hoy, end: hoy })}
-            className={`ml-1 px-4 py-2 rounded-lg text-sm font-semibold border transition ${
-              dateRange.start === hoy && dateRange.end === hoy
-                ? 'bg-emerald-600 text-white border-emerald-600'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-500'
-            }`}
-          >
-            Hoy
-          </button>
-          <button
-            type="button"
-            onClick={() => setDateRange({ start: caracasMonthStart(hoy), end: hoy })}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${
-              dateRange.start === caracasMonthStart(hoy) && dateRange.end === hoy
-                ? 'bg-emerald-600 text-white border-emerald-600'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-500'
-            }`}
-          >
-            Este mes
-          </button>
+        {/* Filtros en UNA fila, como la foto de Gerardo: Tienda, Desde, Hasta, Hoy,
+            Este mes. No usan inputClass: trae w-full y cada campo ocupaba toda
+            la línea (así salió en producción el 23-nov). */}
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <label className="inline-flex items-center gap-2">
+            <span className="text-slate-600">Tienda</span>
+            <select
+              value={storeFilter}
+              onChange={(e) => setStoreFilter(e.target.value)}
+              className={`${filterField} w-52`}
+            >
+              <option value="all">Todas las tiendas</option>
+              {activeStores.map((st) => (
+                <option key={st.id} value={st.id}>{st.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <span className="text-slate-600">Desde</span>
+            <input
+              type="date"
+              value={dateRange.start}
+              onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+              className={`${filterField} w-44`}
+            />
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <span className="text-slate-600">Hasta</span>
+            <input
+              type="date"
+              value={dateRange.end}
+              onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+              className={`${filterField} w-44`}
+            />
+          </label>
+          <div className="inline-flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDateRange({ start: hoy, end: hoy })}
+              className={`h-10 px-4 rounded-lg text-sm font-semibold border transition ${
+                dateRange.start === hoy && dateRange.end === hoy
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-slate-600 border-slate-300 hover:border-emerald-500'
+              }`}
+            >
+              Hoy
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateRange({ start: caracasMonthStart(hoy), end: hoy })}
+              className={`h-10 px-4 rounded-lg text-sm font-semibold border transition ${
+                dateRange.start === caracasMonthStart(hoy) && dateRange.end === hoy
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-slate-600 border-slate-300 hover:border-emerald-500'
+              }`}
+            >
+              Este mes
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -734,7 +771,7 @@ export default function ResumenPage() {
                     return (
                       <div key={st.id} className="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-600 p-5 flex gap-4">
                         <span className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                          <SIcon className="w-6 h-6" aria-hidden />
+                          <SIcon className="w-7 h-7" aria-hidden />
                         </span>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
@@ -895,11 +932,6 @@ export default function ResumenPage() {
               </div>
             </div>
 
-            <p className="text-xs text-slate-400">
-              «Ventas totales» y los cobros se leen de las ventas del POS. En los cobros, la inicial de Cashea
-              cuenta en el método con que se pagó y el resto en «Cashea (lo paga Cashea)»; un fiado cuenta el día
-              de cada abono. Compras, gastos y efectivo son de todo el negocio.
-            </p>
           </>
         )}
       </div>
